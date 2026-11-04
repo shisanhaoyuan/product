@@ -1,0 +1,17 @@
+:root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #28323e; background: #f4f5f7; font-size: 14px; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+a { color: #517db6; text-decoration: none; }
+a:hover { text-decoration: underline; }
+.api-docs { max-width: 1000px; margin: 40px auto; padding: 0 25px; }
+.back-link { display: inline-block; margin-bottom: 22px; font-size: 12px; }
+.eyebrow { color: #748195; font-size: 11px; }
+h1 { font-size: 28px; }
+h2 { margin-top: 28px; font-size: 18px; }
+.subtitle { color: #64748a; font-size: 13px; line-height: 1.8; }
+.btn { display: inline-block; padding: 8px 10px; margin: 4px 0; border: 1px solid #dce2e9; background: #fff; border-radius: 5px; font-size: 12px; }
+.endpoint { padding: 18px; border: 1px solid #dce2e9; border-radius: 6px; margin: 12px 0; background: #fff; }
+.endpoint summary { cursor: pointer; overflow-wrap: anywhere; line-height: 1.7; }
+.endpoint pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; color: #60748e; }
+:focus-visible { outline: 2px solid #517db6; outline-offset: 4px; }
+@media (max-width: 540px) { .api-docs { margin: 25px auto; padding: 0 18px; } }
