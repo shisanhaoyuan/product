@@ -14,6 +14,8 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.concurrency import run_in_threadpool
+from .object_storage import StorageError, save_metadata
 
 MAX_UPLOAD = 8 * 1024 * 1024
 
@@ -22,7 +24,13 @@ def initialize(db):
     db.executescript('''CREATE TABLE IF NOT EXISTS image_assets(
         digest TEXT PRIMARY KEY, content BLOB NOT NULL, mime TEXT NOT NULL,
         created_at TEXT NOT NULL, actor_id INTEGER);
+        CREATE TABLE IF NOT EXISTS image_objects(
+        digest TEXT PRIMARY KEY,object_key TEXT NOT NULL,mime TEXT NOT NULL,size INTEGER NOT NULL,
+        created_at TEXT NOT NULL,actor_id INTEGER,bucket TEXT NOT NULL,endpoint TEXT NOT NULL,
+        backend TEXT NOT NULL DEFAULT 'oss');
         INSERT OR IGNORE INTO migrations VALUES(6);''')
+    if 'backend' not in {row[1] for row in db.execute('PRAGMA table_info(image_objects)')}:
+        db.execute("ALTER TABLE image_objects ADD COLUMN backend TEXT NOT NULL DEFAULT 'oss'")
 
 
 def normalize_image(raw):
@@ -134,7 +142,7 @@ class CaptureInput(BaseModel):
     variant_sku: str | None = Field(default=None, min_length=1, max_length=200)
 
 
-def image_routes(catalog):
+def image_routes(catalog, storage):
     router = APIRouter(prefix='/api/products')
 
     def target(lid, sku):
@@ -153,7 +161,15 @@ def image_routes(catalog):
         if not re.fullmatch('[a-f0-9]{64}', digest):
             raise HTTPException(404)
         with catalog.connect() as db:
-            row = db.execute('SELECT content,mime FROM image_assets WHERE digest=?', (digest,)).fetchone()
+            stored = db.execute('SELECT * FROM image_objects WHERE digest=?', (digest,)).fetchone()
+            row = None if catalog.postgres else db.execute('SELECT content,mime FROM image_assets WHERE digest=?', (digest,)).fetchone()
+        if stored:
+            if storage is None:
+                raise HTTPException(503, '请配置此图片使用的存储后端')
+            try:
+                return Response(storage.get(stored), media_type=stored['mime'])
+            except StorageError as exc:
+                raise HTTPException(503, str(exc)) from None
         if not row:
             raise HTTPException(404, '图片不存在')
         return Response(row['content'], media_type=row['mime'])
@@ -166,12 +182,23 @@ def image_routes(catalog):
             raw.extend(part)
             if len(raw) > MAX_UPLOAD:
                 raise HTTPException(413, '单张图片不能超过 8 MB')
-        content, mime = normalize_image(bytes(raw))
+        content, mime = await run_in_threadpool(normalize_image, bytes(raw))
         digest = hashlib.sha256(content).hexdigest()
         user = getattr(request.state, 'user', None)
-        with catalog.connect() as db:
-            db.execute('INSERT OR IGNORE INTO image_assets VALUES(?,?,?,?,?)',
-                       (digest, content, mime, datetime.now(timezone.utc).isoformat(), user['id'] if user else None))
+        def persist():
+            actor_id = user['id'] if user else None
+            if storage is not None:
+                metadata = storage.put(digest, content, mime)
+                with catalog.connect() as db:
+                    save_metadata(db, metadata, actor_id)
+            else:
+                with catalog.connect() as db:
+                    db.execute('INSERT OR IGNORE INTO image_assets VALUES(?,?,?,?,?)',
+                               (digest,content,mime,datetime.now(timezone.utc).isoformat(),actor_id))
+        try:
+            await run_in_threadpool(persist)
+        except StorageError as exc:
+            raise HTTPException(503, str(exc)) from None
         return {'url': '/api/products/images/assets/' + digest}
 
     @router.post('/{lid}/images/capture')

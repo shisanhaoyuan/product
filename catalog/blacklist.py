@@ -1,12 +1,12 @@
 """Local seller decisions, kept separate from imported product evidence."""
 import json
-import sqlite3
 import unicodedata
 from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from .database import INTEGRITY_ERRORS, write_lock, insert_id, is_postgres
 
 
 def seller_key(value):
@@ -51,6 +51,8 @@ class SellerUpdate(ReasonInput):
 
 
 def initialize(db):
+    if is_postgres(db):
+        return
     db.executescript('''
         CREATE TABLE IF NOT EXISTS seller_blacklist(
             id INTEGER PRIMARY KEY, source TEXT NOT NULL, seller TEXT NOT NULL,
@@ -65,8 +67,12 @@ def initialize(db):
     ''')
 
 
+def public_entry(row):
+    return {k: v for k, v in dict(row).items() if k != 'search_text'}
+
+
 def active_entries(db):
-    return {(r['source_key'], r['seller_key']): dict(r)
+    return {(r['source_key'], r['seller_key']): public_entry(r)
             for r in db.execute('SELECT * FROM seller_blacklist WHERE active=1')}
 
 
@@ -84,6 +90,9 @@ def blacklist_routes(catalog):
     router = APIRouter(prefix='/api/seller-blacklist')
 
     def record(db, entry, request, action):
+        if catalog.postgres:
+            from .projection import refresh_blacklist
+            refresh_blacklist(db, entry)
         user = getattr(request.state, 'user', None)
         db.execute('''INSERT INTO seller_blacklist_events(blacklist_id,at,actor_id,action,data_json)
             VALUES(?,?,?,?,?)''', (entry['id'], entry['updated_at'], user['id'] if user else None,
@@ -98,42 +107,43 @@ def blacklist_routes(catalog):
         if status != 'all':
             clauses.append('active=?'); args.append(int(status == 'active'))
         if q.strip():
-            clauses.append("instr(seller_key(source || ' ' || seller || ' ' || reason),?)>0")
+            clauses.append("strpos(search_text,?)>0" if catalog.postgres else "instr(seller_key(source || ' ' || seller || ' ' || reason),?)>0")
             args.append(seller_key(q))
         where = ' AND '.join(clauses)
         with catalog.connect() as db:
             total = db.execute(f'SELECT COUNT(*) FROM seller_blacklist WHERE {where}', args).fetchone()[0]
             rows = db.execute(f'''SELECT * FROM seller_blacklist WHERE {where}
                 ORDER BY updated_at DESC,id DESC LIMIT ? OFFSET ?''', [*args, page_size, (page-1)*page_size])
-            return dict(items=[dict(r) for r in rows], total=total, page=page, page_size=page_size)
+            return dict(items=[public_entry(r) for r in rows], total=total, page=page, page_size=page_size)
 
     @router.post('', status_code=201)
     def create(data: NewSeller, request: Request):
         now = datetime.now(timezone.utc).isoformat()
         try:
             with catalog.connect() as db:
-                cur = db.execute('''INSERT INTO seller_blacklist
+                write_lock(db)
+                entry_id = insert_id(db, '''INSERT INTO seller_blacklist
                     (source,seller,source_key,seller_key,reason,created_at,updated_at) VALUES(?,?,?,?,?,?,?)''',
                     (data.source, data.seller, seller_key(data.source), seller_key(data.seller), data.reason, now, now))
-                entry = dict(db.execute('SELECT * FROM seller_blacklist WHERE id=?', (cur.lastrowid,)).fetchone())
+                entry = public_entry(db.execute('SELECT * FROM seller_blacklist WHERE id=?', (entry_id,)).fetchone())
                 record(db, entry, request, 'block')
                 return entry
-        except sqlite3.IntegrityError:
+        except INTEGRITY_ERRORS:
             raise HTTPException(409, '该平台的卖家已有记录，请在名单中搜索并编辑或重新拉黑')
 
     @router.patch('/{entry_id}')
     def update(entry_id: int, data: SellerUpdate, request: Request):
         with catalog.connect() as db:
-            db.execute('BEGIN IMMEDIATE')
+            write_lock(db)
             old = db.execute('SELECT * FROM seller_blacklist WHERE id=?', (entry_id,)).fetchone()
             if not old:
                 raise HTTPException(404, '黑名单记录不存在')
             if old['reason'] == data.reason and bool(old['active']) == data.active:
-                return dict(old)
+                return public_entry(old)
             now = datetime.now(timezone.utc).isoformat()
             db.execute('UPDATE seller_blacklist SET reason=?,active=?,updated_at=? WHERE id=?',
                        (data.reason, int(data.active), now, entry_id))
-            entry = dict(db.execute('SELECT * FROM seller_blacklist WHERE id=?', (entry_id,)).fetchone())
+            entry = public_entry(db.execute('SELECT * FROM seller_blacklist WHERE id=?', (entry_id,)).fetchone())
             action = 'edit' if old['active'] == data.active else ('block' if data.active else 'unblock')
             record(db, entry, request, action)
             return entry

@@ -1,4 +1,4 @@
-"""Transactional SQLite repository; upstream IDs are scoped by adapter namespace."""
+"""Transactional repository; upstream IDs are scoped by adapter namespace."""
 import hashlib
 import json
 import sqlite3
@@ -9,6 +9,7 @@ from .models import ImportBundle
 from .categories import CATEGORY_SQL, category_option
 from .blacklist import initialize, seller_key, BLOCKED_SQL, active_entries, matches
 from .editing import initialize as initialize_editing, register as register_editing
+from .database import PostgresConnection, row_factory, write_lock, read_snapshot
 
 
 def encoded(data):
@@ -17,6 +18,20 @@ def encoded(data):
 
 class Catalog:
     def __init__(self, path):
+        self.postgres = str(path).startswith(('postgresql://', 'postgres://'))
+        if self.postgres:
+            self.path = str(path)
+            with self.connect() as db:
+                write_lock(db, 'schema')
+                db.raw.execute(Path(__file__).with_name('postgres.sql').read_text())
+                from .prelisting import initialize as initialize_prelisting
+                initialize_prelisting(db)
+                if not db.execute('SELECT 1 FROM migrations WHERE version=7').fetchone():
+                    from .projection import rebuild
+                    rebuild(db)
+                db.executemany('INSERT INTO migrations VALUES(?) ON CONFLICT DO NOTHING',
+                               [(v,) for v in (1,2,3,5,6,7)])
+            return
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
@@ -61,6 +76,13 @@ class Catalog:
 
     @contextmanager
     def connect(self):
+        if self.postgres:
+            import psycopg
+            with psycopg.connect(self.path, row_factory=row_factory, connect_timeout=10) as connection:
+                connection.execute("SET LOCAL lock_timeout='20s'")
+                connection.execute("SET LOCAL statement_timeout='120s'")
+                yield PostgresConnection(connection)
+            return
         db = sqlite3.connect(self.path, timeout=20)
         db.row_factory = sqlite3.Row
         db.create_function("seller_key", 1, seller_key, deterministic=True)
@@ -77,6 +99,7 @@ class Catalog:
         seen = set()
         rank = {"source_only": 0, "editor_snapshot": 1, "persisted_readback": 2}
         with self.connect() as db:
+            write_lock(db)
             for item in bundle.listings:
                 if item.external_id in seen:
                     raise ValueError("同一次导入存在重复 external_id")
@@ -106,7 +129,7 @@ class Catalog:
                         continue
                     if datetime.fromisoformat(item.observed_at) == datetime.fromisoformat(old["observed_at"]):
                         raise ValueError(f"同一采集时间内容冲突：{item.external_id}；请使用真实的新采集时间")
-                db.execute("INSERT OR IGNORE INTO products VALUES(?,?,?)", (pid,item.source,item.asin))
+                db.execute("INSERT INTO products VALUES(?,?,?) ON CONFLICT DO NOTHING", (pid,item.source,item.asin))
                 search = " ".join([item.asin,item.sku,item.platform_sku,item.copy.title,item.seller,
                                    item.store,item.brand,item.creator,item.template,item.source,
                                    *[f"{v.asin} {v.sku} {v.seller}" for v in item.variants]]).casefold()
@@ -122,10 +145,11 @@ class Catalog:
                 db.execute("DELETE FROM variants WHERE listing_id=?", (lid,))
                 db.executemany("INSERT INTO variants VALUES(?,?,?,?)", [
                     (lid,v.sku,v.asin,encoded(v.model_dump())) for v in item.variants])
-                cur = db.execute("INSERT OR IGNORE INTO snapshots(listing_id,digest,observed_at,evidence_kind,data_json) VALUES(?,?,?,?,?)",
+                cur = db.execute("INSERT INTO snapshots(listing_id,digest,observed_at,evidence_kind,data_json) VALUES(?,?,?,?,?) ON CONFLICT DO NOTHING",
                                  (lid,digest,item.observed_at,item.evidence_kind,raw))
                 result["snapshots_added"] += cur.rowcount
                 result["updated" if old else "created"] += 1
+                self.refresh(db, lid)
             db.execute("INSERT INTO imports(at,namespace,label,digest,result_json) VALUES(?,?,?,?,?)",
                        (datetime.now(timezone.utc).isoformat(),bundle.namespace,bundle.label,
                         hashlib.sha256(encoded(bundle.model_dump()).encode()).hexdigest(),encoded(result)))
@@ -134,26 +158,35 @@ class Catalog:
                            (int(datetime.now(timezone.utc).timestamp()),actor_id,'catalog.import',bundle.namespace))
         return result
 
+    def refresh(self, db, lid):
+        if self.postgres:
+            from .projection import refresh
+            refresh(db, lid)
+
+    @property
+    def category_sql(self):
+        return 'category' if self.postgres else CATEGORY_SQL
+
     def stats(self):
         with self.connect() as db:
+            read_snapshot(db)
             counts = dict(db.execute("""SELECT COUNT(*) listings,COALESCE(SUM(saved),0) saved,
                 COALESCE(SUM(complete),0) complete,COALESCE(SUM(verified),0) verified,
-                COALESCE(SUM(evidence_kind='persisted_readback'),0) reopened FROM current_listings""").fetchone())
+                COALESCE(SUM(CASE WHEN evidence_kind='persisted_readback' THEN 1 ELSE 0 END),0) reopened FROM current_listings""").fetchone())
             counts["products"] = db.execute("SELECT COUNT(*) FROM products").fetchone()[0]
             counts["variants"] = db.execute("SELECT COUNT(*) FROM variants").fetchone()[0]
             counts["stores"] = [dict(r) for r in db.execute("SELECT store,COUNT(*) count FROM current_listings GROUP BY store ORDER BY store")]
             counts["brands"] = [r[0] for r in db.execute("SELECT DISTINCT brand FROM current_listings ORDER BY brand")]
-            counts["dates"] = [r[0] for r in db.execute("SELECT DISTINCT substr(uploaded_at,1,10) FROM listings ORDER BY uploaded_at DESC")]
+            counts["dates"] = [r[0] for r in db.execute("SELECT DISTINCT substr(uploaded_at,1,10) AS day FROM listings ORDER BY day DESC")]
             counts["categories"] = [category_option(row['category']) | {'count': row['count']}
-                for row in db.execute(f"SELECT {CATEGORY_SQL} AS category,COUNT(*) AS count FROM current_listings GROUP BY category ORDER BY category='' ASC,category COLLATE NOCASE")]
+                for row in db.execute(f"SELECT category,COUNT(*) AS count FROM (SELECT {self.category_sql} AS category FROM current_listings) c GROUP BY category ORDER BY category='' ASC,lower(category)")]
             counts["review"] = counts["listings"] - counts["complete"]
             return counts
 
-    @staticmethod
-    def filter_sql(q="", store="", brand="", status="", date="", category="", seller_status=""):
+    def filter_sql(self, q="", store="", brand="", status="", date="", category="", seller_status=""):
         clauses, args = ["1=1"], []
         if q:
-            clauses.append("instr(search_text,?)>0"); args.append(q.casefold())
+            clauses.append(f"{'strpos' if self.postgres else 'instr'}(search_text,?)>0"); args.append(q.casefold())
         for key, value in (("store",store),("brand",brand)):
             if value:
                 clauses.append(f"{key}=?"); args.append(value)
@@ -164,11 +197,14 @@ class Catalog:
                 "unconfirmed":"saved=0","reopened":"evidence_kind='persisted_readback'",
                 "snapshot":"evidence_kind!='persisted_readback'"}[status])
         if seller_status in {"blocked", "unblocked"}:
-            clauses.append(("NOT " if seller_status == "unblocked" else "") + BLOCKED_SQL)
+            blocked = """EXISTS (SELECT 1 FROM current_listing_sellers s JOIN seller_blacklist b
+                ON b.source_key=s.source_key AND b.seller_key=s.seller_key
+                WHERE b.active=1 AND s.listing_id=listings.id)""" if self.postgres else BLOCKED_SQL
+            clauses.append(("NOT " if seller_status == "unblocked" else "") + blocked)
         where = " AND ".join(clauses)
         if category:
             if category == 'missing' or category.startswith('type:'):
-                where += f" AND ({CATEGORY_SQL})=?"
+                where += f" AND ({self.category_sql})=?"
                 args.append('' if category == 'missing' else category[5:])
             else:
                 where += ' AND 0=1'
@@ -177,8 +213,9 @@ class Catalog:
     def find(self, q="", store="", brand="", status="", date="", page=1, page_size=24, category="", seller_status=""):
         where, args = self.filter_sql(q,store,brand,status,date,category,seller_status)
         with self.connect() as db:
+            read_snapshot(db)
             total = db.execute(f"SELECT COUNT(*) FROM current_listings AS listings WHERE {where}",args).fetchone()[0]
-            rows = db.execute(f"SELECT id,data_json,{CATEGORY_SQL} AS category FROM current_listings AS listings WHERE {where} ORDER BY uploaded_at DESC,id LIMIT ? OFFSET ?",
+            rows = db.execute(f"SELECT id,data_json,{self.category_sql} AS category FROM current_listings AS listings WHERE {where} ORDER BY uploaded_at DESC,id LIMIT ? OFFSET ?",
                               [*args,page_size,(page-1)*page_size]).fetchall()
             entries = active_entries(db)
             items=[]
@@ -195,7 +232,8 @@ class Catalog:
 
     def get(self, listing_id):
         with self.connect() as db:
-            r=db.execute(f"SELECT data_json,{CATEGORY_SQL} AS category FROM current_listings WHERE id=?",(listing_id,)).fetchone()
+            read_snapshot(db)
+            r=db.execute(f"SELECT data_json,{self.category_sql} AS category FROM current_listings WHERE id=?",(listing_id,)).fetchone()
             if not r:return None
             return json.loads(r[0]) | dict(id=listing_id,category=r['category'],
                 seller_blacklist=matches(json.loads(r[0]), active_entries(db)),history=[dict(h) for h in db.execute(

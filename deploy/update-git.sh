@@ -14,13 +14,13 @@ main() {
   local app_dir=/www/wwwroot/jiwu data_dir=/www/server/jiwu-data
   local backup_root=/www/server/jiwu-backups before_sha target_sha backup_dir origin
   local stopped=0
-  for executable in git node npm flock systemctl runuser curl; do
+  for executable in git node npm flock systemctl runuser curl pg_dump tar; do
     command -v "$executable" >/dev/null || { printf '缺少命令：%s\n' "$executable" >&2; return 1; }
   done
   exec 9>/run/lock/jiwu-update.lock
   flock -n 9 || { printf '%s\n' '已有更新任务运行。' >&2; return 1; }
   cd "$app_dir"
-  [[ -x .venv/bin/python && -f "$data_dir/catalog.db" && -f /etc/jiwu.env ]] || {
+  [[ -x .venv/bin/python && -f /etc/jiwu.env ]] || {
     printf '%s\n' '本脚本仅更新已完成首次安装的服务。' >&2; return 1;
   }
   [[ $(git branch --show-current) == main ]] || { printf '%s\n' '当前不是 main 分支，停止更新。' >&2; return 1; }
@@ -38,7 +38,9 @@ for line in Path('/etc/jiwu.env').read_text().splitlines():
         values[k] = v
 assert values.get('CATALOG_AUTH_ENABLED') == '1', '团队登录必须启用'
 assert values.get('CATALOG_COOKIE_SECURE') == '1', '需使用 HTTPS Cookie'
-assert values.get('CATALOG_DB') == '/www/server/jiwu-data/catalog.db', '数据库路径与部署配置不符'
+assert values.get('CATALOG_DATABASE_URL','').startswith(('postgresql://','postgres://')), '先完成 PostgreSQL 首次迁移'
+assert values.get('CATALOG_IMAGE_STORAGE') == 'filesystem', '当前部署使用图片目录'
+assert values.get('CATALOG_IMAGE_ROOT') == '/www/server/jiwu-data/images', '图片目录配置不符'
 origin = values.get('CATALOG_PUBLIC_ORIGIN', '')
 u = urlparse(origin)
 assert u.scheme == 'https' and u.hostname and not u.username and not u.password and not u.query and not u.fragment and u.path in ('', '/'), '请先配置实际 HTTPS 访问地址（域名或 IP）'
@@ -64,7 +66,8 @@ PY
   # Stop before backup so the backup includes the last accepted write.
   stopped=1
   systemctl stop jiwu
-  runuser -u jiwu -- .venv/bin/python -m catalog --db "$data_dir/catalog.db" backup "$backup_dir/catalog.db"
+  bash deploy/backup.sh > "$backup_dir/data-backup.txt"
+  cat "$backup_dir/data-backup.txt"
   git merge --ff-only "$target_sha"
   .venv/bin/python -m pip install -r deploy/requirements.lock
   .venv/bin/python -m pip install --no-deps -e .

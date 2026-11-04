@@ -16,12 +16,13 @@ from .blacklist import blacklist_routes
 from .prelisting import prelisting_routes
 from .editing import editing_routes
 from .images import image_routes
+from .object_storage import configured_storage
 
 ROOT=Path(__file__).resolve().parent.parent
 
 
 def create_app(database=None):
-    catalog=Catalog(database or os.environ.get('CATALOG_DB',ROOT/'data/catalog.db'))
+    catalog=Catalog(database or os.environ.get('CATALOG_DATABASE_URL') or os.environ.get('CATALOG_DB',ROOT/'data/catalog.db'))
     auth_enabled=os.environ.get('CATALOG_AUTH_ENABLED','0') == '1'
     public_origin=os.environ.get('CATALOG_PUBLIC_ORIGIN','').rstrip('/')
     secure_cookie=os.environ.get('CATALOG_COOKIE_SECURE','1') != '0'
@@ -39,7 +40,9 @@ def create_app(database=None):
     app.include_router(blacklist_routes(catalog))
     app.include_router(prelisting_routes(catalog))
     app.include_router(editing_routes(catalog))
-    app.include_router(image_routes(catalog))
+    storage=configured_storage(catalog)
+    app.state.image_storage=storage
+    app.include_router(image_routes(catalog,storage))
 
     @app.middleware('http')
     async def guard(request:Request, call_next):
@@ -88,7 +91,12 @@ def create_app(database=None):
         return result
 
     @app.get('/api/health')
-    def health():return {'status':'ok','schema_version':1}
+    def health():
+        with catalog.connect() as db:
+            db.execute('SELECT 1').fetchone()
+        return {'status':'ok','schema_version':7 if catalog.postgres else 6,
+                'database':'postgresql' if catalog.postgres else 'sqlite',
+                'images':storage.backend if storage else 'sqlite'}
 
     @app.get('/api/stats')
     def stats():return catalog.stats()

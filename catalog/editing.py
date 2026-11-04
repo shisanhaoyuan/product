@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .models import Variant, safe_url
 from .variant_fields import with_variant_fields
+from .database import write_lock
 
 
 LOCKED_FIELDS = {
@@ -194,7 +195,7 @@ def editing_routes(catalog):
 
     def mutate(listing_id, data, request, reset=False):
         with catalog.connect() as db:
-            db.execute('BEGIN IMMEDIATE')
+            write_lock(db)
             row = db.execute('SELECT * FROM listings WHERE id=?', (listing_id,)).fetchone()
             if not row:
                 raise HTTPException(404, '商品不存在')
@@ -229,6 +230,7 @@ def editing_routes(catalog):
             db.execute('INSERT INTO product_edit_events(listing_id,at,actor_id,action,data_json) VALUES(?,?,?,?,?)',
                 (listing_id, now, user['id'] if user else None, 'reset' if reset else 'edit',
                  encoded({'before': json.loads(before), 'after': changes})))
+            catalog.refresh(db, listing_id)
         return catalog.get(listing_id)
 
     @router.patch('/{listing_id}/edits')

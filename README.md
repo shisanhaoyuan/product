@@ -25,7 +25,7 @@ python -m catalog serve
 
 ## 技术结构与开发
 
-前端使用 Vue 3、TypeScript、Vue Router 和 Vite；后端保留 Python FastAPI，数据库为 SQLite。组件库未绑定大型 UI 框架，图标使用 Lucide Vue，颜色和尺寸集中在 CSS 变量中。页面按路由拆包。具体分层、修改规则和发布步骤见 [MAINTENANCE.md](MAINTENANCE.md)。
+前端使用 Vue 3、TypeScript、Vue Router 和 Vite；后端保留 Python FastAPI，服务器数据库为 PostgreSQL，本机兼容 SQLite。组件库未绑定大型 UI 框架，图标使用 Lucide Vue，颜色和尺寸集中在 CSS 变量中。页面按路由拆包。具体分层、修改规则和发布步骤见 [MAINTENANCE.md](MAINTENANCE.md)。
 
 开发时在一个终端运行 `python -m catalog serve`；另一终端执行：
 
@@ -93,7 +93,9 @@ python -m catalog import-json /path/to/bundle.json
 
 ## 备份与迁移
 
-完整备份（包含快照和导入记录，使用 SQLite 在线备份而非直接复制活跃数据库）：
+以下为本机 SQLite 备份方法。服务器 PostgreSQL＋图片目录必须使用 [备份与恢复说明](deploy/宝塔部署说明.md)，同时备份两者。
+
+SQLite 完整备份（包含快照和导入记录，使用在线备份而非直接复制活跃数据库）：
 
 ```sh
 python -m catalog backup /path/to/catalog-backup.db
@@ -113,7 +115,7 @@ python -m catalog --db /path/to/catalog-backup.db serve
 
 团队服务器版已增加账号登录、管理员/编辑员/只读角色、首次改密、账号禁用、会话撤销及操作记录。通过 `CATALOG_AUTH_ENABLED=1` 显式启用；本机模式仍保持原来行为。阿里云宝塔的配置、完整迁移、systemd、Nginx 和备份步骤见 [宝塔部署说明](deploy/宝塔部署说明.md)。尚未执行实际服务器部署。
 
-Vue 前端、FastAPI API、SQLite 数据层和来源适配器各自独立，可由后续适配器增量更新。生产前端需要 Node 构建，构建后由 Python 同源提供页面和 API；运行不调用 AI，不产生模型费用。可通过 `CATALOG_DB` 更换数据库文件位置；数据模型保留 Schema 版本、命名空间、稳定外部身份和来源证据，方便后续 ERP API、定时任务和多平台接入。
+Vue 前端、FastAPI API、数据库层和来源适配器各自独立，可由后续适配器增量更新。生产前端需要 Node 构建，构建后由 Python 同源提供页面和 API；运行不调用 AI，不产生模型费用。服务器通过 `CATALOG_DATABASE_URL` 配置 PostgreSQL，`CATALOG_IMAGE_STORAGE=filesystem` 与 `CATALOG_IMAGE_ROOT` 配置独立图片目录；本机兼容 `CATALOG_DB` 指定 SQLite 文件；数据模型保留 Schema 版本、命名空间、稳定外部身份和来源证据，方便后续 ERP API、定时任务和多平台接入。
 
 本机模式不启用登录；服务器团队模式必须启用登录和 HTTPS 并配置定期备份。三种角色均可读取和导出全库，暂不按店铺隔离。`CATALOG_IMPORT_TOKEN` 可额外保护导入 API，但不绕过登录和角色验证。默认拒绝跨源浏览器写入，不代理远程图片或执行导入 HTML。多用户高并发写入时可替换 repository 层为 PostgreSQL。
 
@@ -165,7 +167,7 @@ npm audit
 
 子商品图片支持点击缩略图放大、上一张/下一张、打开原图，以及「管理图片」中的单张删除和链接添加（每行一条，最多 100 张，自动去重）。图片增删即时保存到当前唯一 SKU，失败会保留原图片并显示错误。只读成员可以预览，不能增删。原始来源快照仍保留，修改未同步 ERP。
 
-「本地导入图片」支持多选 JPG、PNG、WebP，单张最多 8 MB、2500 万像素。服务端解码校验、校正方向并清除元数据后保存，重复图片去重。图片存入 SQLite 的 `image_assets` 表（迁移 6），完整数据库备份包含图片二进制；商品 JSON 导出不包含二进制，迁移应使用完整数据库备份。上传成功但尚未关联商品的文件可能暂留数据库。新增运行依赖为 Pillow 和 httpx，升级时重新安装项目依赖。
+「本地导入图片」支持多选 JPG、PNG、WebP，单张最多 8 MB、2500 万像素。服务端解码校验、校正方向并清除元数据后保存，重复图片去重。旧版/本机默认 SQLite 模式将图片存入 `image_assets` 表（迁移 6）；服务器 filesystem 模式将图片存入独立目录，PostgreSQL 只保存图片元数据，完整备份必须同时包含数据库和图片目录；商品 JSON 导出不包含二进制，迁移应使用完整数据库备份。上传成功但尚未关联商品的文件可能暂留数据库。新增运行依赖为 Pillow 和 httpx，升级时重新安装项目依赖。
 
 「按 ASIN 重新抓取」使用当前子 SKU 已记录的 Amazon ASIN，先核验网页当前 ASIN，再读取该商品图库；无法读取图库时尝试主图。抓取结果先预览勾选，点击「添加所选图片」才合并保存，不替换现有图片。暂仅支持 Amazon 美国站，遇到验证码、网络失败、缺少 ASIN 或页面身份不一致时显示原因并保留原图片；不保证每次能取得完整图库。
 

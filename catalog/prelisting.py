@@ -1,7 +1,6 @@
 """Reviewable listing plans. No publisher or external side effects live here."""
 import hashlib
 import json
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_FLOOR, ROUND_HALF_UP
@@ -11,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .blacklist import active_entries, matches, seller_key
+from .database import INTEGRITY_ERRORS, write_lock, read_snapshot, insert_id, is_postgres
 
 # Only names visible in the user's screenshots; marketplace aliases are explicit.
 SCREENSHOT_STORES = [
@@ -30,7 +30,8 @@ def fingerprint(value):
 
 
 def initialize(db):
-    db.executescript('''
+    if not is_postgres(db):
+        db.executescript('''
         CREATE TABLE IF NOT EXISTS listing_stores(
             id INTEGER PRIMARY KEY, name TEXT NOT NULL, name_key TEXT NOT NULL UNIQUE,
             marketplace_name TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1,
@@ -55,7 +56,7 @@ def initialize(db):
     if not db.execute('SELECT 1 FROM migrations WHERE version=4').fetchone():
         stores = [(name, alias, 'user_screenshot') for name, alias in SCREENSHOT_STORES]
         stores += [(r[0], r[0], 'catalog') for r in db.execute('SELECT DISTINCT store FROM listings') if r[0].strip()]
-        db.executemany('INSERT OR IGNORE INTO listing_stores(name,name_key,marketplace_name,origin) VALUES(?,?,?,?)',
+        db.executemany('INSERT INTO listing_stores(name,name_key,marketplace_name,origin) VALUES(?,?,?,?) ON CONFLICT DO NOTHING',
                        [(name, seller_key(name), alias, origin) for name, alias, origin in stores])
         db.execute('INSERT INTO migrations VALUES(4)')
 
@@ -264,21 +265,23 @@ def prelisting_routes(catalog):
     @router.get('/api/listing-stores')
     def stores():
         with catalog.connect() as db:
-            return [dict(r) for r in db.execute('SELECT * FROM listing_stores ORDER BY name COLLATE NOCASE')]
+            return [dict(r) for r in db.execute('SELECT * FROM listing_stores ORDER BY lower(name)')]
 
     @router.post('/api/listing-stores', status_code=201)
     def add_store(data: StoreInput):
         try:
             with catalog.connect() as db:
-                cur = db.execute("INSERT INTO listing_stores(name,name_key,marketplace_name,origin) VALUES(?,?,?,'manual')",
+                write_lock(db)
+                store_id = insert_id(db, "INSERT INTO listing_stores(name,name_key,marketplace_name,origin) VALUES(?,?,?,'manual')",
                                  (data.name, seller_key(data.name), data.marketplace_name or data.name))
-                return dict(db.execute('SELECT * FROM listing_stores WHERE id=?', (cur.lastrowid,)).fetchone())
-        except sqlite3.IntegrityError:
+                return dict(db.execute('SELECT * FROM listing_stores WHERE id=?', (store_id,)).fetchone())
+        except INTEGRITY_ERRORS:
             raise HTTPException(409, '店铺已经存在，请使用已有店铺')
 
     @router.patch('/api/listing-stores/{store_id}')
     def store_status(store_id: int, data: StoreState):
         with catalog.connect() as db:
+            write_lock(db)
             if db.execute('UPDATE listing_stores SET active=? WHERE id=?', (int(data.active), store_id)).rowcount != 1:
                 raise HTTPException(404, '店铺不存在')
             return {'ok': True}
@@ -286,14 +289,14 @@ def prelisting_routes(catalog):
     @router.post('/api/prelisting/preview')
     def preview(data: PlanInput):
         with catalog.connect() as db:
-            db.execute('BEGIN')
+            read_snapshot(db)
             return build_preview(catalog, db, data)[0]
 
     @router.post('/api/prelisting/batches', status_code=201)
     def create(data: CreateInput, request: Request):
         request_hash = fingerprint(data.model_dump(mode='json'))
         with catalog.connect() as db:
-            db.execute('BEGIN IMMEDIATE')
+            write_lock(db)
             prior = db.execute('SELECT id,request_hash FROM prelisting_batches WHERE request_key=?', (str(data.request_key),)).fetchone()
             if prior:
                 if prior['request_hash'] != request_hash:
@@ -335,7 +338,7 @@ def prelisting_routes(catalog):
     @router.post('/api/prelisting/batches/{bid}/action')
     def action(bid: str, data: BatchAction, request: Request):
         with catalog.connect() as db:
-            db.execute('BEGIN IMMEDIATE')
+            write_lock(db)
             current=batch(db,bid)
             target='confirmed' if data.action == 'confirm' else 'cancelled'
             if current['status'] == target:

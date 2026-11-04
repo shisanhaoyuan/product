@@ -2,7 +2,7 @@
 
 仓库：`git@github.com:shisanhaoyuan/product.git`，分支 `main`。
 仓库根目录就是商品库项目。此方式替代压缩包上传代码，数据库仍须单独迁移。
-服务器实际系统、Python 路径、域名及已有服务确认后，再执行首次安装。
+目标服务器为 Alibaba Cloud Linux 3，使用已安装的 Python 3.11、Node 22；PostgreSQL 与 HTTPS 需按部署说明配置。
 
 ## 首次安装
 
@@ -14,9 +14,9 @@
 目标目录必须不存在；已有目录不要直接覆盖：
 
 ```bash
-git clone --branch main --single-branch git@github.com:shisanhaoyuan/product.git /www/wwwroot/jiwu
+git clone --branch main --single-branch https://github.com/shisanhaoyuan/product.git /www/wwwroot/jiwu
 cd /www/wwwroot/jiwu
-python3.12 -m venv .venv
+python3.11 -m venv .venv
 .venv/bin/python -m pip install -r deploy/requirements.lock
 .venv/bin/python -m pip install --no-deps -e .
 .venv/bin/python -m pip check
@@ -26,9 +26,9 @@ npm run build
 cd ..
 ```
 
-`python3.12` 按已确认的服务器 Python 路径替换。随后按[宝塔部署说明](宝塔部署说明.md)创建 `jiwu` 服务账号、迁移数据库、配置 `/etc/jiwu.env`、创建管理员、安装 systemd 服务和配置 HTTPS 反向代理。代码目录保持 root 所有，服务账号只读；数据目录由服务账号写入。不要把网站静态根目录直接指向 Git 项目。
+`python3.11` 按已确认的服务器 Python 路径替换。随后按[宝塔部署说明](宝塔部署说明.md)创建 `jiwu` 服务账号、迁移数据库、配置 `/etc/jiwu.env`、创建管理员、安装 systemd 服务和配置 HTTPS 反向代理。代码目录保持 root 所有，服务账号只读；数据目录由服务账号写入。不要把网站静态根目录直接指向 Git 项目。
 
-数据放在 `/www/server/jiwu-data/catalog.db`，环境配置放在 `/etc/jiwu.env`，均在 Git 仓库外。首次迁移使用 SQLite 在线备份，包含商品、修改记录、账号及本地图片二进制。服务器投入使用后，不再用本机数据库覆盖服务器数据库。
+生产使用 PostgreSQL，图片放在 `/www/server/jiwu-data/images`，配置放在 `/etc/jiwu.env`，均独立于 Git。首次将 SQLite 在线备份通过 `migrate-sqlite` 迁入空 PostgreSQL；不能直接复制 .db 当作生产库。完整步骤见宝塔部署说明。投入使用后不再用本机库覆盖。
 
 ## 后续一条命令更新
 
@@ -46,7 +46,7 @@ Let's Encrypt 的 `shortlived` profile 支持 IP 证书，有效期为 160 小�
 bash /www/wwwroot/jiwu/deploy/update-git.sh
 ```
 
-脚本会检查环境和代码是否干净，拉取远端提交；遇到本地修改或历史分叉则停止，不强制重置。随后备份旧代码及前端构建，停止服务并备份完整数据库，再快进到已获取的提交、安装锁定依赖、重新构建前端、启动服务并检查本机健康接口。更新期间有短暂停机。即使 Git 代码已是最新，也会执行安装与构建，允许修复上次未完成的更新。
+脚本会检查环境和代码是否干净，拉取远端提交；遇到本地修改或历史分叉则停止，不强制重置。随后备份旧代码及前端构建，停止服务并备份 PostgreSQL 和图片目录，再快进到已获取的提交、安装锁定依赖、重新构建前端、启动服务并检查本机健康接口。更新期间有短暂停机。即使 Git 代码已是最新，也会执行安装与构建，允许修复上次未完成的更新。
 
 脚本不修改环境文件、Nginx、服务定义或公网端口；这些部署配置如需变更，应单独核对后应用。它不会覆盖商品库，也不会重复计算价格。数据库结构迁移仍由新版本启动时执行。只通过 `git pull` 而不构建前端、安装依赖和重启服务，不能保证更新生效。
 

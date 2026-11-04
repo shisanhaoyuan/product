@@ -2,12 +2,12 @@
 import hashlib
 import re
 import secrets
-import sqlite3
 import time
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
+from .database import INTEGRITY_ERRORS, write_lock, insert_id
 
 COOKIE = 'catalog_session'
 ROLES = {'admin', 'editor', 'viewer'}
@@ -43,6 +43,8 @@ class AuthStore:
     def __init__(self, catalog):
         self.catalog = catalog
         self.dummy_hash = password_hash(secrets.token_urlsafe(32))
+        if catalog.postgres:
+            return  # Versioned PostgreSQL schema is initialized by Catalog.
         with catalog.connect() as db:
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS users(
@@ -75,11 +77,12 @@ class AuthStore:
         hashed = password_hash(password)
         try:
             with self.catalog.connect() as db:
-                cursor = db.execute('INSERT INTO users(username,password_hash,role,must_change_password) VALUES(?,?,?,?)',
+                write_lock(db, 'auth')
+                user_id = insert_id(db, 'INSERT INTO users(username,password_hash,role,must_change_password) VALUES(?,?,?,?)',
                                     (username, hashed, role, int(temporary)))
                 self.audit(db, actor, 'user.create', username)
-                return public_user(db.execute('SELECT * FROM users WHERE id=?', (cursor.lastrowid,)).fetchone())
-        except sqlite3.IntegrityError as exc:
+                return public_user(db.execute('SELECT * FROM users WHERE id=?', (user_id,)).fetchone())
+        except INTEGRITY_ERRORS as exc:
             raise ValueError('账号已经存在') from exc
 
     def login(self, username, password, ip):
@@ -89,10 +92,10 @@ class AuthStore:
         keys = [(digest('user:' + username), 10), (digest('ip:' + ip), 60)]
         blocked = False
         with self.catalog.connect() as db:
-            db.execute('BEGIN IMMEDIATE')
+            write_lock(db, 'auth')
             db.execute('DELETE FROM auth_attempts WHERE started < ?', (now - 900,))
             for key, limit in keys:
-                db.execute('INSERT INTO auth_attempts VALUES(?,?,1) ON CONFLICT(key) DO UPDATE SET attempts=attempts+1', (key, now))
+                db.execute('INSERT INTO auth_attempts VALUES(?,?,1) ON CONFLICT(key) DO UPDATE SET attempts=auth_attempts.attempts+1', (key, now))
                 count = db.execute('SELECT attempts FROM auth_attempts WHERE key=?', (key,)).fetchone()[0]
                 blocked |= count > limit
             row = db.execute('SELECT * FROM users WHERE username=?', (username,)).fetchone()
@@ -103,7 +106,7 @@ class AuthStore:
             raise HTTPException(401, '账号或密码错误')
         token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         with self.catalog.connect() as db:
-            db.execute('BEGIN IMMEDIATE')
+            write_lock(db, 'auth')
             # Recheck under the write lock so disable/reset cannot race a login.
             current = db.execute('SELECT * FROM users WHERE id=?', (row['id'],)).fetchone()
             if not current['active'] or current['password_hash'] != row['password_hash']:
@@ -124,7 +127,7 @@ class AuthStore:
 
     def update_user(self, user_id, role, active, actor):
         with self.catalog.connect() as db:
-            db.execute('BEGIN IMMEDIATE')
+            write_lock(db, 'auth')
             row = db.execute('SELECT * FROM users WHERE id=?', (user_id,)).fetchone()
             if not row:
                 raise HTTPException(404, '账号不存在')
@@ -138,7 +141,7 @@ class AuthStore:
     def change_password(self, user_id, old_password, new_password):
         hashed = password_hash(new_password)
         with self.catalog.connect() as db:
-            db.execute('BEGIN IMMEDIATE')
+            write_lock(db, 'auth')
             row = db.execute('SELECT * FROM users WHERE id=?', (user_id,)).fetchone()
             if not password_matches(old_password, row['password_hash']):
                 raise HTTPException(400, '当前密码不正确')

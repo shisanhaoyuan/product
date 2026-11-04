@@ -4,7 +4,7 @@
 
 这是独立商品库。数字酋长上传项目只作为可选历史数据来源；服务无需导入或运行上传脚本。界面展示记录值，不计算价格倍率、不修改库存、不向 ERP 回写或刊登。
 
-当前面向本机单用户使用。Vue 3 + TypeScript 管理页面和交互；FastAPI 管理 API；SQLite 保存商品、模板、子变体、快照和导入记录。生产页面与 API 同源，开发时由 Vite 代理 API。无需同时引入 React 或另一套路由/状态框架。
+当前支持本机使用和服务器团队使用。Vue 3 + TypeScript 管理页面和交互；FastAPI 管理 API；生产 PostgreSQL 保存商品、模板、子变体、快照、账号及审计，服务器独立目录保存图片；SQLite 保留为本机和旧数据迁移模式。生产页面与 API 同源，开发时由 Vite 代理 API。无需同时引入 React 或另一套路由/状态框架。
 
 ## 代码位置
 
@@ -67,7 +67,7 @@ python validation/frontend_state_check.py
 
 ## 升级与恢复
 
-1. 用 `python -m catalog backup /path/to/backup.db` 做在线完整备份，保留当前代码与依赖锁。
+1. 生产用 `bash deploy/backup.sh` 停服备份 PostgreSQL 和图片目录；本机 SQLite 用 `python -m catalog backup /path/to/backup.db`。保留当前代码与依赖锁。
 2. 在测试数据库验证导入和新功能，不用生产库试写。升级依赖时提交锁文件并重新验收。
 3. 构建前端并部署整套 `web/dist`。运行服务期间应原子替换完成的目录，避免提供构建中的半成品；本机升级可先停服务再构建。
 4. 后端代码更新需要重启；仅静态前端更新通常刷新页面即可。验收品牌、SKU、价格、库存与文案等关键数据。
@@ -80,3 +80,11 @@ python validation/frontend_state_check.py
 已实现可选团队登录及全库级角色权限，实施见 `deploy/宝塔部署说明.md`。服务器必须显式启用登录，完成 HTTPS、定时备份和恢复演练后再开放团队使用。数据库不进入静态目录或版本库；服务默认只监听本机。账号密码恢复用服务器 CLI；后台不可直接读取密码或会话 token。
 
 需要自动同步时增加独立适配器与任务记录，保留来源身份及幂等契约。出现多用户写入或更大并发后评估 PostgreSQL。尚未需要的任务队列、微服务和大型状态库不提前加入。
+
+## PostgreSQL 与图片存储维护
+
+`catalog/database.py` 处理参数绑定、行格式和事务锁，`postgres.sql` 为原生 PostgreSQL 结构。原始 JSON 使用 TEXT 原样保留；`projection.py` 与 SQLite 共用编辑合并逻辑，在导入/编辑事务内更新查询表。不要直接改业务表绕过查询投影更新。商品写入共用事务 advisory lock，编辑版本和预上架摘要冲突仍返回 409。
+
+`object_storage.py` 提供 put/get 接口，filesystem 为当前生产方案；以后可添加其他后端，已有图片需单独迁移，不能只改环境变量。OSS 是可选依赖且本次未做云端验证。外链图片仍为外链。
+
+验证：`python -m pytest -q`；真实 PostgreSQL：`python -m pytest -q --postgres-dsn postgresql://127.0.0.1:55432/jiwu_test`。后者只能使用可销毁测试库，有建 schema、建数据库权限（恢复演练需要），pg_dump/pg_restore 在 PATH 中；测试创建临时 schema/数据库并清理。禁止用生产 DSN 跑测试。
