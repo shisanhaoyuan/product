@@ -38,6 +38,16 @@ Let's Encrypt 的 `shortlived` profile 支持 IP 证书，有效期为 160 小�
 
 参考：[Let's Encrypt profiles](https://letsencrypt.org/docs/profiles/#shortlived)、[Certbot 参数说明](https://eff-certbot.readthedocs.io/en/stable/using.html)。IP 证书尚未在目标服务器申请或验证。无需改动应用的 HTTPS 限制，也不要将公网部署改成无登录或明文 Cookie 模式。
 
+已有 `/etc/letsencrypt/live/jiwu-ip/` 证书、独立 Certbot 位于 `/opt/jiwu-certbot`、80 端口已能验证 `/www/server/jiwu-acme` 时，可用 root 执行：
+
+```bash
+python3.11 deploy/configure_ip_https.py 8.153.77.160
+```
+
+脚本新增 `jiwu_https.conf` 和 `jiwu-cert-renew.timer`，不覆盖其他站点，也不更改现有 80 端口用途。每六小时检查续期，成功后检查并重载 Nginx；安装后验证本机可信 HTTPS 和模拟续期。目标配置已存在且内容不同时拒绝覆盖。配置测试失败清理本次新增文件；重载或续期验证失败则保留配置和日志供排查。请确认公网 TCP 443 已放行，并用浏览器验证登录。
+
+续期状态：`systemctl list-timers jiwu-cert-renew.timer`；失败日志：`journalctl -u jiwu-cert-renew.service --no-pager`。保持 80 端口验证路径可从公网访问。短期 IP 证书必须持续监控续期结果。
+
 ## 执行更新
 
 本机修改、验证后提交并推送到 `main`，服务器执行：
