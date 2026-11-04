@@ -32,6 +32,14 @@ cd ..
 
 ## 后续一条命令更新
 
+仅使用服务器公网 IP 时也可部署，访问地址使用 `https://实际公网IP`，`CATALOG_PUBLIC_ORIGIN` 填写相同地址，保留团队登录和 Secure Cookie。Nginx 使用该 IP 的独立站点，配置时先检查现有默认站点，避免覆盖其他应用。IP 无需 DNS 解析，但 HTTPS 证书必须包含该 IP 的 Subject Alternative Name。
+
+Let's Encrypt 的 `shortlived` profile 支持 IP 证书，有效期为 160 小时，需要自动续期。Certbot 需支持 `--ip-address` 和 `--required-profile shortlived`；先确认安装版本与服务器端口、站点配置，再通过 webroot HTTP-01 验证申请，不能为申请证书随意停掉现有 Nginx。配置定时续期、成功后的 Nginx 校验和重载，并检查续期失败告警。首次申请的服务条款由服务器管理员确认。
+
+参考：[Let's Encrypt profiles](https://letsencrypt.org/docs/profiles/#shortlived)、[Certbot 参数说明](https://eff-certbot.readthedocs.io/en/stable/using.html)。IP 证书尚未在目标服务器申请或验证。无需改动应用的 HTTPS 限制，也不要将公网部署改成无登录或明文 Cookie 模式。
+
+## 执行更新
+
 本机修改、验证后提交并推送到 `main`，服务器执行：
 
 ```bash

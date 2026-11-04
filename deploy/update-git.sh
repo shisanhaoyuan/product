@@ -41,7 +41,7 @@ assert values.get('CATALOG_COOKIE_SECURE') == '1', '需使用 HTTPS Cookie'
 assert values.get('CATALOG_DB') == '/www/server/jiwu-data/catalog.db', '数据库路径与部署配置不符'
 origin = values.get('CATALOG_PUBLIC_ORIGIN', '')
 u = urlparse(origin)
-assert u.scheme == 'https' and u.hostname and not u.username and not u.password and not u.query and not u.fragment and u.path in ('', '/'), '请先配置实际 HTTPS 域名'
+assert u.scheme == 'https' and u.hostname and not u.username and not u.password and not u.query and not u.fragment and u.path in ('', '/'), '请先配置实际 HTTPS 访问地址（域名或 IP）'
 assert u.hostname != 'catalog.example.com', '请替换示例域名'
 print(origin.rstrip('/'))
 PY
