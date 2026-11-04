@@ -20,6 +20,8 @@ const { stats } = useCatalog();
 const fatalError = ref('');
 const navigation = [
   { path: '/products', name: '商品库', icon: 'LayoutGrid' },
+  { path: '/prelisting', name: '预上架', icon: 'Upload' },
+  { path: '/blacklist', name: '卖家黑名单', icon: 'ShieldCheck' },
   { path: '/review', name: '待复核', icon: 'CircleDashed' },
   { path: '/integrations', name: '数据接入', icon: 'Cable' },
   { path: '/imports', name: '导入记录', icon: 'History' },
@@ -27,9 +29,15 @@ const navigation = [
 const current = computed(() =>
   route.path.startsWith('/product/')
     ? '商品详情'
-    : navigation.find((item) => item.path === route.path)?.name || '商品库',
+    : route.path.startsWith('/prelisting/')
+      ? '预上架批次'
+      : route.path === '/listing-stores'
+        ? '上架店铺'
+        : navigation.find((item) => item.path === route.path)?.name || '商品库',
 );
 function active(path: string) {
+  if (path === '/prelisting')
+    return route.path.startsWith('/prelisting') || route.path === '/listing-stores';
   if (path === '/review') return route.path === '/review' || route.query.status === 'review';
   if (path === '/products')
     return route.path.startsWith('/product') && route.query.status !== 'review';

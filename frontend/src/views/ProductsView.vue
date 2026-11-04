@@ -2,13 +2,24 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { catalogApi } from '../api/client';
-import type { ProductPage } from '../api/types';
+import type { ProductPage, PrelistingSelection } from '../api/types';
 import { useCatalog } from '../composables/useCatalog';
 import { errorMessage, priceRange, productStatus } from '../utils/display';
 import AppIcon from '../components/AppIcon.vue';
 import ProductCard from '../components/ProductCard.vue';
 import ProductImage from '../components/ProductImage.vue';
 import StatusBadge from '../components/StatusBadge.vue';
+import PrelistingComposer from '../components/PrelistingComposer.vue';
+import { useAuth } from '../composables/useAuth';
+const { auth } = useAuth();
+const canEdit = computed(
+  () => !auth.enabled || ['admin', 'editor'].includes(auth.user?.role || ''),
+);
+const selected = ref(new Set<string>()),
+  allFiltered = ref(false),
+  composer = ref(false);
+const composerSelection = ref<PrelistingSelection>({}),
+  composerCount = ref(0);
 
 const route = useRoute(),
   router = useRouter();
@@ -21,13 +32,57 @@ const view = ref(localStorage.getItem('catalog-view') === 'table' ? 'table' : 'g
 let controller: AbortController | undefined, searchTimer: ReturnType<typeof setTimeout> | undefined;
 const filters = computed(() => {
   const params = new URLSearchParams();
-  for (const key of ['q', 'store', 'brand', 'status', 'date', 'category', 'page']) {
+  for (const key of [
+    'q',
+    'store',
+    'brand',
+    'status',
+    'date',
+    'category',
+    'seller_status',
+    'page',
+  ]) {
     const value = route.query[key];
     if (typeof value === 'string' && value) params.set(key, value);
   }
   if (route.path === '/review' && !params.has('status')) params.set('status', 'review');
   return params;
 });
+const selectionFilters = computed(() => {
+  const values = new URLSearchParams(filters.value);
+  values.delete('page');
+  return Object.fromEntries(values);
+});
+const selectedCount = computed(() =>
+  allFiltered.value ? data.value?.total || 0 : selected.value.size,
+);
+function clearSelection() {
+  selected.value = new Set();
+  allFiltered.value = false;
+}
+function toggleProduct(id: string) {
+  const next = new Set(selected.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  selected.value = next;
+}
+function selectPage() {
+  allFiltered.value = false;
+  selected.value = new Set([...selected.value, ...(data.value?.items.map((p) => p.id) || [])]);
+}
+function openComposer() {
+  composerSelection.value = allFiltered.value
+    ? { filters: { ...selectionFilters.value } }
+    : { listing_ids: [...selected.value] };
+  composerCount.value = selectedCount.value;
+  composer.value = true;
+}
+function created(id: string) {
+  composer.value = false;
+  clearSelection();
+  void router.push('/prelisting/' + id);
+}
+watch(() => JSON.stringify(selectionFilters.value), clearSelection);
 const pages = computed(() =>
   Math.max(1, Math.ceil((data.value?.total || 0) / (data.value?.page_size || 24))),
 );
@@ -133,6 +188,7 @@ onBeforeUnmount(() => {
       </h1>
     </div>
     <div class="actions">
+      <RouterLink class="btn" to="/prelisting">预上架批次</RouterLink>
       <a
         class="btn"
         id="export-button"
@@ -204,6 +260,16 @@ onBeforeUnmount(() => {
         />
       </div>
       <select
+        class="filter"
+        aria-label="筛选卖家黑名单"
+        :value="filters.get('seller_status') || ''"
+        @change="changeFilter('seller_status', ($event.target as HTMLSelectElement).value)"
+      >
+        <option value="">全部卖家状态</option>
+        <option value="blocked">命中卖家黑名单</option>
+        <option value="unblocked">未命中黑名单</option>
+      </select>
+      <select
         class="filter category-filter"
         name="category"
         aria-label="筛选商品类目"
@@ -232,7 +298,7 @@ onBeforeUnmount(() => {
         :value="filters.get('store') || ''"
         @change="changeFilter('store', ($event.target as HTMLSelectElement).value)"
       >
-        <option value="">全部店铺</option>
+        <option value="">全部来源店铺</option>
         <option v-for="store in stats?.stores" :key="store.store">{{ store.store }}</option>
       </select>
       <select
@@ -265,6 +331,35 @@ onBeforeUnmount(() => {
         <AppIcon name="RotateCcw" />
       </button>
     </form>
+    <div v-if="canEdit" class="batch-toolbar">
+      <div class="actions">
+        <button class="btn small" :disabled="loading || !data?.total" @click="selectPage">
+          选择本页
+        </button>
+        <button
+          class="btn small"
+          :disabled="loading || !data?.total || data.total > 500"
+          @click="
+            allFiltered = true;
+            selected = new Set();
+          "
+        >
+          选择筛选结果（跨页 {{ data?.total || 0 }} 件）
+        </button>
+        <button class="btn small" :disabled="!selectedCount" @click="clearSelection">清空</button>
+      </div>
+      <div class="actions">
+        <span>已选 {{ selectedCount }} 件</span
+        ><button
+          class="btn primary"
+          :disabled="loading || selectedCount < 1 || selectedCount > 500"
+          @click="openComposer"
+        >
+          预上架
+        </button>
+      </div>
+      <small v-if="(data?.total || 0) > 500">每批最多 500 件，请缩小筛选或手动勾选。</small>
+    </div>
     <div class="result-line">
       <span id="result-count"
         ><template v-if="!loading && data"
@@ -281,12 +376,24 @@ onBeforeUnmount(() => {
     </div>
     <template v-else-if="data?.total">
       <div v-if="view === 'grid'" class="product-grid">
-        <ProductCard v-for="product in data.items" :key="product.id" :product="product" />
+        <div v-for="product in data.items" :key="product.id" class="selectable-product">
+          <label v-if="canEdit" class="product-select"
+            ><input
+              type="checkbox"
+              :aria-label="'选择商品 ' + product.sku"
+              :checked="allFiltered || selected.has(product.id)"
+              :disabled="allFiltered"
+              @change="toggleProduct(product.id)"
+            />选择</label
+          >
+          <ProductCard :product="product" />
+        </div>
       </div>
       <div v-else class="table-scroll">
         <table class="data-table">
           <thead>
             <tr>
+              <th v-if="canEdit">选择</th>
               <th>商品</th>
               <th>ASIN / SKU</th>
               <th>店铺 / 品牌</th>
@@ -298,6 +405,15 @@ onBeforeUnmount(() => {
           </thead>
           <tbody>
             <tr v-for="product in data.items" :key="product.id">
+              <td v-if="canEdit">
+                <input
+                  type="checkbox"
+                  :aria-label="'选择商品 ' + product.sku"
+                  :checked="allFiltered || selected.has(product.id)"
+                  :disabled="allFiltered"
+                  @change="toggleProduct(product.id)"
+                />
+              </td>
               <td>
                 <RouterLink class="table-product" :to="'/product/' + product.id"
                   ><ProductImage :src="product.image" image-class="table-thumb" /><span
@@ -319,6 +435,9 @@ onBeforeUnmount(() => {
                 {{ product.source }}<br /><span class="muted">{{
                   product.seller || '卖家未采集'
                 }}</span>
+                <div v-if="product.seller_blacklist.length" class="seller-risk-label">
+                  卖家已拉黑 · {{ product.seller_blacklist.length }} 位
+                </div>
               </td>
               <td>{{ priceRange(product.prices) }}</td>
               <td>
@@ -366,6 +485,13 @@ onBeforeUnmount(() => {
       <button class="btn small" @click="router.push('/products')">重置筛选</button>
     </div>
   </section>
+  <PrelistingComposer
+    v-if="composer"
+    :selection="composerSelection"
+    :count="composerCount"
+    @close="composer = false"
+    @created="created"
+  />
   <div class="notice">
     <AppIcon name="Database" />
     <div>历史快照 · 商品价格、库存与文案以详情中的回读记录为准。</div>

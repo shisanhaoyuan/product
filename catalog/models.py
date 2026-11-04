@@ -8,6 +8,8 @@ import re
 def safe_url(value: str) -> str:
     if not value:
         return ""
+    if re.fullmatch(r'/api/products/images/assets/[a-f0-9]{64}', value):
+        return value
     u = urlparse(value)
     if u.scheme not in {"http", "https"} or not u.hostname or u.username or u.password:
         raise ValueError("只接受不含凭证的 HTTP/HTTPS 链接")
@@ -30,12 +32,22 @@ class Variant(BaseModel):
     price: str | None = None
     stock: str | None = None
     ean: str = ""
+    product_id_type: str = Field(default='', max_length=30)
+    swatch_attribute: str = Field(default='', max_length=300)
+    swatch_image: str = ''
+    shipping_weight: str = Field(default='', max_length=50)
     copy: Copy = Field(default_factory=Copy)
     source_facts: dict[str, Any] = Field(default_factory=dict)
     price_check: dict[str, Any] = Field(default_factory=dict)
     stock_check: dict[str, Any] = Field(default_factory=dict)
     raw_cells: dict[str, Any] = Field(default_factory=dict)
     identity_note: str = ""
+
+    @model_validator(mode='before')
+    @classmethod
+    def erp_fields(cls, data):
+        from .variant_fields import with_variant_fields
+        return with_variant_fields(data) if isinstance(data, dict) else data
 
     @field_validator("asin")
     @classmethod
@@ -44,7 +56,7 @@ class Variant(BaseModel):
             raise ValueError("ASIN 必须是 10 位大写字母或数字")
         return v
 
-    @field_validator("source_url")
+    @field_validator("source_url", "swatch_image")
     @classmethod
     def valid_url(cls, v):
         return safe_url(v)

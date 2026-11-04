@@ -1,4 +1,12 @@
-import type { ImportRecord, ImportResult, ProductDetail, ProductPage, Stats } from './types';
+import type {
+  ImportRecord,
+  ImportResult,
+  ProductDetail,
+  ProductPage,
+  Stats,
+  SellerBlock,
+  SellerBlockPage,
+} from './types';
 import { clearSession, csrfToken, useAuth } from '../composables/useAuth';
 
 export class ApiError extends Error {
@@ -49,6 +57,55 @@ export async function request<T>(path: string, options?: RequestInit): Promise<T
 }
 
 export const catalogApi = {
+  uploadImage: (id: string, sku: string | undefined, file: File) =>
+    request<{ url: string }>(
+      `/api/products/${encodeURIComponent(id)}/images/upload${sku === undefined ? '' : '?variant_sku=' + encodeURIComponent(sku)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': file.type || 'application/octet-stream' },
+        body: file,
+      },
+    ),
+  captureImages: (id: string, sku?: string) =>
+    request<{ asin: string; source_url: string; fetched_at: string; images: string[] }>(
+      `/api/products/${encodeURIComponent(id)}/images/capture`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ variant_sku: sku }),
+      },
+    ),
+  editProduct: (
+    id: string,
+    expected_revision: string,
+    target: { field: string; variant_sku?: string; key?: string },
+    value: unknown,
+  ) =>
+    request<ProductDetail>(`/api/products/${encodeURIComponent(id)}/edits`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expected_revision, ...target, value }),
+    }),
+  resetProduct: (id: string, expected_revision: string) =>
+    request<ProductDetail>(`/api/products/${encodeURIComponent(id)}/edits/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expected_revision }),
+    }),
+  blacklist: (query: string, signal?: AbortSignal) =>
+    request<SellerBlockPage>(`/api/seller-blacklist?${query}`, { signal }),
+  blockSeller: (data: { source: string; seller: string; reason: string }) =>
+    request<SellerBlock>('/api/seller-blacklist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }),
+  updateSellerBlock: (id: number, data: { reason: string; active: boolean }) =>
+    request<SellerBlock>(`/api/seller-blacklist/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }),
   stats: () => request<Stats>('/api/stats'),
   products: (query: string, signal?: AbortSignal) =>
     request<ProductPage>(`/api/products?${query}`, { signal }),

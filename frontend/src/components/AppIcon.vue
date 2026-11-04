@@ -4,6 +4,7 @@ import {
   ArrowRight,
   ArrowUpRight,
   Cable,
+  Check,
   ChevronLeft,
   ChevronRight,
   Circle,
@@ -24,12 +25,14 @@ import {
   ShieldCheck,
   Store,
   Upload,
+  X,
 } from '@lucide/vue';
 const icons = {
   ArrowLeft,
   ArrowRight,
   ArrowUpRight,
   Cable,
+  Check,
   ChevronLeft,
   ChevronRight,
   Circle,
@@ -50,6 +53,7 @@ const icons = {
   ShieldCheck,
   Store,
   Upload,
+  X,
 };
 defineProps<{ name: string }>();
 </script>

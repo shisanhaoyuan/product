@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from .models import ImportBundle
 from .categories import CATEGORY_SQL, category_option
+from .blacklist import initialize, seller_key, BLOCKED_SQL, active_entries, matches
+from .editing import initialize as initialize_editing, register as register_editing
 
 
 def encoded(data):
@@ -50,10 +52,19 @@ class Catalog:
                     label TEXT NOT NULL, digest TEXT NOT NULL, result_json TEXT NOT NULL);
             """)
 
+            initialize(db)
+            initialize_editing(db)
+            from .prelisting import initialize as initialize_prelisting
+            initialize_prelisting(db)
+            from .images import initialize as initialize_images
+            initialize_images(db)
+
     @contextmanager
     def connect(self):
         db = sqlite3.connect(self.path, timeout=20)
         db.row_factory = sqlite3.Row
+        db.create_function("seller_key", 1, seller_key, deterministic=True)
+        register_editing(db)
         db.execute("PRAGMA foreign_keys=ON")
         try:
             with db:
@@ -127,18 +138,19 @@ class Catalog:
         with self.connect() as db:
             counts = dict(db.execute("""SELECT COUNT(*) listings,COALESCE(SUM(saved),0) saved,
                 COALESCE(SUM(complete),0) complete,COALESCE(SUM(verified),0) verified,
-                COALESCE(SUM(evidence_kind='persisted_readback'),0) reopened FROM listings""").fetchone())
+                COALESCE(SUM(evidence_kind='persisted_readback'),0) reopened FROM current_listings""").fetchone())
             counts["products"] = db.execute("SELECT COUNT(*) FROM products").fetchone()[0]
             counts["variants"] = db.execute("SELECT COUNT(*) FROM variants").fetchone()[0]
-            counts["stores"] = [dict(r) for r in db.execute("SELECT store,COUNT(*) count FROM listings GROUP BY store ORDER BY store")]
-            counts["brands"] = [r[0] for r in db.execute("SELECT DISTINCT brand FROM listings ORDER BY brand")]
+            counts["stores"] = [dict(r) for r in db.execute("SELECT store,COUNT(*) count FROM current_listings GROUP BY store ORDER BY store")]
+            counts["brands"] = [r[0] for r in db.execute("SELECT DISTINCT brand FROM current_listings ORDER BY brand")]
             counts["dates"] = [r[0] for r in db.execute("SELECT DISTINCT substr(uploaded_at,1,10) FROM listings ORDER BY uploaded_at DESC")]
             counts["categories"] = [category_option(row['category']) | {'count': row['count']}
-                for row in db.execute(f"SELECT {CATEGORY_SQL} AS category,COUNT(*) AS count FROM listings GROUP BY category ORDER BY category='' ASC,category COLLATE NOCASE")]
+                for row in db.execute(f"SELECT {CATEGORY_SQL} AS category,COUNT(*) AS count FROM current_listings GROUP BY category ORDER BY category='' ASC,category COLLATE NOCASE")]
             counts["review"] = counts["listings"] - counts["complete"]
             return counts
 
-    def find(self, q="", store="", brand="", status="", date="", page=1, page_size=24, category=""):
+    @staticmethod
+    def filter_sql(q="", store="", brand="", status="", date="", category="", seller_status=""):
         clauses, args = ["1=1"], []
         if q:
             clauses.append("instr(search_text,?)>0"); args.append(q.casefold())
@@ -151,6 +163,8 @@ class Catalog:
             clauses.append({"complete":"complete=1","review":"complete=0","saved":"saved=1",
                 "unconfirmed":"saved=0","reopened":"evidence_kind='persisted_readback'",
                 "snapshot":"evidence_kind!='persisted_readback'"}[status])
+        if seller_status in {"blocked", "unblocked"}:
+            clauses.append(("NOT " if seller_status == "unblocked" else "") + BLOCKED_SQL)
         where = " AND ".join(clauses)
         if category:
             if category == 'missing' or category.startswith('type:'):
@@ -158,10 +172,15 @@ class Catalog:
                 args.append('' if category == 'missing' else category[5:])
             else:
                 where += ' AND 0=1'
+        return where, args
+
+    def find(self, q="", store="", brand="", status="", date="", page=1, page_size=24, category="", seller_status=""):
+        where, args = self.filter_sql(q,store,brand,status,date,category,seller_status)
         with self.connect() as db:
-            total = db.execute(f"SELECT COUNT(*) FROM listings WHERE {where}",args).fetchone()[0]
-            rows = db.execute(f"SELECT id,data_json,{CATEGORY_SQL} AS category FROM listings WHERE {where} ORDER BY uploaded_at DESC,id LIMIT ? OFFSET ?",
+            total = db.execute(f"SELECT COUNT(*) FROM current_listings AS listings WHERE {where}",args).fetchone()[0]
+            rows = db.execute(f"SELECT id,data_json,{CATEGORY_SQL} AS category FROM current_listings AS listings WHERE {where} ORDER BY uploaded_at DESC,id LIMIT ? OFFSET ?",
                               [*args,page_size,(page-1)*page_size]).fetchall()
+            entries = active_entries(db)
             items=[]
             for r in rows:
                 d=json.loads(r["data_json"])
@@ -169,16 +188,17 @@ class Catalog:
                 prices=[p for p in prices if p not in (None,'')]
                 items.append({k:d[k] for k in ('asin','sku','source','source_url','seller','store','brand',
                     'template','creator','uploaded_at','observed_at','evidence_kind','save_succeeded',
-                    'fill_complete','readback_verified')} | dict(id=r['id'],title=d['copy']['title'],
+                    'fill_complete','readback_verified','local_edit')} | dict(id=r['id'],title=d['copy']['title'],
                     image=d['images'][0] if d['images'] else next((v['images'][0] for v in d['variants'] if v['images']),''),
-                    variant_count=len(d['variants']),prices=prices,issue_count=len(d['issues']),category=r['category']))
+                    variant_count=len(d['variants']),prices=prices,issue_count=len(d['issues']),category=r['category'],seller_blacklist=matches(d, entries)))
             return dict(items=items,total=total,page=page,page_size=page_size)
 
     def get(self, listing_id):
         with self.connect() as db:
-            r=db.execute(f"SELECT data_json,{CATEGORY_SQL} AS category FROM listings WHERE id=?",(listing_id,)).fetchone()
+            r=db.execute(f"SELECT data_json,{CATEGORY_SQL} AS category FROM current_listings WHERE id=?",(listing_id,)).fetchone()
             if not r:return None
-            return json.loads(r[0]) | dict(id=listing_id,category=r['category'],history=[dict(h) for h in db.execute(
+            return json.loads(r[0]) | dict(id=listing_id,category=r['category'],
+                seller_blacklist=matches(json.loads(r[0]), active_entries(db)),history=[dict(h) for h in db.execute(
                 "SELECT id,observed_at,evidence_kind,digest FROM snapshots WHERE listing_id=? ORDER BY observed_at DESC",(listing_id,))])
 
     def imports(self):

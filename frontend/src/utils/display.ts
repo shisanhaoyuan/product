@@ -18,6 +18,8 @@ export function plain(value: unknown): string {
   return (doc.body.textContent || '').trim();
 }
 export function safeUrl(value: unknown): string {
+  if (typeof value === 'string' && /^\/api\/products\/images\/assets\/[a-f0-9]{64}$/.test(value))
+    return value;
   try {
     const url = new URL(String(value ?? ''));
     return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password
@@ -46,6 +48,7 @@ export function priceRange(values: (string | number | null)[]): string {
   return min === max ? money(min) : `${money(min)} – ${money(max)}`;
 }
 export function productStatus(product: EvidenceStatus) {
+  if (product.local_edit?.changed) return { label: '本地已修改', type: 'warn' };
   return product.fill_complete
     ? { label: '已核验完整', type: 'good' }
     : product.evidence_kind === 'persisted_readback'

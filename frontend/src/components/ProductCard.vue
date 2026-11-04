@@ -31,6 +31,13 @@ defineProps<{ product: ProductSummary }>();
       <p class="category-label" :title="product.category || '未记录类目'">
         {{ product.category || '未记录类目' }}
       </p>
+      <p
+        v-if="product.seller_blacklist.length"
+        class="seller-risk-label"
+        :title="product.seller_blacklist.map((item) => item.seller + '：' + item.reason).join('；')"
+      >
+        卖家已拉黑 · {{ product.seller_blacklist.length }} 位（含子变体）
+      </p>
       <div class="card-meta">
         <span class="meta-label">ASIN</span><span class="mono">{{ product.asin }}</span
         ><span class="meta-label">SKU</span

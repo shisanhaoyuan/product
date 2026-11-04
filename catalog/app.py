@@ -12,6 +12,10 @@ from pydantic import ValidationError
 from .db import Catalog
 from .models import ImportBundle
 from .auth import AuthStore, COOKIE, auth_routes
+from .blacklist import blacklist_routes
+from .prelisting import prelisting_routes
+from .editing import editing_routes
+from .images import image_routes
 
 ROOT=Path(__file__).resolve().parent.parent
 
@@ -32,6 +36,10 @@ def create_app(database=None):
     app.state.catalog=catalog
     app.state.auth=auth
     app.include_router(auth_routes(auth,secure_cookie))
+    app.include_router(blacklist_routes(catalog))
+    app.include_router(prelisting_routes(catalog))
+    app.include_router(editing_routes(catalog))
+    app.include_router(image_routes(catalog))
 
     @app.middleware('http')
     async def guard(request:Request, call_next):
@@ -52,8 +60,8 @@ def create_app(database=None):
                 return Response('首次登录请先修改密码',status_code=403)
             if path.startswith('/api/admin/') and user['role'] != 'admin':
                 return Response('需要管理员权限',status_code=403)
-            if writing and path == '/api/imports' and user['role'] not in {'admin','editor'}:
-                return Response('只读成员不能导入商品',status_code=403)
+            if writing and (path == '/api/imports' or path.startswith(('/api/seller-blacklist', '/api/prelisting', '/api/listing-stores', '/api/products/'))) and user['role'] not in {'admin','editor'}:
+                return Response('只读成员不能修改商品库数据',status_code=403)
             if writing and not secrets.compare_digest(request.headers.get('x-csrf-token',''),user['csrf_token']):
                 return Response('登录校验已过期，请刷新后重试',status_code=403)
         if writing:
@@ -86,8 +94,8 @@ def create_app(database=None):
     def stats():return catalog.stats()
 
     @app.get('/api/products')
-    def products(q:str='',store:str='',brand:str='',status:str='',date:str='',page:int=Query(1,ge=1),page_size:int=Query(24,ge=1,le=100),category:str=''):
-        return catalog.find(q,store,brand,status,date,page,page_size,category=category)
+    def products(q:str='',store:str='',brand:str='',status:str='',date:str='',page:int=Query(1,ge=1),page_size:int=Query(24,ge=1,le=100),category:str='',seller_status:str=Query('',pattern='^(blocked|unblocked)?$')):
+        return catalog.find(q,store,brand,status,date,page,page_size,category=category,seller_status=seller_status)
 
     @app.get('/api/products/{listing_id}')
     def detail(listing_id:str):
@@ -132,19 +140,19 @@ def create_app(database=None):
                         headers={'Content-Disposition':'attachment; filename="catalog-backup.json"'})
 
     @app.get('/api/export.csv')
-    def export_csv(q:str='',store:str='',brand:str='',status:str='',date:str='',category:str=''):
+    def export_csv(q:str='',store:str='',brand:str='',status:str='',date:str='',category:str='',seller_status:str=Query('',pattern='^(blocked|unblocked)?$')):
         buffer=io.StringIO();writer=csv.writer(buffer)
-        writer.writerow(['ASIN','商品SKU','平台SKU','店铺','品牌','商品来源','来源链接','商品卖家','标题','子变体数','保存确认','填写完整','证据类型','上传时间','商品类目'])
+        writer.writerow(['ASIN','商品SKU','平台SKU','店铺','品牌','商品来源','来源链接','商品卖家','标题','子变体数','保存确认','填写完整','证据类型','上传时间','商品类目','卖家黑名单原因'])
         page=1
         def safe(value):
             text='' if value is None else str(value)
             return "'"+text if text.lstrip().startswith(('=','+','-','@')) else text
         while True:
-            found=catalog.find(q,store,brand,status,date,page,100,category=category)
+            found=catalog.find(q,store,brand,status,date,page,100,category=category,seller_status=seller_status)
             for row in found['items']:
                 detail=catalog.get(row['id'])
                 writer.writerow([safe(v) for v in [row['asin'],row['sku'],detail['platform_sku'],row['store'],row['brand'],row['source'],
-                    row['source_url'],row['seller'],row['title'],row['variant_count'],row['save_succeeded'],row['fill_complete'],row['evidence_kind'],row['uploaded_at'],row['category']]])
+                    row['source_url'],row['seller'],row['title'],row['variant_count'],row['save_succeeded'],row['fill_complete'],row['evidence_kind'],row['uploaded_at'],row['category'], '\n'.join(f"{b['seller']}：{b['reason']}" for b in row['seller_blacklist'])]])
             if page*100>=found['total']:break
             page+=1
         return Response('\ufeff'+buffer.getvalue(),media_type='text/csv; charset=utf-8',

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { computed, onBeforeUnmount, provide, ref, watch } from 'vue';
+import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router';
 import { catalogApi } from '../api/client';
 import type { ProductDetail } from '../api/types';
 import { useCatalog } from '../composables/useCatalog';
@@ -15,24 +15,99 @@ import {
 } from '../utils/display';
 import AppIcon from '../components/AppIcon.vue';
 import CopyContent from '../components/CopyContent.vue';
-import ProductImage from '../components/ProductImage.vue';
+import VariantImages from '../components/VariantImages.vue';
 import StatusBadge from '../components/StatusBadge.vue';
 import VariantPanel from '../components/VariantPanel.vue';
+import PrelistingComposer from '../components/PrelistingComposer.vue';
+import SellerRiskPanel from '../components/SellerRiskPanel.vue';
+import InlineEdit from '../components/InlineEdit.vue';
+import {
+  productEditingKey,
+  lockedAttributeKeys,
+  type EditTarget,
+} from '../composables/useProductEditing';
+import { useAuth } from '../composables/useAuth';
+const { auth } = useAuth();
 const route = useRoute();
+const router = useRouter();
+const listingSkus = ref<string[]>();
+function openVariantPlan(skus: string[]) {
+  if (editActive.value || editBusy.value || !skus.length) return;
+  listingSkus.value = skus;
+}
+function variantPlanCreated(id: string) {
+  listingSkus.value = undefined;
+  void router.push('/prelisting/' + id);
+}
 const { stats, refreshStats } = useCatalog();
 const product = ref<ProductDetail>(),
   loading = ref(true),
   error = ref('');
-const photo = ref(0),
-  attributeSearch = ref(''),
+const attributeSearch = ref(''),
   activeSection = ref('copy'),
   message = ref('');
-let controller: AbortController | undefined;
-const images = computed(() =>
-  product.value?.images.length
-    ? product.value.images
-    : product.value?.variants.flatMap((variant) => variant.images).slice(0, 12) || [],
+const editActive = ref(''),
+  editBusy = ref(false),
+  editMessage = ref(''),
+  resetConfirm = ref(false);
+const canEdit = computed(
+  () => !auth.enabled || ['admin', 'editor'].includes(auth.user?.role || ''),
 );
+async function saveField(target: EditTarget, value: unknown) {
+  if (!product.value?.local_edit || editBusy.value) return;
+  editBusy.value = true;
+  editMessage.value = '';
+  try {
+    product.value = await catalogApi.editProduct(
+      product.value.id,
+      product.value.local_edit.revision,
+      target,
+      value,
+    );
+    editMessage.value = '已保存到商品库 · 未同步 ERP';
+    refreshStats().catch(() => {});
+  } finally {
+    editBusy.value = false;
+  }
+}
+provide(productEditingKey, {
+  listingId: computed(() => product.value?.id || ''),
+  enabled: canEdit,
+  active: editActive,
+  busy: editBusy,
+  save: saveField,
+});
+async function resetEdits() {
+  if (!product.value?.local_edit || editBusy.value || editActive.value) return;
+  editBusy.value = true;
+  try {
+    product.value = await catalogApi.resetProduct(
+      product.value.id,
+      product.value.local_edit.revision,
+    );
+    editMessage.value = '已恢复来源记录';
+    resetConfirm.value = false;
+    refreshStats().catch(() => {});
+  } catch (e) {
+    editMessage.value = errorMessage(e);
+  } finally {
+    editBusy.value = false;
+  }
+}
+function canLeave() {
+  if (editBusy.value) return false;
+  return !editActive.value || window.confirm('当前内容尚未保存，离开将放弃这次输入。继续离开？');
+}
+onBeforeRouteLeave(canLeave);
+onBeforeRouteUpdate(canLeave);
+function beforeUnload(event: BeforeUnloadEvent) {
+  if (editActive.value || editBusy.value) {
+    event.preventDefault();
+    event.returnValue = '';
+  }
+}
+window.addEventListener('beforeunload', beforeUnload);
+let controller: AbortController | undefined;
 const attributes = computed(() =>
   Object.entries(product.value?.fields || {}).filter(([key, value]) =>
     (key + ' ' + text(value)).toLowerCase().includes(attributeSearch.value.toLowerCase()),
@@ -78,10 +153,12 @@ async function load() {
   loading.value = true;
   product.value = undefined;
   error.value = '';
-  photo.value = 0;
   attributeSearch.value = '';
   activeSection.value = 'copy';
   message.value = '';
+  editActive.value = '';
+  editMessage.value = '';
+  resetConfirm.value = false;
   try {
     const result = await catalogApi.product(String(route.params.id), request.signal);
     if (!request.signal.aborted) product.value = result;
@@ -105,7 +182,10 @@ async function copyAsin() {
   }
 }
 watch(() => route.params.id, load, { immediate: true });
-onBeforeUnmount(() => controller?.abort());
+onBeforeUnmount(() => {
+  controller?.abort();
+  window.removeEventListener('beforeunload', beforeUnload);
+});
 </script>
 <template>
   <RouterLink class="back-link" to="/products"><AppIcon name="ArrowLeft" />返回商品库</RouterLink>
@@ -117,7 +197,9 @@ onBeforeUnmount(() => controller?.abort());
     <div class="page-heading detail-heading">
       <div>
         <p class="eyebrow">PRODUCT / {{ product.asin }}</p>
-        <h1>{{ product.copy.title || product.sku }}</h1>
+        <InlineEdit :value="product.copy.title" :target="{ field: 'copy.title' }" label="主商品标题"
+          ><h1>{{ product.copy.title || product.sku }}</h1></InlineEdit
+        >
         <p class="subtitle">
           {{ product.store }} <span class="dot-separator">/</span> {{ product.brand }}
           <span class="dot-separator">/</span> {{ product.template }}
@@ -130,7 +212,11 @@ onBeforeUnmount(() => controller?.abort());
             evidenceLabels[product.evidence_kind]
           }}</StatusBadge
           ><StatusBadge :type="product.save_succeeded ? 'good' : 'warn'">{{
-            product.save_succeeded ? '双保存已确认' : '保存未确认'
+            product.local_edit?.changed
+              ? '手工修改 · 未同步 ERP'
+              : product.save_succeeded
+                ? '双保存已确认'
+                : '保存未确认'
           }}</StatusBadge>
         </div>
       </div>
@@ -138,26 +224,43 @@ onBeforeUnmount(() => controller?.abort());
         >查看 JSON ↗</a
       >
     </div>
+    <div class="product-edit-status">
+      <span v-if="editMessage" role="status">{{ editMessage }}</span>
+      <span v-else-if="product.local_edit?.changed"
+        >本地修改 {{ product.local_edit.changes.length }} 项 ·
+        {{ new Date(product.local_edit.updated_at).toLocaleString('zh-CN') }} · 来源快照已保留</span
+      >
+      <button
+        v-if="canEdit && product.local_edit?.changed && !resetConfirm"
+        class="btn small"
+        :disabled="editBusy || !!editActive"
+        @click="resetConfirm = true"
+      >
+        <AppIcon name="RotateCcw" />恢复来源记录
+      </button>
+      <template v-if="resetConfirm"
+        ><span>放弃此商品全部本地修改？</span
+        ><button class="btn small" :disabled="editBusy || !!editActive" @click="resetEdits">
+          确认恢复</button
+        ><button class="btn small" @click="resetConfirm = false">取消</button></template
+      >
+    </div>
+    <div
+      v-if="product.local_edit?.source_changed || product.local_edit?.conflicts.length"
+      class="notice warning notice-space"
+    >
+      来源记录在本地编辑后有更新，请对照来源快照重新核对。{{
+        product.local_edit.conflicts.length
+          ? '部分已编辑子 SKU 在新来源中不存在，未将其内容应用到其他变体。'
+          : ''
+      }}
+    </div>
     <div v-if="product.evidence_kind !== 'persisted_readback'" class="notice warning notice-space">
       本商品没有可用的独立产品库回读。下方为历史编辑快照，不能视为已保存的 ERP 内容。
     </div>
     <div class="detail-top">
       <section class="section">
-        <div class="gallery-main" id="gallery-main">
-          <ProductImage :src="images[photo]" alt="商品主图" :lazy="false" />
-        </div>
-        <div class="gallery-thumbs">
-          <button
-            v-for="(image, index) in images"
-            :key="image + index"
-            :class="{ selected: photo === index }"
-            :data-photo="index"
-            :aria-label="'查看第 ' + (index + 1) + ' 张图片'"
-            @click="photo = index"
-          >
-            <ProductImage :src="image" />
-          </button>
-        </div>
+        <VariantImages :key="product.id" :images="product.images" :asin="product.asin" hero />
       </section>
       <section class="section">
         <div class="section-head">
@@ -184,7 +287,22 @@ onBeforeUnmount(() => controller?.abort());
             </div>
             <div v-for="[label, value] in identity" :key="label" class="identity-item">
               <label>{{ label }}</label>
-              <div class="value">{{ value || '未记录' }}</div>
+              <InlineEdit
+                v-if="label === '商品卖家'"
+                :value="product.seller"
+                :target="{ field: 'seller' }"
+                label="商品卖家"
+                ><div class="value">{{ product.seller || '未采集' }}</div></InlineEdit
+              >
+              <div v-else class="value">{{ value || '未记录' }}</div>
+            </div>
+            <div class="identity-item">
+              <label>品牌</label
+              ><InlineEdit :value="product.brand" :target="{ field: 'brand' }" label="品牌" />
+            </div>
+            <div class="identity-item">
+              <label>EAN</label
+              ><InlineEdit :value="product.ean" :target="{ field: 'ean' }" label="主商品 EAN" />
             </div>
             <div class="identity-item">
               <label>商品来源</label>
@@ -202,28 +320,50 @@ onBeforeUnmount(() => controller?.abort());
           <div class="detail-facts">
             <div class="detail-fact">
               <label>{{ product.variants.length ? '子变体售价范围' : '售价' }} · USD</label
-              ><strong>{{
-                priceRange(
-                  product.variants.length
-                    ? product.variants.map((variant) => variant.price)
-                    : [product.price],
-                )
-              }}</strong>
+              ><InlineEdit
+                :value="product.price"
+                :target="{ field: 'price' }"
+                label="主商品售价"
+                kind="money"
+                :readonly="!!product.variants.length"
+                ><strong>{{
+                  priceRange(
+                    product.variants.length
+                      ? product.variants.map((variant) => variant.price)
+                      : [product.price],
+                  )
+                }}</strong></InlineEdit
+              >
             </div>
             <div class="detail-fact">
-              <label>MSRP · USD</label><strong>{{ money(product.msrp) }}</strong>
+              <label>MSRP · USD</label
+              ><InlineEdit
+                :value="product.msrp"
+                :target="{ field: 'msrp' }"
+                label="MSRP"
+                kind="money"
+                ><strong>{{ money(product.msrp) }}</strong></InlineEdit
+              >
             </div>
             <div class="detail-fact">
               <label>本轮价格倍率</label
               ><strong class="text-value">× {{ product.multiplier || '—' }}</strong>
             </div>
             <div v-if="!product.variants.length" class="detail-fact">
-              <label>在线库存</label><strong>{{ product.stock ?? '—' }}</strong>
+              <label>库存</label
+              ><InlineEdit
+                :value="product.stock"
+                :target="{ field: 'stock' }"
+                label="主商品库存"
+                kind="stock"
+                ><strong>{{ product.stock ?? '—' }}</strong></InlineEdit
+              >
             </div>
           </div>
         </div>
       </section>
     </div>
+    <SellerRiskPanel :product="product" />
     <div class="detail-tabs">
       <a
         v-for="section in sections"
@@ -243,7 +383,9 @@ onBeforeUnmount(() => controller?.abort());
             <p>
               {{
                 product.evidence_kind === 'persisted_readback'
-                  ? '产品库重新打开后读取的原始内容'
+                  ? product.local_edit?.changed
+                    ? '商品库本地编辑内容 · 未同步 ERP'
+                    : '产品库重新打开后读取的原始内容'
                   : '历史编辑框快照'
               }}
               · 仅以安全文本呈现 HTML
@@ -260,7 +402,7 @@ onBeforeUnmount(() => controller?.abort());
           </div>
           <StatusBadge>{{ product.variants.length }} 个 SKU</StatusBadge>
         </div>
-        <VariantPanel :key="product.id" :variants="product.variants" />
+        <VariantPanel :key="product.id" :variants="product.variants" @prelist="openVariantPlan" />
       </section>
       <section class="section" id="section-attributes">
         <div class="section-head">
@@ -285,7 +427,14 @@ onBeforeUnmount(() => controller?.abort());
               :data-attribute="key"
             >
               <label>{{ key }}</label>
-              <div class="value">{{ text(value) || '空' }}</div>
+              <InlineEdit
+                :value="value"
+                :target="{ field: 'fields', key }"
+                :label="key"
+                :kind="typeof value === 'string' ? 'multiline' : 'json'"
+                :readonly="lockedAttributeKeys.has(key.toLowerCase())"
+                ><div class="value">{{ text(value) || '空' }}</div></InlineEdit
+              >
             </div>
           </div>
           <details v-if="product.management.length" class="details">
@@ -395,5 +544,12 @@ onBeforeUnmount(() => controller?.abort());
         </div>
       </section>
     </div>
+    <PrelistingComposer
+      v-if="listingSkus?.length"
+      :selection="{ listing_ids: [product.id], variant_skus: { [product.id]: listingSkus } }"
+      :count="listingSkus.length"
+      @close="listingSkus = undefined"
+      @created="variantPlanCreated"
+    />
   </template>
 </template>
