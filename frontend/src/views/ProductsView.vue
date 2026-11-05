@@ -6,6 +6,7 @@ import type { ProductPage, PrelistingSelection } from '../api/types';
 import { useCatalog } from '../composables/useCatalog';
 import { errorMessage, priceRange, productStatus } from '../utils/display';
 import AppIcon from '../components/AppIcon.vue';
+import FilterSelect from '../components/FilterSelect.vue';
 import ProductCard from '../components/ProductCard.vue';
 import ProductImage from '../components/ProductImage.vue';
 import StatusBadge from '../components/StatusBadge.vue';
@@ -48,6 +49,33 @@ const filters = computed(() => {
   if (route.path === '/review' && !params.has('status')) params.set('status', 'review');
   return params;
 });
+const categoryOptions = computed(() => {
+  const currentCategory = filters.value.get('category') || '';
+  const categories = stats.value?.categories || [];
+
+  return [
+    { value: '', label: '全部商品类目' },
+    ...(currentCategory && !categories.some((item) => item.value === currentCategory)
+      ? [{ value: currentCategory, label: '当前类目已无商品' }]
+      : []),
+    ...categories.map((item) => ({
+      value: item.value,
+      label: `${item.label} · ${item.count}`,
+    })),
+  ];
+});
+const storeOptions = computed(() => [
+  { value: '', label: '全部来源店铺' },
+  ...(stats.value?.stores.map((item) => ({ value: item.store, label: item.store })) || []),
+]);
+const brandOptions = computed(() => [
+  { value: '', label: '全部品牌' },
+  ...(stats.value?.brands.map((brand) => ({ value: brand, label: brand })) || []),
+]);
+const dateOptions = computed(() => [
+  { value: '', label: '全部上传日期' },
+  ...(stats.value?.dates.map((date) => ({ value: date, label: date })) || []),
+]);
 const selectionFilters = computed(() => {
   const values = new URLSearchParams(filters.value);
   values.delete('page');
@@ -66,9 +94,30 @@ function toggleProduct(id: string) {
   else next.add(id);
   selected.value = next;
 }
-function selectPage() {
-  allFiltered.value = false;
-  selected.value = new Set([...selected.value, ...(data.value?.items.map((p) => p.id) || [])]);
+const pageIds = computed(() => data.value?.items.map((p) => p.id) || []);
+
+const allPageSelected = computed(
+  () =>
+    pageIds.value.length > 0 &&
+    (allFiltered.value || pageIds.value.every((id) => selected.value.has(id))),
+);
+
+const somePageSelected = computed(
+  () => !allPageSelected.value && pageIds.value.some((id) => selected.value.has(id)),
+);
+
+function togglePage() {
+  if (loading.value || allFiltered.value) return;
+
+  const next = new Set(selected.value);
+  const shouldSelect = !allPageSelected.value;
+
+  for (const id of pageIds.value) {
+    if (shouldSelect) next.add(id);
+    else next.delete(id);
+  }
+
+  selected.value = next;
 }
 function openComposer() {
   composerSelection.value = allFiltered.value
@@ -259,68 +308,43 @@ onBeforeUnmount(() => {
           @input="searchInput"
         />
       </div>
-      <select
-        class="filter"
-        aria-label="筛选卖家黑名单"
-        :value="filters.get('seller_status') || ''"
-        @change="changeFilter('seller_status', ($event.target as HTMLSelectElement).value)"
-      >
-        <option value="">全部卖家状态</option>
-        <option value="blocked">命中卖家黑名单</option>
-        <option value="unblocked">未命中黑名单</option>
-      </select>
-      <select
-        class="filter category-filter"
-        name="category"
-        aria-label="筛选商品类目"
+      <FilterSelect
+        label="筛选卖家黑名单"
+        :model-value="filters.get('seller_status') || ''"
+        :options="[
+          { value: '', label: '全部卖家状态' },
+          { value: 'blocked', label: '命中卖家黑名单' },
+          { value: 'unblocked', label: '未命中黑名单' },
+        ]"
+        @update:model-value="changeFilter('seller_status', $event)"
+      />
+      <FilterSelect
+        class="category-filter"
+        label="筛选商品类目"
         title="按已记录的 Product Type 筛选；括号内数量为全库模板数"
-        :value="filters.get('category') || ''"
-        @change="changeFilter('category', ($event.target as HTMLSelectElement).value)"
-      >
-        <option value="">全部商品类目</option>
-        <option
-          v-if="
-            filters.get('category') &&
-            !stats?.categories.some((item) => item.value === filters.get('category'))
-          "
-          :value="filters.get('category')!"
-        >
-          当前类目已无商品
-        </option>
-        <option v-for="category in stats?.categories" :key="category.value" :value="category.value">
-          {{ category.label }} · {{ category.count }}
-        </option>
-      </select>
-      <select
-        class="filter"
-        name="store"
-        aria-label="筛选店铺"
-        :value="filters.get('store') || ''"
-        @change="changeFilter('store', ($event.target as HTMLSelectElement).value)"
-      >
-        <option value="">全部来源店铺</option>
-        <option v-for="store in stats?.stores" :key="store.store">{{ store.store }}</option>
-      </select>
-      <select
-        class="filter"
-        name="brand"
-        aria-label="筛选品牌"
-        :value="filters.get('brand') || ''"
-        @change="changeFilter('brand', ($event.target as HTMLSelectElement).value)"
-      >
-        <option value="">全部品牌</option>
-        <option v-for="brand in stats?.brands" :key="brand">{{ brand }}</option>
-      </select>
-      <select
-        class="filter"
-        name="date"
-        aria-label="筛选日期"
-        :value="filters.get('date') || ''"
-        @change="changeFilter('date', ($event.target as HTMLSelectElement).value)"
-      >
-        <option value="">全部上传日期</option>
-        <option v-for="date in stats?.dates" :key="date">{{ date }}</option></select
-      ><button
+        :model-value="filters.get('category') || ''"
+        :options="categoryOptions"
+        @update:model-value="changeFilter('category', $event)"
+      />
+      <FilterSelect
+        label="筛选店铺"
+        :model-value="filters.get('store') || ''"
+        :options="storeOptions"
+        @update:model-value="changeFilter('store', $event)"
+      />
+      <FilterSelect
+        label="筛选品牌"
+        :model-value="filters.get('brand') || ''"
+        :options="brandOptions"
+        @update:model-value="changeFilter('brand', $event)"
+      />
+      <FilterSelect
+        label="筛选日期"
+        :model-value="filters.get('date') || ''"
+        :options="dateOptions"
+        @update:model-value="changeFilter('date', $event)"
+      />
+      <button
         class="btn ghost small"
         id="reset"
         type="button"
@@ -333,9 +357,16 @@ onBeforeUnmount(() => {
     </form>
     <div v-if="canEdit" class="batch-toolbar">
       <div class="actions">
-        <button class="btn small" :disabled="loading || !data?.total" @click="selectPage">
-          选择本页
-        </button>
+        <label class="btn small">
+          <input
+            type="checkbox"
+            :checked="allPageSelected"
+            :indeterminate="somePageSelected"
+            :disabled="loading || !data?.total || allFiltered"
+            @change="togglePage"
+          />
+          全选本页
+        </label>
         <button
           class="btn small"
           :disabled="loading || !data?.total || data.total > 500"
