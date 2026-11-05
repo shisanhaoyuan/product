@@ -1611,29 +1611,160 @@ h3 {
   font-size: 11px;
 }
 .import-drop {
-  padding: 27px 15px;
+  padding: 26px 16px;
   border: 1px dashed #b8cbe4;
   background: #f5f9fe;
   border-radius: 6px;
   text-align: center;
   margin: 20px 0;
+  transition:
+    border-color 150ms,
+    background 150ms;
 }
-.import-drop label {
-  cursor: pointer;
-  font-size: 12px;
-  display: block;
-  color: #6687b2;
+.import-drop.is-dragging,
+.import-drop:focus-visible {
+  border-color: var(--accent);
+  background: #eaf2fc;
+  outline: 2px solid #a4beda;
+  outline-offset: 3px;
 }
-.import-drop input {
+.import-drop.is-disabled {
+  opacity: 0.65;
+}
+.import-drop > strong {
   display: block;
-  margin: 16px auto;
-  max-width: 100%;
-  font-size: 11px;
-  color: #748195;
+  margin-top: 10px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.import-drop .import-drop-symbol {
+  width: 28px;
+  height: 28px;
+  color: var(--accent);
+}
+.import-drop input.import-native-input {
+  display: none;
 }
 .import-drop p {
   font-size: 11px;
   color: var(--muted);
+}
+.import-picker-actions,
+.import-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.import-picker-actions {
+  justify-content: center;
+  margin-top: 18px;
+}
+.import-actions {
+  margin-top: 16px;
+}
+.import-feedback {
+  font-size: 12px;
+  color: var(--muted);
+  margin: -6px 0 16px;
+}
+.import-help {
+  font-size: 11px;
+  line-height: 1.8;
+  color: var(--muted);
+  margin: -6px 0 20px;
+}
+.import-queue {
+  margin-bottom: 20px;
+  min-width: 0;
+}
+.import-queue-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.import-queue-head strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+.import-queue-head span {
+  display: block;
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.import-file-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 310px;
+  overflow: auto;
+}
+.import-file-row {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto 28px;
+  gap: 10px;
+  align-items: center;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.import-file-row > .icon {
+  color: var(--accent);
+}
+.import-file-info {
+  min-width: 0;
+}
+.import-file-info strong {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.import-file-info small {
+  display: block;
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.import-file-info small.import-file-error {
+  color: #b44141;
+}
+.import-queue .icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.import-queue .icon-btn:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--accent-soft);
+}
+.import-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.import-progress progress {
+  flex: 1;
+  min-width: 0;
+  height: 6px;
+  accent-color: var(--accent);
 }
 .form-label {
   display: block;
