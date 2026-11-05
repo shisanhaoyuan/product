@@ -2,11 +2,12 @@
 import asyncio
 import copy
 import re
+import os
 from pathlib import Path
 
 from playwright.async_api import async_playwright, expect
 
-BASE = 'http://127.0.0.1:8765'
+BASE = os.environ.get('CATALOG_TEST_URL', 'http://127.0.0.1:8765')
 ROOT = Path(__file__).resolve().parent
 
 
@@ -56,14 +57,15 @@ async def main():
         await page.route('**/api/products/' + first_id, variant_fixture)
         await page.goto(BASE + '/#/product/' + first_id)
         await expect(page.locator('[data-variant]')).to_have_count(2)
+        columns = await page.locator('.variant-catalog-table th').all_text_contents()
         for index, variant in enumerate(fixture['variants']):
             row = page.locator('[data-variant]').nth(index)
             assert await row.get_attribute('data-variant') == variant['sku']
             await row.click()
-            await expect(row.locator('td').nth(3).locator('.price')).to_have_text('$0.00' if index == 0 else '—')
-            assert (await row.locator('td').nth(4).inner_text()).split('\n')[0] == ('0' if index == 0 else '—')
-            await expect(row.locator('td').nth(5)).to_have_text(variant['ean'])
-            await expect(page.locator('#variant-detail h3')).to_have_text(variant['copy']['title'])
+            await expect(row.locator('td').nth(columns.index('售价 USD')).locator('.price')).to_have_text('$0.00' if index == 0 else '—')
+            assert (await row.locator('td').nth(columns.index('库存')).inner_text()).split('\n')[0] == ('0' if index == 0 else '—')
+            await expect(row.locator('td').nth(columns.index('商品编码类型 / 编码'))).to_contain_text(variant['ean'])
+            await expect(page.locator('#variant-detail .variant-detail-head h3')).to_have_text(variant['copy']['title'])
             await expect(page.locator('#variant-detail .features')).to_have_text(variant['copy']['features'][0])
             await expect(page.locator('#variant-detail .description')).to_have_text(variant['copy']['description'])
         await page.unroute('**/api/products/' + first_id, variant_fixture)

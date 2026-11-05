@@ -58,6 +58,8 @@ export interface Variant {
   identity_note: string;
 }
 export interface ProductSummary extends EvidenceStatus {
+  listing_count: number;
+  listing_stores: { store: string; count: number }[];
   seller_blacklist: SellerBlock[];
   category: string;
   id: string;
@@ -113,6 +115,7 @@ export interface ProductDetail extends EvidenceStatus {
   history: { id: number; observed_at: string; evidence_kind: EvidenceKind; digest: string }[];
 }
 export interface Stats {
+  unique_counts: { all_products: number; complete: number; review: number };
   listings: number;
   products: number;
   variants: number;

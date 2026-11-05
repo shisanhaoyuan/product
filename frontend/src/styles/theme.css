@@ -11,6 +11,27 @@
   min-width: 0;
   max-width: 260px;
 }
+.listing-coverage {
+  display: grid;
+  gap: 5px;
+  margin-block: 10px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.listing-count {
+  font-weight: 600;
+  color: var(--ink);
+}
+.listing-stores {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 14px;
+  overflow-wrap: anywhere;
+}
+.listing-coverage-cell {
+  min-width: 180px;
+  max-width: 300px;
+}
 .table-product-copy .category-label {
   margin-bottom: 0;
 }
@@ -1779,6 +1800,8 @@ h3 {
     grid-row: 2;
     grid-column: 1 / -1;
     width: 100%;
+    min-width: 0;
+    overflow-x: auto;
     align-items: stretch;
     justify-content: space-between;
     gap: 4px;

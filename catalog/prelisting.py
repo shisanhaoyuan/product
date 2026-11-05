@@ -83,6 +83,7 @@ class StoreState(StrictInput):
 
 
 class Filters(StrictInput):
+    deduplicate: bool = False
     q: str = Field(default='', max_length=300)
     store: str = Field(default='', max_length=100)
     brand: str = Field(default='', max_length=100)
@@ -192,8 +193,8 @@ def build_preview(catalog, db, data, exclude_batch=None):
         if len(rows) != len(data.listing_ids):
             raise HTTPException(409, '部分所选商品不存在，请刷新商品库')
     else:
-        where, args = catalog.filter_sql(**data.filters.model_dump())
-        rows = db.execute(f'SELECT * FROM current_listings AS listings WHERE {where} ORDER BY uploaded_at DESC,id LIMIT 501', args).fetchall()
+        query, args = catalog.selection_sql(**data.filters.model_dump())
+        rows = db.execute(f'SELECT * FROM ({query}) AS listings ORDER BY uploaded_at DESC,id LIMIT 501', args).fetchall()
     if not rows or len(rows) > 500:
         raise HTTPException(422, '每批请选择 1–500 个商品；请缩小筛选范围')
     entries = active_entries(db)

@@ -8,6 +8,7 @@ import { errorMessage, priceRange, productStatus } from '../utils/display';
 import AppIcon from '../components/AppIcon.vue';
 import FilterSelect from '../components/FilterSelect.vue';
 import ProductCard from '../components/ProductCard.vue';
+import ListingCoverage from '../components/ListingCoverage.vue';
 import ProductImage from '../components/ProductImage.vue';
 import StatusBadge from '../components/StatusBadge.vue';
 import PrelistingComposer from '../components/PrelistingComposer.vue';
@@ -79,6 +80,7 @@ const dateOptions = computed(() => [
 const selectionFilters = computed(() => {
   const values = new URLSearchParams(filters.value);
   values.delete('page');
+  values.set('deduplicate', 'true');
   return Object.fromEntries(values);
 });
 const selectedCount = computed(() =>
@@ -174,9 +176,9 @@ const metrics = computed(() =>
     : [],
 );
 const tabs = computed(() => [
-  { value: '', label: '全部商品', count: stats.value?.listings },
-  { value: 'complete', label: '核验完整', count: stats.value?.complete },
-  { value: 'review', label: '待复核', count: stats.value?.review },
+  { value: '', label: '全部商品', count: stats.value?.unique_counts?.all_products },
+  { value: 'complete', label: '核验完整', count: stats.value?.unique_counts?.complete },
+  { value: 'review', label: '待复核', count: stats.value?.unique_counts?.review },
 ]);
 
 function changeFilter(key: string, value: string) {
@@ -214,7 +216,9 @@ async function load() {
   try {
     if (!stats.value) await refreshStats();
     if (request.signal.aborted) return;
-    const result = await catalogApi.products(filters.value.toString(), request.signal);
+    const params = new URLSearchParams(filters.value);
+    params.set('deduplicate', 'true');
+    const result = await catalogApi.products(params.toString(), request.signal);
     if (!request.signal.aborted) data.value = result;
   } catch (reason) {
     if (!request.signal.aborted) error.value = errorMessage(reason);
@@ -233,7 +237,7 @@ onBeforeUnmount(() => {
     <div>
       <p class="eyebrow">CATALOG / 商品管理</p>
       <h1>
-        商品库<span class="heading-count">{{ stats?.listings ?? '—' }}</span>
+        商品库<span class="heading-count">{{ data?.total ?? '—' }}</span>
       </h1>
     </div>
     <div class="actions">
@@ -394,10 +398,10 @@ onBeforeUnmount(() => {
     <div class="result-line">
       <span id="result-count"
         ><template v-if="!loading && data"
-          >共 <strong>{{ data.total }}</strong> 个商品模板 <span class="dot-separator">·</span>
+          >共 <strong>{{ data.total }}</strong> 个商品 <span class="dot-separator">·</span>
           {{ filters.size ? '已应用筛选' : '按上传时间排序' }}</template
         ><template v-else>正在读取商品…</template></span
-      ><span class="data-note"><i></i>历史记录快照 · 来源可追溯</span>
+      ><span class="data-note"><i></i>按 ASIN 去重 · 上架次数按全库店铺模板统计</span>
     </div>
     <div v-if="error" class="error-box">
       加载失败：{{ error }} <button class="btn small" @click="load">重试</button>
@@ -426,6 +430,7 @@ onBeforeUnmount(() => {
             <tr>
               <th v-if="canEdit">选择</th>
               <th>商品</th>
+              <th>上架次数 / 店铺</th>
               <th>ASIN / SKU</th>
               <th>店铺 / 品牌</th>
               <th>来源 / 卖家</th>
@@ -456,6 +461,7 @@ onBeforeUnmount(() => {
                   ></RouterLink
                 >
               </td>
+              <td class="listing-coverage-cell"><ListingCoverage :product="product" /></td>
               <td class="mono">
                 {{ product.asin }}<br /><span class="muted">{{ product.sku }}</span>
               </td>

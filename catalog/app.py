@@ -104,8 +104,8 @@ def create_app(database=None):
     def stats():return catalog.stats()
 
     @app.get('/api/products')
-    def products(q:str='',store:str='',brand:str='',status:str='',date:str='',page:int=Query(1,ge=1),page_size:int=Query(24,ge=1,le=100),category:str='',seller_status:str=Query('',pattern='^(blocked|unblocked)?$')):
-        return catalog.find(q,store,brand,status,date,page,page_size,category=category,seller_status=seller_status)
+    def products(q:str='',store:str='',brand:str='',status:str='',date:str='',page:int=Query(1,ge=1),page_size:int=Query(24,ge=1,le=100),category:str='',seller_status:str=Query('',pattern='^(blocked|unblocked)?$'),deduplicate:bool=False):
+        return catalog.find(q,store,brand,status,date,page,page_size,category=category,seller_status=seller_status,deduplicate=deduplicate)
 
     @app.get('/api/products/{listing_id}')
     def detail(listing_id:str):

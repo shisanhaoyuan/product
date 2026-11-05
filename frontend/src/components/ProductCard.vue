@@ -4,6 +4,7 @@ import { priceRange, productStatus } from '../utils/display';
 import AppIcon from './AppIcon.vue';
 import ProductImage from './ProductImage.vue';
 import StatusBadge from './StatusBadge.vue';
+import ListingCoverage from './ListingCoverage.vue';
 defineProps<{ product: ProductSummary }>();
 </script>
 <template>
@@ -38,6 +39,7 @@ defineProps<{ product: ProductSummary }>();
       >
         卖家已拉黑 · {{ product.seller_blacklist.length }} 位（含子变体）
       </p>
+      <ListingCoverage :product="product" />
       <div class="card-meta">
         <span class="meta-label">ASIN</span><span class="mono">{{ product.asin }}</span
         ><span class="meta-label">SKU</span

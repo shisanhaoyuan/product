@@ -185,6 +185,11 @@ class Catalog:
             counts["categories"] = [category_option(row['category']) | {'count': row['count']}
                 for row in db.execute(f"SELECT category,COUNT(*) AS count FROM (SELECT {self.category_sql} AS category FROM current_listings) c GROUP BY category ORDER BY category='' ASC,lower(category)")]
             counts["review"] = counts["listings"] - counts["complete"]
+            counts["unique_counts"] = dict(db.execute("""SELECT
+                COUNT(DISTINCT COALESCE(NULLIF(p.asin,''),l.id)) AS all_products,
+                COUNT(DISTINCT CASE WHEN l.complete=1 THEN COALESCE(NULLIF(p.asin,''),l.id) END) AS complete,
+                COUNT(DISTINCT CASE WHEN l.complete=0 THEN COALESCE(NULLIF(p.asin,''),l.id) END) AS review
+                FROM current_listings l JOIN products p ON p.id=l.product_id""").fetchone())
             return counts
 
     def filter_sql(self, q="", store="", brand="", status="", date="", category="", seller_status=""):
@@ -214,13 +219,35 @@ class Catalog:
                 where += ' AND 0=1'
         return where, args
 
-    def find(self, q="", store="", brand="", status="", date="", page=1, page_size=24, category="", seller_status=""):
-        where, args = self.filter_sql(q,store,brand,status,date,category,seller_status)
+    def selection_sql(self, *, deduplicate=False, **filters):
+        where, args = self.filter_sql(**filters)
+        query = f"SELECT listings.* FROM current_listings AS listings WHERE {where}"
+        if deduplicate:
+            # Select a matching template before pagination, retaining every source record.
+            query = f"""SELECT * FROM (
+                SELECT listings.*, ROW_NUMBER() OVER (
+                    PARTITION BY COALESCE(NULLIF(products.asin,''),listings.id)
+                    ORDER BY listings.uploaded_at DESC,listings.id) AS asin_position
+                FROM current_listings AS listings JOIN products ON products.id=listings.product_id
+                WHERE {where}) AS grouped_listings WHERE asin_position=1"""
+        return query, args
+
+    def find(self, q="", store="", brand="", status="", date="", page=1, page_size=24, category="", seller_status="", deduplicate=False):
+        query, args = self.selection_sql(q=q,store=store,brand=brand,status=status,date=date,
+                                         category=category,seller_status=seller_status,deduplicate=deduplicate)
         with self.connect() as db:
             read_snapshot(db)
-            total = db.execute(f"SELECT COUNT(*) FROM current_listings AS listings WHERE {where}",args).fetchone()[0]
-            rows = db.execute(f"SELECT id,data_json,{self.category_sql} AS category FROM current_listings AS listings WHERE {where} ORDER BY uploaded_at DESC,id LIMIT ? OFFSET ?",
+            total = db.execute(f"SELECT COUNT(*) FROM ({query}) AS listings",args).fetchone()[0]
+            rows = db.execute(f"SELECT id,data_json,{self.category_sql} AS category FROM ({query}) AS listings ORDER BY uploaded_at DESC,id LIMIT ? OFFSET ?",
                               [*args,page_size,(page-1)*page_size]).fetchall()
+            asins = list({json.loads(row['data_json'])['asin'] for row in rows} - {''})
+            coverage = {}
+            if asins:
+                placeholders = ','.join('?' for _ in asins)
+                for row in db.execute(f"""SELECT p.asin,l.store,COUNT(*) AS count FROM listings l
+                        JOIN products p ON p.id=l.product_id WHERE p.asin IN ({placeholders})
+                        GROUP BY p.asin,l.store ORDER BY l.store""", asins):
+                    coverage.setdefault(row['asin'], []).append(dict(store=row['store'],count=row['count']))
             entries = active_entries(db)
             items=[]
             for r in rows:
@@ -231,7 +258,9 @@ class Catalog:
                     'template','creator','uploaded_at','observed_at','evidence_kind','save_succeeded',
                     'fill_complete','readback_verified','local_edit')} | dict(id=r['id'],title=d['copy']['title'],
                     image=d['images'][0] if d['images'] else next((v['images'][0] for v in d['variants'] if v['images']),''),
-                    variant_count=len(d['variants']),prices=prices,issue_count=len(d['issues']),category=r['category'],seller_blacklist=matches(d, entries)))
+                    variant_count=len(d['variants']),prices=prices,issue_count=len(d['issues']),category=r['category'],seller_blacklist=matches(d, entries),
+                    listing_count=sum(s['count'] for s in coverage.get(d['asin'], [])) or 1,
+                    listing_stores=coverage.get(d['asin'], [dict(store=d['store'],count=1)])))
             return dict(items=items,total=total,page=page,page_size=page_size)
 
     def get(self, listing_id):
