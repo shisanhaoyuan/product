@@ -31,6 +31,8 @@ class Catalog:
                     rebuild(db)
                 db.executemany('INSERT INTO migrations VALUES(?) ON CONFLICT DO NOTHING',
                                [(v,) for v in (1,2,3,5,6,7)])
+                from .source_capture import initialize as initialize_source_capture
+                initialize_source_capture(db)
             return
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -73,6 +75,8 @@ class Catalog:
             initialize_prelisting(db)
             from .images import initialize as initialize_images
             initialize_images(db)
+            from .source_capture import initialize as initialize_source_capture
+            initialize_source_capture(db)
 
     @contextmanager
     def connect(self):

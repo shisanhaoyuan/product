@@ -5,8 +5,10 @@ import io
 import json
 import re
 import warnings
+import zipfile
 from datetime import datetime, timezone
 from html.parser import HTMLParser
+from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
@@ -18,6 +20,17 @@ from starlette.concurrency import run_in_threadpool
 from .object_storage import StorageError, save_metadata
 
 MAX_UPLOAD = 8 * 1024 * 1024
+
+
+class HumanVerificationRequired(ValueError):
+    pass
+
+
+def needs_verification(html):
+    return any(marker in html for marker in (
+        'validateCaptcha', 'Type the characters you see',
+        'api-services-support@amazon.com', 'captcha/verify', 'Robot Check',
+    ))
 
 
 def initialize(db):
@@ -70,8 +83,8 @@ class ProductHTML(HTMLParser):
 
 
 def amazon_images(html, asin):
-    if 'validateCaptcha' in html or 'Type the characters you see' in html or 'api-services-support@amazon.com' in html:
-        raise ValueError('Amazon 要求人机验证，请稍后重试或使用图片链接导入')
+    if needs_verification(html):
+        raise HumanVerificationRequired('Amazon 要求人机验证，请在打开的浏览器页面完成验证')
     page = ProductHTML()
     page.feed(html)
     if page.asins != {asin}:
@@ -119,22 +132,30 @@ def amazon_images(html, asin):
     return result[:100]
 
 
-def fetch_amazon_images(asin):
+def fetch_amazon_page(asin):
     url = f'https://www.amazon.com/dp/{asin}?th=1&psc=1'
     try:
         with httpx.Client(timeout=httpx.Timeout(20, connect=8), follow_redirects=False, trust_env=False) as client:
             with client.stream('GET', url, headers={'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en-US,en;q=0.9'}) as response:
-                if response.status_code != 200:
-                    raise ValueError(f'Amazon 暂未返回商品页面（HTTP {response.status_code}），请稍后重试')
                 raw = bytearray()
                 for part in response.iter_bytes():
                     raw.extend(part)
                     if len(raw) > 6 * 1024 * 1024:
                         raise ValueError('来源页面超出大小限制')
-        return {'asin': asin, 'source_url': url, 'images': amazon_images(raw.decode('utf-8', errors='replace'), asin),
-                'fetched_at': datetime.now(timezone.utc).isoformat()}
+                html = raw.decode('utf-8', errors='replace')
+                if needs_verification(html) or 'validateCaptcha' in response.headers.get('location', ''):
+                    raise HumanVerificationRequired('Amazon 要求人机验证')
+                if response.status_code != 200:
+                    raise ValueError(f'Amazon 暂未返回商品页面（HTTP {response.status_code}），请稍后重试')
+        return html
     except httpx.HTTPError as exc:
-        raise ValueError('无法连接 Amazon，请检查服务器网络后重试；原图片未改变') from exc
+        raise ValueError('无法连接 Amazon，请检查服务器网络后重试') from exc
+
+
+def fetch_amazon_images(asin):
+    return {'asin': asin, 'source_url': f'https://www.amazon.com/dp/{asin}?th=1&psc=1',
+            'images': amazon_images(fetch_amazon_page(asin), asin),
+            'fetched_at': datetime.now(timezone.utc).isoformat()}
 
 
 class CaptureInput(BaseModel):
@@ -142,8 +163,26 @@ class CaptureInput(BaseModel):
     variant_sku: str | None = Field(default=None, min_length=1, max_length=200)
 
 
+class BrowserCaptureInput(CaptureInput):
+    source_url: str = Field(max_length=2000)
+    html: str = Field(min_length=1, max_length=6 * 1024 * 1024)
+
+
 def image_routes(catalog, storage):
     router = APIRouter(prefix='/api/products')
+
+    @router.get('/images/helper.zip')
+    def helper_download():
+        root = Path(__file__).resolve().parent.parent / 'browser-helper'
+        files = ('manifest.json', 'popup.html', 'popup.js', 'bridge.js', 'worker.js', 'amazon.js')
+        if not all((root / name).is_file() for name in files):
+            raise HTTPException(503, '验证助手文件缺失，请检查部署')
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
+            for name in files:
+                archive.write(root / name, name)
+        return Response(output.getvalue(), media_type='application/zip',
+                        headers={'Content-Disposition': 'attachment; filename="capture-helper.zip"'})
 
     def target(lid, sku):
         p = catalog.get(lid)
@@ -208,7 +247,29 @@ def image_routes(catalog, storage):
             raise HTTPException(422, '当前商品没有明确的 Amazon ASIN，不能推测抓取')
         try:
             return fetch_amazon_images(v['asin'])
+        except HumanVerificationRequired:
+            return {'status': 'verification_required', 'asin': v['asin'],
+                    'source_url': f"https://www.amazon.com/dp/{v['asin']}?th=1&psc=1"}
         except ValueError as exc:
             raise HTTPException(502, str(exc))
+
+    @router.post('/{lid}/images/capture/browser')
+    def browser_capture(lid: str, data: BrowserCaptureInput):
+        p, v = target(lid, data.variant_sku)
+        try:
+            url = urlparse(data.source_url)
+        except ValueError:
+            raise HTTPException(422, '浏览器来源链接无效') from None
+        if (p['source'].casefold() != 'amazon' or not re.fullmatch('[A-Z0-9]{10}', v['asin'])
+                or url.scheme != 'https' or url.hostname != 'www.amazon.com'
+                or url.netloc not in {'www.amazon.com', 'www.amazon.com:443'}
+                or not re.fullmatch(r'/(?:[^/]+/)?dp/' + re.escape(v['asin']) + r'/?', url.path)):
+            raise HTTPException(422, '浏览器页面与当前商品 ASIN 不匹配')
+        try:
+            images = amazon_images(data.html, v['asin'])
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        return {'asin': v['asin'], 'source_url': data.source_url, 'images': images,
+                'fetched_at': datetime.now(timezone.utc).isoformat()}
 
     return router

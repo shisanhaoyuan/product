@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>安装商品库验证助手</title><link rel="stylesheet" href="/assets/docs.css"></head>
+<body><main class="api-docs"><h1>安装商品库验证助手</h1>
+<p>适用于 Windows、macOS 的 Chrome 和 Edge。验证由你本人完成，助手不解验证码，也不读取或传输 Amazon 登录 Cookie。</p>
+<ol><li><a href="/api/products/images/helper.zip" download>下载助手</a>，解压并保留文件夹。</li>
+<li>Chrome 打开 <code>chrome://extensions</code>，Edge 打开 <code>edge://extensions</code>。</li>
+<li>开启“开发者模式”，点击“加载已解压的扩展程序”，选择解压后的文件夹。</li>
+<li>打开商品库，点击浏览器工具栏中的“商品库 · 人工验证助手”，再点击“连接当前商品库网站”，允许访问当前商品库。每个商品库地址只需连接一次。</li>
+<li>回到商品图片管理点击“按 ASIN 重新抓取”，或在商品档案的“来源采集”点击“采集卖家与报价”。需要浏览器采集时会打开 Amazon 标签页。</li>
+<li>在 Amazon 页面完成人工验证。助手读取同一会话下当前 ASIN 的图片或普通报价、卖家与配送信息，返回商品库后再次核验 ASIN。报价列表存在多条符合条件的报价时会记录待复核，不擅自选择。</li></ol>
+<p>取消等待或关闭 Amazon 页面会终止本次抓取。等待最多 10 分钟；浏览器退出后请重新抓取。候选图片需要选择后添加，不会自动替换原图。</p>
+<p>卖家与报价采集需要 1.1.0 或更新版。更新时重新下载解压，在扩展管理页重新加载助手，再刷新商品库及已打开的 Amazon 页面。其他浏览器暂不支持此助手。</p>
+</main></body></html>

@@ -97,9 +97,13 @@ def test_image_access_permissions(team):
     assert viewer.get(url).status_code == 200
     assert viewer.post(path, content=picture()).status_code == 403
     assert viewer.post(f"/api/products/{p['id']}/images/capture", json={'variant_sku':'child-0'}).status_code == 403
+    browser_path = f"/api/products/{p['id']}/images/capture/browser"
+    assert viewer.post(browser_path, json={}).status_code == 403
+    assert TestClient(team, base_url=ORIGIN).post(browser_path, json={}).status_code == 401
     assert TestClient(team, base_url=ORIGIN).get(url).status_code == 401
     admin.headers.pop('X-CSRF-Token')
     assert admin.post(path, content=picture()).status_code == 403
+    assert admin.post(browser_path, json={}).status_code == 403
 
 
 def test_parent_image_import_capture_and_edit_isolation(local, monkeypatch):

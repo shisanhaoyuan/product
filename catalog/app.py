@@ -16,6 +16,7 @@ from .blacklist import blacklist_routes
 from .prelisting import prelisting_routes
 from .editing import editing_routes
 from .images import image_routes
+from .source_capture import source_routes
 from .object_storage import configured_storage
 
 ROOT=Path(__file__).resolve().parent.parent
@@ -43,6 +44,7 @@ def create_app(database=None):
     storage=configured_storage(catalog)
     app.state.image_storage=storage
     app.include_router(image_routes(catalog,storage))
+    app.include_router(source_routes(catalog))
 
     @app.middleware('http')
     async def guard(request:Request, call_next):
@@ -94,7 +96,7 @@ def create_app(database=None):
     def health():
         with catalog.connect() as db:
             db.execute('SELECT 1').fetchone()
-        return {'status':'ok','schema_version':7 if catalog.postgres else 6,
+        return {'status':'ok','schema_version':8,
                 'database':'postgresql' if catalog.postgres else 'sqlite',
                 'images':storage.backend if storage else 'sqlite'}
 

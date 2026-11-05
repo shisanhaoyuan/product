@@ -2,6 +2,14 @@
 
 本机使用的独立 Web 系统。列表展示 ASIN、商品图片、来源、卖家、SKU、店铺、品牌和核验状态；详情包含主商品与每个子 SKU 的价格、库存、EAN、图片、五点、描述、动态属性及来源证据。中文界面支持搜索、筛选、卡片/表格切换、CSV 导出和 JSON 导入。
 
+## 图片抓取与人工验证
+
+按 ASIN 抓取遇到 Amazon 人机验证时，前端通过本机 Chrome/Edge 扩展打开对应商品页。用户自行验证，助手在同一浏览器会话读取当前图片，再由服务器核验当前主商品或子 SKU 的 ASIN，展示候选图；不会自动保存或覆盖图片。
+
+Windows/macOS 均可使用。安装说明位于 `/assets/capture-helper.html`，助手从已登录网站的 `/api/products/images/helper.zip` 下载。解压后通过浏览器扩展页的开发者模式加载，返回商品库并在扩展弹窗点击“连接当前商品库网站”。安装后刷新网页。扩展源代码在 `browser-helper/`，服务器按源文件即时生成下载包，无须单独构建。
+
+等待最多 10 分钟，可取消；关闭验证页会通知取消。浏览器重启后需要重新抓取。助手仅访问用户授权的商品库网站及 `www.amazon.com`；不解验证码，不上传 Cookie、密码或登录凭证，只返回当前商品 ASIN、来源 URL 和图片解析所需的页面片段。服务器继续执行登录、角色、CSRF、来源及 ASIN 校验。Safari/Firefox 暂不支持此助手。
+
 ## 启动
 
 首次安装需要 Python 3.11 或更新版本、Node.js 22.12 或更新版本（推荐 Node 24 LTS）。在本目录执行：
@@ -162,6 +170,16 @@ npm audit
 接口：`GET/POST /api/listing-stores`，`PATCH /api/listing-stores/{id}`；`POST /api/prelisting/preview` 接收 `listing_ids` 或 `filters`（二选一）、`store_id`、`brand`、`multiplier`；`POST /api/prelisting/batches` 额外接收预览的 `preview_hash` 与 UUID `request_key`；`GET /api/prelisting/batches` 分页列出批次，`GET /api/prelisting/batches/{id}` 查看详情，`POST /api/prelisting/batches/{id}/action` 接收 `action=confirm|cancel`。错误预览、越界参数及过时数据均由后端拒绝，所有写入复用团队角色、Origin、CSRF 校验。
 
 迁移 4 自动创建店铺、批次、商品快照、占用及操作记录表。完整 SQLite 备份包含这些数据，商品 JSON 导出仍仅包含来源商品。
+
+## 商品档案来源采集
+
+商品档案及每个子变体详情中的「来源采集」可按当前 ASIN 读取 Amazon 美国站的卖家、网页商品价格、原价、运费和配送时间。记录显示 ASIN、配送地区、采集时间和待核验项，刷新/重新打开后仍保留；仅代表该次网页观察，不表示实时价格或承诺送达日期。来源记录不覆盖现有商品卖家、ERP 售价、库存、倍率、图片、文案或回读状态，也不自动影响预上架价格。
+
+报价和配送必须来自同一容器；有 Sellers on Amazon 入口时使用浏览器助手展开下方普通新品列表，排除置顶、二手、会员专享报价。列表多条报价时标记待核验，不自行排名。保留当前显示价及同报价唯一较高原价（用户价格基准规则），不乘倍率。运费不明、仅 FREE returns、条件免运费、非 USD 或配送地区未核验为 10001 时明确提示。服务端信息不全或遇到人机验证时打开本机浏览器继续；验证码由用户完成。
+
+需要浏览器验证助手 **1.1.0 或更新版**（Chrome/Edge，macOS/Windows）；已安装旧版需重新下载、解压并在扩展管理页重新加载，再刷新商品库。源站页面结构变化可能导致部分信息无法核验，失败时保留既有记录。迁移 8 自动创建 `source_captures` 表，采集历史随数据库完整备份保留，商品来源 JSON 导出不含独立采集历史。服务器 Git 更新后需重启后端以创建该表；无需新依赖或配置。
+
+接口：`GET /api/products/{id}/source-capture` 读取最新记录，`POST` 同地址发起采集，`POST /api/products/{id}/source-capture/browser` 接收已核验浏览器片段；可指定 `variant_sku`，团队模式仅管理员/编辑员可采集，写入沿用 Origin、CSRF 校验。历史按商品、唯一子 SKU、ASIN 隔离，保存前再次核验商品身份。
 
 ## 商品双击编辑
 

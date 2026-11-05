@@ -1,4 +1,5 @@
 import type {
+  SourceCapture,
   ImportRecord,
   ImportResult,
   ProductDetail,
@@ -57,6 +58,43 @@ export async function request<T>(path: string, options?: RequestInit): Promise<T
 }
 
 export const catalogApi = {
+  sourceCapture: (id: string, sku?: string, signal?: AbortSignal) =>
+    request<SourceCapture | null>(
+      `/api/products/${encodeURIComponent(id)}/source-capture${sku ? '?variant_sku=' + encodeURIComponent(sku) : ''}`,
+      { signal },
+    ),
+  captureSource: (id: string, sku?: string, signal?: AbortSignal) =>
+    request<SourceCapture>(`/api/products/${encodeURIComponent(id)}/source-capture`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ variant_sku: sku }),
+      signal,
+    }),
+  browserCaptureSource: (
+    id: string,
+    sku: string | undefined,
+    page: { source_url: string; html: string },
+    signal?: AbortSignal,
+  ) =>
+    request<SourceCapture>(`/api/products/${encodeURIComponent(id)}/source-capture/browser`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ variant_sku: sku, source_url: page.source_url, html: page.html }),
+      signal,
+    }),
+  browserCaptureImages: (
+    id: string,
+    sku: string | undefined,
+    page: { source_url: string; html: string },
+  ) =>
+    request<{ asin: string; source_url: string; fetched_at: string; images: string[] }>(
+      `/api/products/${encodeURIComponent(id)}/images/capture/browser`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ variant_sku: sku, source_url: page.source_url, html: page.html }),
+      },
+    ),
   uploadImage: (id: string, sku: string | undefined, file: File) =>
     request<{ url: string }>(
       `/api/products/${encodeURIComponent(id)}/images/upload${sku === undefined ? '' : '?variant_sku=' + encodeURIComponent(sku)}`,
@@ -67,14 +105,17 @@ export const catalogApi = {
       },
     ),
   captureImages: (id: string, sku?: string) =>
-    request<{ asin: string; source_url: string; fetched_at: string; images: string[] }>(
-      `/api/products/${encodeURIComponent(id)}/images/capture`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ variant_sku: sku }),
-      },
-    ),
+    request<{
+      status?: 'verification_required';
+      asin: string;
+      source_url: string;
+      fetched_at?: string;
+      images?: string[];
+    }>(`/api/products/${encodeURIComponent(id)}/images/capture`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ variant_sku: sku }),
+    }),
   editProduct: (
     id: string,
     expected_revision: string,

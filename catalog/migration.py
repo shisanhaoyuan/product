@@ -13,7 +13,7 @@ from .projection import rebuild
 TABLES = ('products','listings','variants','snapshots','imports','users','sessions',
           'auth_attempts','audit_events','seller_blacklist','seller_blacklist_events',
           'product_edits','product_edit_events','listing_stores','prelisting_batches',
-          'prelisting_items','prelisting_claims','prelisting_events','image_objects')
+          'prelisting_items','prelisting_claims','prelisting_events','image_objects','source_captures')
 
 
 def migrate_sqlite(source, target, storage):

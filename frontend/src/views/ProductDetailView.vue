@@ -21,6 +21,7 @@ import VariantPanel from '../components/VariantPanel.vue';
 import PrelistingComposer from '../components/PrelistingComposer.vue';
 import SellerRiskPanel from '../components/SellerRiskPanel.vue';
 import InlineEdit from '../components/InlineEdit.vue';
+import SourceCapturePanel from '../components/SourceCapturePanel.vue';
 import {
   productEditingKey,
   lockedAttributeKeys,
@@ -360,6 +361,7 @@ onBeforeUnmount(() => {
               >
             </div>
           </div>
+          <SourceCapturePanel :listing-id="product.id" :asin="product.asin" />
         </div>
       </section>
     </div>

@@ -1,5 +1,22 @@
 export type EvidenceKind = 'persisted_readback' | 'editor_snapshot' | 'source_only';
 export type Fields = Record<string, unknown>;
+export interface SourceCapture {
+  status: 'captured' | 'partial' | 'verification_required' | 'browser_required';
+  asin: string;
+  source_url: string;
+  captured_at?: string;
+  variant_sku?: string;
+  seller?: string | null;
+  price?: string | null;
+  original_price?: string | null;
+  basis_price?: string | null;
+  currency?: string | null;
+  shipping?: string | null;
+  delivery?: string | null;
+  delivery_location?: string | null;
+  offer_scope?: string;
+  issues?: string[];
+}
 export interface ProductCopy {
   title: string;
   description: string;

@@ -12,9 +12,9 @@ def package(destination):
     if destination.exists():
         raise SystemExit('目标已存在，使用新文件名以保留上一版')
     destination.parent.mkdir(parents=True, exist_ok=True)
-    selected = ['catalog', 'web', 'frontend/src', 'frontend/public', 'tests', 'deploy',
+    selected = ['catalog', 'web', 'browser-helper', 'frontend/src', 'frontend/public', 'tests', 'deploy',
                 'validation/browser_check.py', 'validation/frontend_state_check.py', 'validation/team_browser_check.py',
-                'validation/category_browser_check.py',
+                'validation/category_browser_check.py', 'validation/capture_helper_check.py',
                 'frontend/package.json', 'frontend/package-lock.json', 'frontend/index.html',
                 'frontend/vite.config.ts', 'frontend/tsconfig.json', 'frontend/.prettierrc.json',
                 'README.md', 'MAINTENANCE.md', 'VALIDATION.md', 'pyproject.toml', '.gitignore']

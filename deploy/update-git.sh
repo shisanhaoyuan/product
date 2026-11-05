@@ -73,8 +73,8 @@ PY
   .venv/bin/python -m pip install --no-deps -e .
   .venv/bin/python -m pip check
   (cd frontend && npm ci --include=dev && npm run build)
-  chgrp -R jiwu catalog web .venv
-  chmod -R g+rX catalog web .venv
+  chgrp -R jiwu catalog web browser-helper .venv
+  chmod -R g+rX catalog web browser-helper .venv
   systemctl start jiwu
   local healthy=0
   for attempt in {1..20}; do

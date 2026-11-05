@@ -5,6 +5,7 @@ import { errorMessage, safeUrl } from '../utils/display';
 import ProductImage from './ProductImage.vue';
 import AppIcon from './AppIcon.vue';
 import { catalogApi } from '../api/client';
+import { captureInBrowser } from '../utils/browserCapture';
 
 const props = defineProps<{ images: string[]; sku?: string; asin?: string; hero?: boolean }>();
 const scope = computed(() => (props.sku === undefined ? '主商品' : '子商品'));
@@ -22,6 +23,9 @@ const working = ref(false),
   chosen = ref<string[]>([]),
   notice = ref('');
 const busy = computed(() => !!editing?.busy.value || working.value);
+const verification = ref(false);
+const needsHelper = ref(false);
+let captureController: AbortController | undefined;
 async function upload(event: Event) {
   const files = Array.from((event.target as HTMLInputElement).files || []);
   if (!editing || !files.length || busy.value) return;
@@ -61,14 +65,31 @@ async function capture() {
   notice.value = '';
   candidates.value = [];
   chosen.value = [];
+  needsHelper.value = false;
+  const controller = new AbortController();
+  captureController = controller;
   try {
-    const result = await catalogApi.captureImages(editing.listingId.value, props.sku);
-    candidates.value = result.images;
-    notice.value = `已核验 ASIN ${result.asin}，抓取到 ${result.images.length} 张图片；请选择需要添加的图片。`;
+    let result = await catalogApi.captureImages(editing.listingId.value, props.sku);
+    if (controller.signal.aborted) return;
+    if (result.status === 'verification_required') {
+      verification.value = true;
+      needsHelper.value = true;
+      notice.value = '等待人工验证，完成后继续抓取。';
+      const page = await captureInBrowser(result.asin, controller.signal);
+      if (controller.signal.aborted) return;
+      result = await catalogApi.browserCaptureImages(editing.listingId.value, props.sku, page);
+      if (controller.signal.aborted) return;
+      needsHelper.value = false;
+    }
+    candidates.value = result.images || [];
+    notice.value = `已核验 ASIN ${result.asin}，抓取到 ${candidates.value.length} 张图片；请选择需要添加的图片。`;
   } catch (e) {
+    notice.value = '';
     error.value = errorMessage(e);
   } finally {
     working.value = false;
+    verification.value = false;
+    captureController = undefined;
   }
 }
 async function addCaptured() {
@@ -153,6 +174,7 @@ function step(offset: number) {
     selected.value = (selected.value + offset + props.images.length) % props.images.length;
 }
 onBeforeUnmount(() => {
+  captureController?.abort();
   if (editing?.active.value === identity) editing.active.value = '';
 });
 </script>
@@ -306,6 +328,22 @@ onBeforeUnmount(() => {
             </div>
           </form>
           <p v-if="notice" role="status" class="muted">{{ notice }}</p>
+          <div v-if="needsHelper" class="image-import-actions">
+            <a class="btn small" href="/api/products/images/helper.zip" download
+              ><AppIcon name="Download" />下载验证助手</a
+            >
+            <a class="btn small" href="/assets/capture-helper.html" target="_blank" rel="noopener"
+              >安装说明</a
+            >
+            <button
+              v-if="verification"
+              type="button"
+              class="btn small"
+              @click="captureController?.abort()"
+            >
+              <AppIcon name="X" />取消等待
+            </button>
+          </div>
           <div v-if="candidates.length" class="image-capture-results">
             <div class="image-capture-grid">
               <label v-for="(url, i) in candidates" :key="url"

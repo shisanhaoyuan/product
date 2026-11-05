@@ -6,6 +6,7 @@ import CopyContent from './CopyContent.vue';
 import ProductImage from './ProductImage.vue';
 import InlineEdit from './InlineEdit.vue';
 import VariantImages from './VariantImages.vue';
+import SourceCapturePanel from './SourceCapturePanel.vue';
 import { useProductEditing } from '../composables/useProductEditing';
 const props = defineProps<{ variants: Variant[] }>();
 const emit = defineEmits<{ prelist: [skus: string[]] }>();
@@ -301,6 +302,12 @@ const selected = computed(() =>
         />
       </div>
       <CopyContent :copy="selected.copy" :variant-sku="selected.sku" />
+      <SourceCapturePanel
+        v-if="editing?.listingId.value"
+        :listing-id="editing.listingId.value"
+        :asin="selected.asin"
+        :sku="selected.sku"
+      />
       <details class="details">
         <summary>本子 SKU 来源、价格与库存核验</summary>
         <pre class="json-block">{{
