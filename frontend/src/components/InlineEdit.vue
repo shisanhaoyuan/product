@@ -30,7 +30,12 @@ async function begin() {
   if (!enabled.value || !context || context.busy.value || context.active.value) return;
   error.value = '';
   textChanged.value = false;
-  draft.value = props.kind === 'images' ? (props.value as string[]).join('\n') : text(props.value);
+  draft.value =
+    props.kind === 'images'
+      ? (props.value as string[]).join('\n')
+      : props.kind === 'json'
+        ? JSON.stringify(props.value, null, 2)
+        : text(props.value);
   features.value = Array.isArray(props.value) ? [...props.value] : [];
   context.active.value = identity.value;
   await nextTick();

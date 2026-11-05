@@ -1502,6 +1502,37 @@ h3 {
   border-radius: 5px;
   font-size: 12px;
 }
+.attribute-readable {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr));
+  gap: 18px 25px;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.attribute-structured {
+  grid-column: 1 / -1;
+}
+.attribute-readable-row {
+  min-width: 0;
+}
+.attribute-readable dt {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+.attribute-readable dd {
+  margin: 0;
+  color: #5c6b7e;
+  white-space: pre-wrap;
+}
+.details.attribute-json {
+  margin-top: 10px;
+}
+.attribute-json .json-block {
+  max-height: 320px;
+}
 .issue {
   padding: 12px 0;
   border-bottom: 1px solid #e8dfcb;

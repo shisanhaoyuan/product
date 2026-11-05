@@ -21,6 +21,8 @@ import VariantPanel from '../components/VariantPanel.vue';
 import PrelistingComposer from '../components/PrelistingComposer.vue';
 import SellerRiskPanel from '../components/SellerRiskPanel.vue';
 import InlineEdit from '../components/InlineEdit.vue';
+import AttributeValue from '../components/AttributeValue.vue';
+import { isStructured } from '../utils/attributes';
 import SourceCapturePanel from '../components/SourceCapturePanel.vue';
 import {
   productEditingKey,
@@ -410,7 +412,7 @@ onBeforeUnmount(() => {
         <div class="section-head">
           <div>
             <h2>填写属性</h2>
-            <p>实际字段名称和值，包括空值。</p>
+            <p>商品属性与编辑框回读，包括空值。</p>
           </div>
           <input
             class="attributes-search"
@@ -426,17 +428,22 @@ onBeforeUnmount(() => {
               v-for="[key, value] in attributes"
               :key="key"
               class="attribute"
+              :class="{ 'attribute-structured': isStructured(value) }"
               :data-attribute="key"
             >
-              <label>{{ key }}</label>
-              <InlineEdit
+              <label>{{
+                key === 'dynamic_attributes'
+                  ? '动态属性 · dynamic_attributes'
+                  : key === 'live_schema_values'
+                    ? '编辑框回读 · live_schema_values'
+                    : key
+              }}</label>
+              <AttributeValue
                 :value="value"
                 :target="{ field: 'fields', key }"
                 :label="key"
-                :kind="typeof value === 'string' ? 'multiline' : 'json'"
                 :readonly="lockedAttributeKeys.has(key.toLowerCase())"
-                ><div class="value">{{ text(value) || '空' }}</div></InlineEdit
-              >
+              />
             </div>
           </div>
           <details v-if="product.management.length" class="details">
