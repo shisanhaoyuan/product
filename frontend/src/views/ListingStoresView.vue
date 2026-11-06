@@ -4,6 +4,7 @@ import { useAuth } from '../composables/useAuth';
 import { prelistingApi } from '../api/prelisting';
 import type { ListingStore } from '../api/types';
 import { errorMessage } from '../utils/display';
+import AppIcon from '../components/AppIcon.vue';
 const { auth } = useAuth();
 const canEdit = computed(
   () => !auth.enabled || ['admin', 'editor'].includes(auth.user?.role || ''),
@@ -11,11 +12,14 @@ const canEdit = computed(
 const stores = ref<ListingStore[]>([]),
   name = ref(''),
   alias = ref(''),
+  code = ref(''),
+  codes = ref<Record<number, string>>({}),
   error = ref(''),
   busy = ref(false);
 async function load() {
   try {
     stores.value = await prelistingApi.stores();
+    codes.value = Object.fromEntries(stores.value.map((s) => [s.id, s.sku_code || '']));
   } catch (e) {
     error.value = errorMessage(e);
   }
@@ -24,9 +28,22 @@ async function add() {
   busy.value = true;
   error.value = '';
   try {
-    await prelistingApi.addStore(name.value.trim(), alias.value.trim());
+    await prelistingApi.addStore(name.value.trim(), alias.value.trim(), code.value || undefined);
     name.value = '';
     alias.value = '';
+    code.value = '';
+    await load();
+  } catch (e) {
+    error.value = errorMessage(e);
+  } finally {
+    busy.value = false;
+  }
+}
+async function saveCode(s: ListingStore) {
+  busy.value = true;
+  error.value = '';
+  try {
+    await prelistingApi.setStoreCode(s.id, codes.value[s.id] || '');
     await load();
   } catch (e) {
     error.value = errorMessage(e);
@@ -74,6 +91,13 @@ onMounted(load);
           maxlength="100"
           placeholder="与系统名称不同时填写"
           :disabled="busy" /></label
+      ><label
+        >SKU 店铺编码（可选）<input
+          v-model="code"
+          pattern="[A-Za-z0-9]{2}"
+          maxlength="2"
+          placeholder="如 21、H2"
+          :disabled="busy" /></label
       ><button class="btn primary" :disabled="busy || !name.trim()">添加店铺</button>
     </form>
     <div v-if="error" class="error-box">{{ error }}</div>
@@ -83,6 +107,7 @@ onMounted(load);
           <tr>
             <th>系统店铺名</th>
             <th>平台显示名</th>
+            <th>SKU 店铺编码</th>
             <th>来源</th>
             <th>状态</th>
             <th v-if="canEdit">操作</th>
@@ -92,6 +117,29 @@ onMounted(load);
           <tr v-for="s in stores" :key="s.id">
             <td>{{ s.name }}</td>
             <td>{{ s.marketplace_name }}</td>
+            <td>
+              <form v-if="canEdit" class="store-code-editor" @submit.prevent="saveCode(s)">
+                <span>MY</span>
+                <input
+                  v-model="codes[s.id]"
+                  :aria-label="s.name + ' SKU 店铺编码'"
+                  pattern="[A-Za-z0-9]{2}"
+                  maxlength="2"
+                  required
+                  placeholder="--"
+                  :disabled="busy"
+                />
+                <button
+                  class="btn small"
+                  :aria-label="'保存 ' + s.name + ' SKU 编码'"
+                  title="保存店铺编码"
+                  :disabled="busy || codes[s.id] === s.sku_code"
+                >
+                  <AppIcon name="Save" />
+                </button>
+              </form>
+              <span v-else>{{ s.sku_code ? 'MY' + s.sku_code : '未配置' }}</span>
+            </td>
             <td>
               {{
                 s.origin === 'user_screenshot'

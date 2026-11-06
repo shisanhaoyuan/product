@@ -48,6 +48,7 @@ defineProps<{ preview: PrelistingPreview }>();
           <thead>
             <tr>
               <th>SKU / ASIN</th>
+              <th>目标店铺 SKU</th>
               <th>当前售价</th>
               <th>来源含运费</th>
               <th>首次 ERP 原价</th>
@@ -60,6 +61,13 @@ defineProps<{ preview: PrelistingPreview }>();
             <tr v-for="v in item.variants" :key="v.sku">
               <td>
                 {{ v.sku }}<br /><span class="muted">{{ v.asin || '缺少 ASIN' }}</span>
+              </td>
+              <td class="platform-sku">
+                <strong v-if="v.platform_sku">{{ v.platform_sku }}</strong>
+                <span v-else-if="preview.sku_rule" class="muted"
+                  >MY{{ preview.store.sku_code }} · 待分配</span
+                >
+                <span v-else class="muted">旧批次未分配</span>
               </td>
               <td>{{ money(v.current_price) }}</td>
               <td>{{ money(v.landed) }}</td>

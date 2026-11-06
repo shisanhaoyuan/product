@@ -172,6 +172,7 @@ export interface ListingStore {
   marketplace_name: string;
   active: number;
   origin: string;
+  sku_code: string | null;
 }
 export interface PrelistingSelection {
   listing_ids?: string[];
@@ -185,6 +186,7 @@ export interface PlanInput extends PrelistingSelection {
 }
 export interface PricePlan {
   sku: string;
+  platform_sku?: string | null;
   asin: string;
   current_price: string | null;
   stock: string | null;
@@ -208,6 +210,7 @@ export interface PricePlan {
   >;
 }
 export interface PrelistingPreview {
+  sku_rule?: string;
   store: ListingStore;
   brand: string;
   multiplier: string;

@@ -19,6 +19,14 @@ const data = ref<BatchPage>(),
   message = ref(''),
   page = ref(1);
 const labels = { draft: '待确认', confirmed: '已确认 · 待接入执行', cancelled: '已取消' };
+const legacySkuBatch = computed(
+  () =>
+    !!batch.value &&
+    !['my_store_random6_v1', 'my_store_random6_v2'].includes(batch.value.preview.sku_rule || ''),
+);
+const needsMixedSku = computed(
+  () => batch.value?.status === 'draft' && batch.value.preview.sku_rule === 'my_store_random6_v1',
+);
 let controller: AbortController | undefined;
 async function load() {
   controller?.abort();
@@ -42,7 +50,7 @@ async function load() {
     if (!current.signal.aborted) loading.value = false;
   }
 }
-async function act(action: 'confirm' | 'cancel') {
+async function act(action: 'confirm' | 'cancel' | 'upgrade_skus') {
   if (!batch.value || busy.value) return;
   busy.value = true;
   error.value = '';
@@ -50,9 +58,11 @@ async function act(action: 'confirm' | 'cancel') {
   try {
     batch.value = await prelistingApi.action(batch.value.id, action);
     message.value =
-      action === 'confirm'
-        ? '批次已确认。执行接口尚未接入，未进行平台刊登。'
-        : '批次已取消，可以重新选择商品创建。';
+      action === 'upgrade_skus'
+        ? '目标 SKU 已升级为字母和数字混合尾码。'
+        : action === 'confirm'
+          ? '批次已确认。执行接口尚未接入，未进行平台刊登。'
+          : '批次已取消，可以重新选择商品创建。';
   } catch (e) {
     error.value = errorMessage(e);
   } finally {
@@ -101,11 +111,22 @@ onBeforeUnmount(() => controller?.abort());
       <RouterLink class="btn small" to="/prelisting">返回批次列表</RouterLink>
     </div>
     <div class="section-body">
+      <p v-if="legacySkuBatch" class="notice notice-space" role="status">
+        此批次未按新规则分配目标店铺 SKU。请先在店铺管理中设置目标店铺唯一的两位编码，
+        再取消此批次并重新创建。新批次将生成 MY + 两位店铺编码 + 六位随机字母和数字。
+        <RouterLink to="/listing-stores">前往店铺管理</RouterLink>
+      </p>
+      <p v-if="needsMixedSku" class="notice notice-space" role="status">
+        此批次使用旧版数字尾码，可升级为六位大写字母和数字混合尾码。
+        <button v-if="canEdit" class="btn small" :disabled="busy" @click="act('upgrade_skus')">
+          升级 SKU
+        </button>
+      </p>
       <PrelistingPreview :preview="batch.preview" />
       <div v-if="canEdit && batch.status !== 'cancelled'" class="plan-footer">
         <button class="btn" :disabled="busy" @click="act('cancel')">取消批次</button
         ><button
-          v-if="batch.status === 'draft'"
+          v-if="batch.status === 'draft' && !legacySkuBatch && !needsMixedSku"
           class="btn primary"
           :disabled="busy || batch.preview.ready_count !== batch.preview.total"
           @click="act('confirm')"

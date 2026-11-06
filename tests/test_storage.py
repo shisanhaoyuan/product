@@ -83,6 +83,9 @@ def test_full_migration_images_idempotency_and_backup(pg, tmp_path, monkeypatch)
     client.post('/api/seller-blacklist',json={'source':'Amazon','seller':'example','reason':'保留原因'})
     from catalog.auth import AuthStore
     AuthStore(app.state.catalog).create_user('migration-admin','long-test-password','admin')
+    from test_prelisting import create, inputs
+    planned, _ = create(client, inputs(client))
+    reserved_sku = planned['preview']['items'][0]['variants'][0]['platform_sku']
     original = app.state.catalog.get(p['id'])
     storage = FileStorage(str(tmp_path/'images'))
     before = hashlib.sha256(source.read_bytes()).hexdigest()
@@ -95,6 +98,9 @@ def test_full_migration_images_idempotency_and_backup(pg, tmp_path, monkeypatch)
     monkeypatch.setenv('CATALOG_IMAGE_ROOT',str(storage.root))
     moved = TestClient(create_app(pg.path))
     assert moved.get(url).content == client.get(url).content
+    assert moved.get(f"/api/prelisting/batches/{planned['id']}").json() == planned
+    with pg.connect() as db:
+        assert db.execute('SELECT platform_sku FROM platform_skus').fetchone()[0] == reserved_sku
     assert edit(moved, {'field':'brand'}, 'AfterMigration').status_code == 200
     with pg.connect() as db:
         assert db.execute('SELECT COUNT(*) FROM product_edit_events').fetchone()[0] == 3
@@ -117,6 +123,8 @@ def test_full_migration_images_idempotency_and_backup(pg, tmp_path, monkeypatch)
             with pg.connect() as db: schema = db.execute('SELECT current_schema()').fetchone()[0]
             count = restored.execute(sql.SQL('SELECT COUNT(*) FROM {}.listings').format(sql.Identifier(schema))).fetchone()[0]
             assert count == 1
+            sku = restored.execute(sql.SQL('SELECT platform_sku FROM {}.platform_skus').format(sql.Identifier(schema))).fetchone()[0]
+            assert sku == reserved_sku
     finally:
         # Use original target connection for database administration.
         conn = conninfo_to_dict(pg.path); conn.pop('options',None)

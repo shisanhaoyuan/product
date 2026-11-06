@@ -12,7 +12,7 @@ from .projection import rebuild
 
 TABLES = ('products','listings','variants','snapshots','imports','users','sessions',
           'auth_attempts','audit_events','seller_blacklist','seller_blacklist_events',
-          'product_edits','product_edit_events','listing_stores','prelisting_batches',
+          'product_edits','product_edit_events','listing_stores','platform_skus','prelisting_batches',
           'prelisting_items','prelisting_claims','prelisting_events','image_objects','source_captures')
 
 
@@ -71,6 +71,9 @@ def migrate_sqlite(source, target, storage):
                     sequence = db.execute('SELECT pg_get_serial_sequence(?,?)', (table,'id')).fetchone()[0]
                     if sequence:
                         db.execute(f"SELECT setval(?::regclass,COALESCE(MAX(id),1),COUNT(*)>0) FROM {table}", (sequence,))
+            if 'sku_code' not in {r['name'] for r in old.execute('PRAGMA table_info(listing_stores)')}:
+                from .platform_sku import backfill_codes
+                backfill_codes(db)
             images = 0
             for row in db.execute('SELECT * FROM image_objects').fetchall():
                 storage.get(row)  # Existing object references must be readable too.

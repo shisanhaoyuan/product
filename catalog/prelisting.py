@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from .blacklist import active_entries, matches, seller_key
 from .database import INTEGRITY_ERRORS, write_lock, read_snapshot, insert_id, is_postgres
+from . import platform_sku
 
 # Only names visible in the user's screenshots; marketplace aliases are explicit.
 SCREENSHOT_STORES = [
@@ -59,13 +60,23 @@ def initialize(db):
         db.executemany('INSERT INTO listing_stores(name,name_key,marketplace_name,origin) VALUES(?,?,?,?) ON CONFLICT DO NOTHING',
                        [(name, seller_key(name), alias, origin) for name, alias, origin in stores])
         db.execute('INSERT INTO migrations VALUES(4)')
+    platform_sku.initialize(db)
 
 
 class StrictInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
 
-class StoreInput(StrictInput):
+class StoreCodeInput(StrictInput):
+    sku_code: str | None = Field(default=None, pattern=r'^[A-Z0-9]{2}$')
+
+    @field_validator('sku_code', mode='before')
+    @classmethod
+    def normalize_code(cls, value):
+        return value.strip().upper() if isinstance(value, str) else value
+
+
+class StoreInput(StoreCodeInput):
     name: str = Field(min_length=1, max_length=100)
     marketplace_name: str = Field(default='', max_length=100)
 
@@ -78,8 +89,14 @@ class StoreInput(StrictInput):
         return value
 
 
-class StoreState(StrictInput):
-    active: bool
+class StoreState(StoreCodeInput):
+    active: bool | None = None
+
+    @model_validator(mode='after')
+    def changes(self):
+        if not self.model_fields_set or ('active' in self.model_fields_set and self.active is None):
+            raise ValueError('请提供店铺状态或两位 SKU 编码')
+        return self
 
 
 class Filters(StrictInput):
@@ -129,7 +146,7 @@ class CreateInput(PlanInput):
 
 
 class BatchAction(StrictInput):
-    action: Literal['confirm', 'cancel']
+    action: Literal['confirm', 'cancel', 'upgrade_skus']
 
 
 def money(value, *, zero=False):
@@ -187,6 +204,8 @@ def build_preview(catalog, db, data, exclude_batch=None):
     store = db.execute('SELECT * FROM listing_stores WHERE id=? AND active=1', (data.store_id,)).fetchone()
     if not store:
         raise HTTPException(409, '目标店铺不存在或已停用')
+    if not store['sku_code']:
+        raise HTTPException(409, '请先在店铺管理中设置该店铺唯一的两位 SKU 编码')
     if data.listing_ids is not None:
         placeholders = ','.join('?' for _ in data.listing_ids)
         rows = db.execute(f'SELECT * FROM current_listings AS listings WHERE id IN ({placeholders}) ORDER BY uploaded_at DESC,id', data.listing_ids).fetchall()
@@ -198,7 +217,7 @@ def build_preview(catalog, db, data, exclude_batch=None):
     if not rows or len(rows) > 500:
         raise HTTPException(422, '每批请选择 1–500 个商品；请缩小筛选范围')
     entries = active_entries(db)
-    items, seen, conflict = [], set(), False
+    items, seen, seen_variants, conflict = [], set(), set(), False
     for row in rows:
         d = json.loads(row['data_json'])
         key = (seller_key(d['source']), d['asin'])
@@ -229,6 +248,13 @@ def build_preview(catalog, db, data, exclude_batch=None):
             checks = [c for c in raw_checks if isinstance(c, dict) and c.get('field') == 'dc_price'] if isinstance(raw_checks, list) else []
             priced = [dict(sku=d['sku'], asin=d['asin'], current_price=d['price'], stock=d['stock'],
                            **planned_price(d, checks[0] if len(checks) == 1 else {}, data.multiplier, False))]
+        identities = [platform_sku.identity(d['source'], v) for v in priced]
+        if len(set(identities)) != len(identities) or seen_variants.intersection(identities):
+            errors.append('多个子 SKU 对应同一商品身份，无法分配唯一平台 SKU')
+            conflict = True
+        seen_variants.update(identities)
+        for variant in priced:
+            variant['platform_sku'] = platform_sku.lookup(db, data.store_id, d['source'], variant)
         errors += [f"{v['sku']}：{v['error']}" for v in priced if v['error']]
         errors += [f"{v['sku']}：库存缺失或不符合 0 / 10 规则，执行前需核验" for v in priced if str(v['stock']) not in {'0', '10'}]
         if not d['seller'] or any(not v['seller'] for v in children):
@@ -241,9 +267,62 @@ def build_preview(catalog, db, data, exclude_batch=None):
     result = dict(store=dict(store), brand=data.brand, multiplier=str(data.multiplier), items=items,
                   total=len(items), variant_count=sum(len(d['variants']) for d in items),
                   ready_count=sum(d['status'] == 'ready' for d in items), can_create=not conflict,
-                  execution_enabled=False, price_rule='verified_higher_basis_v1')
-    result['preview_hash'] = fingerprint(result)
+                  execution_enabled=False, price_rule='verified_higher_basis_v1', sku_rule=platform_sku.RULE)
+    # Allocation occurs only on creation; its persisted value is verified separately on confirmation.
+    result['preview_hash'] = preview_fingerprint(result)
     return result, rows
+
+
+def preview_fingerprint(result):
+    hash_input = {k: v for k, v in result.items() if k != 'preview_hash'} | {'items': [item | {'variants': [
+        {k: value for k, value in v.items() if k != 'platform_sku'} for v in item['variants']
+    ]} for item in result['items']]}
+    return fingerprint(hash_input)
+
+
+def upgrade_draft_skus(db, current):
+    if current['status'] != 'draft':
+        raise HTTPException(409, '只有未确认批次可以升级 SKU；历史确认或取消记录保持原样')
+    preview = current['preview']
+    if preview.get('sku_rule') not in (platform_sku.LEGACY_RULE, platform_sku.RULE):
+        raise HTTPException(409, '旧批次没有 SKU 分配记录，请取消后重新创建')
+    store = db.execute('SELECT * FROM listing_stores WHERE id=?', (preview['store']['id'],)).fetchone()
+    if not store or not store['sku_code'] or store['sku_code'] != preview['store'].get('sku_code'):
+        raise HTTPException(409, '店铺编码已变化，请重新创建批次')
+    targets = {}
+    for item in preview['items']:
+        for variant in item['variants']:
+            sku = platform_sku.lookup(db, store['id'], item['source'], variant)
+            if not sku or sku != variant.get('platform_sku'):
+                raise HTTPException(409, '批次 SKU 与分配记录不一致，未进行升级')
+            if sku[4:].isascii() and sku[4:].isdigit():
+                targets[platform_sku.identity(item['source'], variant)] = (item['source'], variant)
+    if not targets and preview.get('sku_rule') == platform_sku.RULE:
+        return False
+    # Shared reservations cannot be changed underneath another active batch.
+    others = db.execute("SELECT preview_json FROM prelisting_batches WHERE id<>? AND status<>'cancelled'", (current['id'],)).fetchall()
+    for row in others:
+        other = json.loads(row['preview_json'])
+        if other['store']['id'] == store['id'] and any(
+            platform_sku.identity(item['source'], variant) in targets
+            for item in other['items'] for variant in item['variants']
+        ):
+            raise HTTPException(409, '部分 SKU 被其他未取消批次使用，保留原号码；请先核查相关批次')
+    now = datetime.now(timezone.utc).isoformat()
+    replacements = {}
+    for key, (source, variant) in targets.items():
+        # Numeric legacy suffixes are never generated again; cancelled snapshots keep the old IDs.
+        db.execute('DELETE FROM platform_skus WHERE store_id=? AND source_key=? AND identity_key=?', (store['id'], *key))
+        replacements[key] = platform_sku.allocate(db, store, source, variant, now)
+    for item in preview['items']:
+        for variant in item['variants']:
+            key = platform_sku.identity(item['source'], variant)
+            if key in replacements:
+                variant['platform_sku'] = replacements[key]
+    preview['sku_rule'] = platform_sku.RULE
+    preview['preview_hash'] = preview_fingerprint(preview)
+    db.execute('UPDATE prelisting_batches SET preview_json=?,updated_at=? WHERE id=?', (encoded(preview), now, current['id']))
+    return True
 
 
 def prelisting_routes(catalog):
@@ -273,8 +352,13 @@ def prelisting_routes(catalog):
         try:
             with catalog.connect() as db:
                 write_lock(db)
-                store_id = insert_id(db, "INSERT INTO listing_stores(name,name_key,marketplace_name,origin) VALUES(?,?,?,'manual')",
-                                 (data.name, seller_key(data.name), data.marketplace_name or data.name))
+                code = data.sku_code or platform_sku.available_code(db, data.name)
+                if code and db.execute('SELECT 1 FROM listing_stores WHERE sku_code=?', (code,)).fetchone():
+                    if data.sku_code:
+                        raise HTTPException(409, 'SKU 店铺编码已被其他店铺使用')
+                    code = None
+                store_id = insert_id(db, "INSERT INTO listing_stores(name,name_key,marketplace_name,origin,sku_code) VALUES(?,?,?,'manual',?)",
+                                 (data.name, seller_key(data.name), data.marketplace_name or data.name, code))
                 return dict(db.execute('SELECT * FROM listing_stores WHERE id=?', (store_id,)).fetchone())
         except INTEGRITY_ERRORS:
             raise HTTPException(409, '店铺已经存在，请使用已有店铺')
@@ -283,8 +367,17 @@ def prelisting_routes(catalog):
     def store_status(store_id: int, data: StoreState):
         with catalog.connect() as db:
             write_lock(db)
-            if db.execute('UPDATE listing_stores SET active=? WHERE id=?', (int(data.active), store_id)).rowcount != 1:
+            store = db.execute('SELECT * FROM listing_stores WHERE id=?', (store_id,)).fetchone()
+            if not store:
                 raise HTTPException(404, '店铺不存在')
+            if 'sku_code' in data.model_fields_set and data.sku_code != store['sku_code']:
+                if db.execute('SELECT 1 FROM platform_skus WHERE store_id=?', (store_id,)).fetchone():
+                    raise HTTPException(409, '该店铺已分配 SKU，不能更改其编码')
+                if data.sku_code and db.execute('SELECT 1 FROM listing_stores WHERE sku_code=? AND id<>?', (data.sku_code, store_id)).fetchone():
+                    raise HTTPException(409, 'SKU 店铺编码已被其他店铺使用')
+                db.execute('UPDATE listing_stores SET sku_code=? WHERE id=?', (data.sku_code, store_id))
+            if data.active is not None:
+                db.execute('UPDATE listing_stores SET active=? WHERE id=?', (int(data.active), store_id))
             return {'ok': True}
 
     @router.post('/api/prelisting/preview')
@@ -309,6 +402,9 @@ def prelisting_routes(catalog):
             if not result['can_create']:
                 raise HTTPException(409, '包含重复或已在未取消批次中的商品，请调整选择')
             bid, now = uuid.uuid4().hex, datetime.now(timezone.utc).isoformat()
+            for item in result['items']:
+                for variant in item['variants']:
+                    variant['platform_sku'] = platform_sku.allocate(db, result['store'], item['source'], variant, now)
             settings = dict(listing_ids=[r['id'] for r in rows], store_id=data.store_id, brand=data.brand, multiplier=str(data.multiplier))
             if data.variant_skus is not None:
                 settings['variant_skus'] = data.variant_skus
@@ -341,16 +437,26 @@ def prelisting_routes(catalog):
         with catalog.connect() as db:
             write_lock(db)
             current=batch(db,bid)
+            if data.action == 'upgrade_skus':
+                if upgrade_draft_skus(db, current):
+                    event(db, bid, request, 'upgrade_skus', datetime.now(timezone.utc).isoformat())
+                return batch(db, bid)
             target='confirmed' if data.action == 'confirm' else 'cancelled'
             if current['status'] == target:
                 return current
             if current['status'] == 'cancelled':
                 raise HTTPException(409, '已取消的批次不能确认，请重新创建')
             if target == 'confirmed':
+                if current['preview'].get('sku_rule') != platform_sku.RULE:
+                    raise HTTPException(409, '旧批次尚未使用新规则 SKU，请先升级 SKU，或取消后重新创建')
                 row=db.execute('SELECT settings_json FROM prelisting_batches WHERE id=?',(bid,)).fetchone()
                 refreshed,_=build_preview(catalog,db,PlanInput.model_validate_json(row[0]),exclude_batch=bid)
                 if refreshed['preview_hash'] != current['preview']['preview_hash']:
                     raise HTTPException(409,'商品或规则状态已变化，请取消此批次并重新预览创建')
+                expected = [(i['listing_id'], v['sku'], v['platform_sku']) for i in refreshed['items'] for v in i['variants']]
+                frozen = [(i['listing_id'], v['sku'], v.get('platform_sku')) for i in current['preview']['items'] for v in i['variants']]
+                if expected != frozen or any(not sku for _, _, sku in expected):
+                    raise HTTPException(409, '批次平台 SKU 与店铺分配记录不一致，请核查')
                 if refreshed['ready_count'] != refreshed['total']:
                     raise HTTPException(409,'批次存在待复核项，请补齐来源数据后重新创建')
             now=datetime.now(timezone.utc).isoformat()

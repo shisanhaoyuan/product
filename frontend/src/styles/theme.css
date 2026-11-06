@@ -2800,3 +2800,22 @@ input[type='checkbox'] {
     gap: 14px;
   }
 }
+.store-code-editor {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.store-code-editor input {
+  width: 56px;
+  min-width: 56px;
+  text-align: center;
+}
+.store-code-editor .btn {
+  width: 32px;
+  height: 32px;
+  padding: 6px;
+}
+.platform-sku {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
