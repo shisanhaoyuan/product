@@ -5,6 +5,7 @@ import { money, plain, safeUrl, text } from '../utils/display';
 import CopyContent from './CopyContent.vue';
 import ProductImage from './ProductImage.vue';
 import InlineEdit from './InlineEdit.vue';
+import AttributeValue from './AttributeValue.vue';
 import VariantImages from './VariantImages.vue';
 import SourceCapturePanel from './SourceCapturePanel.vue';
 import { useProductEditing } from '../composables/useProductEditing';
@@ -122,13 +123,11 @@ const selected = computed(() =>
           <td>
             <div v-for="(value, key) in variant.attributes" :key="key">
               <span class="muted">{{ key }}:</span
-              ><InlineEdit
+              ><AttributeValue
                 :value="value"
                 :target="{ field: 'attributes', key: String(key), variant_sku: variant.sku }"
                 :label="String(key)"
-                :kind="typeof value === 'string' ? 'text' : 'json'"
-                >{{ text(value) }}</InlineEdit
-              >
+              />
             </div>
           </td>
           <td>

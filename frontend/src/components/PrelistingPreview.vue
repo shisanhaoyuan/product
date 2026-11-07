@@ -3,6 +3,7 @@ import type { PrelistingPreview } from '../api/types';
 import { money, plain } from '../utils/display';
 import StatusBadge from './StatusBadge.vue';
 import ProductImage from './ProductImage.vue';
+import AttributeValue from './AttributeValue.vue';
 defineProps<{ preview: PrelistingPreview }>();
 </script>
 <template>
@@ -116,7 +117,12 @@ defineProps<{ preview: PrelistingPreview }>();
             :src="v.content.swatch_image"
             image-class="table-thumb"
           />
-          <p>{{ JSON.stringify(v.content.attributes) }}</p>
+          <AttributeValue
+            :value="v.content.attributes"
+            :target="{ field: 'attributes', variant_sku: v.sku }"
+            label="子商品属性"
+            readonly
+          />
           <h3>{{ plain(v.content.copy.title) || '未记录标题' }}</h3>
           <ol>
             <li v-for="(feature, i) in v.content.copy.features" :key="i">
