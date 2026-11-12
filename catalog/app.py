@@ -5,7 +5,7 @@ import os
 import secrets
 from pathlib import Path
 from urllib.parse import urlparse
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
@@ -103,9 +103,15 @@ def create_app(database=None):
     @app.get('/api/stats')
     def stats():return catalog.stats()
 
+    def listing_counts(listing_count_min: int | None = Query(None, ge=1, le=2147483647),
+                       listing_count_max: int | None = Query(None, ge=1, le=2147483647)):
+        if listing_count_min is not None and listing_count_max is not None and listing_count_min > listing_count_max:
+            raise HTTPException(422, '上架次数下限不能大于上限')
+        return dict(listing_count_min=listing_count_min, listing_count_max=listing_count_max)
+
     @app.get('/api/products')
-    def products(q:str='',store:str='',brand:str='',status:str='',date:str='',page:int=Query(1,ge=1),page_size:int=Query(24,ge=1,le=100),category:str='',seller_status:str=Query('',pattern='^(blocked|unblocked)?$'),deduplicate:bool=False):
-        return catalog.find(q,store,brand,status,date,page,page_size,category=category,seller_status=seller_status,deduplicate=deduplicate)
+    def products(q:str='',store:str='',brand:str='',status:str='',date:str='',page:int=Query(1,ge=1),page_size:int=Query(24,ge=1,le=100),category:str='',seller_status:str=Query('',pattern='^(blocked|unblocked)?$'),deduplicate:bool=False,counts:dict=Depends(listing_counts)):
+        return catalog.find(q,store,brand,status,date,page,page_size,category=category,seller_status=seller_status,deduplicate=deduplicate,**counts)
 
     @app.get('/api/products/{listing_id}')
     def detail(listing_id:str):
@@ -150,7 +156,7 @@ def create_app(database=None):
                         headers={'Content-Disposition':'attachment; filename="catalog-backup.json"'})
 
     @app.get('/api/export.csv')
-    def export_csv(q:str='',store:str='',brand:str='',status:str='',date:str='',category:str='',seller_status:str=Query('',pattern='^(blocked|unblocked)?$')):
+    def export_csv(q:str='',store:str='',brand:str='',status:str='',date:str='',category:str='',seller_status:str=Query('',pattern='^(blocked|unblocked)?$'),counts:dict=Depends(listing_counts)):
         buffer=io.StringIO();writer=csv.writer(buffer)
         writer.writerow(['ASIN','商品SKU','平台SKU','店铺','品牌','商品来源','来源链接','商品卖家','标题','子变体数','保存确认','填写完整','证据类型','上传时间','商品类目','卖家黑名单原因'])
         page=1
@@ -158,7 +164,7 @@ def create_app(database=None):
             text='' if value is None else str(value)
             return "'"+text if text.lstrip().startswith(('=','+','-','@')) else text
         while True:
-            found=catalog.find(q,store,brand,status,date,page,100,category=category,seller_status=seller_status)
+            found=catalog.find(q,store,brand,status,date,page,100,category=category,seller_status=seller_status,**counts)
             for row in found['items']:
                 detail=catalog.get(row['id'])
                 writer.writerow([safe(v) for v in [row['asin'],row['sku'],detail['platform_sku'],row['store'],row['brand'],row['source'],

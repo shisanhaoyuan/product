@@ -108,6 +108,14 @@ class Filters(StrictInput):
     date: str = Field(default='', max_length=32)
     category: str = Field(default='', max_length=300)
     seller_status: Literal['', 'blocked', 'unblocked'] = ''
+    listing_count_min: int | None = Field(default=None, ge=1, le=2147483647)
+    listing_count_max: int | None = Field(default=None, ge=1, le=2147483647)
+
+    @model_validator(mode='after')
+    def listing_count_range(self):
+        if self.listing_count_min is not None and self.listing_count_max is not None and self.listing_count_min > self.listing_count_max:
+            raise ValueError('上架次数下限不能大于上限')
+        return self
 
 
 class PlanInput(StrictInput):

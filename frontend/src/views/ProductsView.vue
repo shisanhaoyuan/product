@@ -9,6 +9,7 @@ import AppIcon from '../components/AppIcon.vue';
 import FilterSelect from '../components/FilterSelect.vue';
 import ProductCard from '../components/ProductCard.vue';
 import ListingCoverage from '../components/ListingCoverage.vue';
+import ListingCountFilter from '../components/ListingCountFilter.vue';
 import ProductImage from '../components/ProductImage.vue';
 import StatusBadge from '../components/StatusBadge.vue';
 import PrelistingComposer from '../components/PrelistingComposer.vue';
@@ -42,6 +43,8 @@ const filters = computed(() => {
     'date',
     'category',
     'seller_status',
+    'listing_count_min',
+    'listing_count_max',
     'page',
   ]) {
     const value = route.query[key];
@@ -186,6 +189,19 @@ function changeFilter(key: string, value: string) {
   const query = Object.fromEntries(filters.value);
   if (value) query[key] = value;
   else delete query[key];
+  delete query.page;
+  return router.push({ path: '/products', query });
+}
+function changeListingCount(value: { minimum: string; maximum: string }) {
+  clearTimeout(searchTimer);
+  const query = Object.fromEntries(filters.value);
+  for (const [key, count] of [
+    ['listing_count_min', value.minimum],
+    ['listing_count_max', value.maximum],
+  ]) {
+    if (count) query[key] = count;
+    else delete query[key];
+  }
   delete query.page;
   return router.push({ path: '/products', query });
 }
@@ -347,6 +363,11 @@ onBeforeUnmount(() => {
         :model-value="filters.get('date') || ''"
         :options="dateOptions"
         @update:model-value="changeFilter('date', $event)"
+      />
+      <ListingCountFilter
+        :minimum="filters.get('listing_count_min') || ''"
+        :maximum="filters.get('listing_count_max') || ''"
+        @change="changeListingCount"
       />
       <button
         class="btn ghost small"

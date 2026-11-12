@@ -141,7 +141,8 @@ function dragEnter(event: DragEvent) {
     </div>
     <p class="import-help">
       自动读取子文件夹，最多 500 个文件 / 100 MB。选择后先解析，点击批量导入才写入；
-      每个文件独立处理，重复数据自动跳过。仅支持商品库格式的 JSON，原始运行日志请先转换。
+      每个文件独立处理，记录按本次上传的顶层文件夹汇总，可展开文件明细；重复数据自动跳过。仅支持商品库格式的
+      JSON，原始运行日志请先转换。
     </p>
     <div v-if="notice" class="import-feedback" role="status">{{ notice }}</div>
     <div v-if="entries.length" class="import-queue">

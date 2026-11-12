@@ -22,6 +22,40 @@ function input(name: string, sku = name) {
 }
 afterEach(() => vi.restoreAllMocks());
 describe('batch import queue', () => {
+  it('groups nested files by top-level folder and retains the batch on retry', async () => {
+    const queue = useImportQueue();
+    const send = vi
+      .spyOn(catalogApi, 'importJson')
+      .mockResolvedValueOnce(result)
+      .mockRejectedValueOnce(new ApiError('Conflict', 409))
+      .mockResolvedValue(result);
+    await queue.addFiles([
+      input('folder/a.json'),
+      input('folder/sub/b.json'),
+      input('other/c.json'),
+    ]);
+    await queue.ingest('token');
+    const contexts = send.mock.calls.map((call) => call[2]!);
+    expect(contexts[0].batch_id).toBe(contexts[1].batch_id);
+    expect(contexts[0].batch_id).not.toBe(contexts[2].batch_id);
+    expect(contexts[1].path).toBe('folder/sub/b.json');
+    await queue.ingest('token', true);
+    expect(send.mock.calls[3]![2]).toEqual(contexts[1]);
+    queue.clear();
+    await queue.addFiles([input('folder/a.json')]);
+    await queue.ingest('token');
+    expect(send.mock.calls[4]![2]!.batch_id).not.toBe(contexts[0].batch_id);
+  });
+  it('groups loose files from one submit without altering the original JSON', async () => {
+    const queue = useImportQueue();
+    const send = vi.spyOn(catalogApi, 'importJson').mockResolvedValue(result);
+    await queue.addFiles([input('a.json'), input('b.json')]);
+    const raw = queue.entries.value[0]!.raw;
+    await queue.ingest('token');
+    expect(send.mock.calls[0]![0]).toBe(raw);
+    expect(send.mock.calls[0]![2]!.kind).toBe('files');
+    expect(send.mock.calls[0]![2]!.batch_id).toBe(send.mock.calls[1]![2]!.batch_id);
+  });
   it('deduplicates content across different filenames and ignores non-JSON files', async () => {
     const queue = useImportQueue();
     await queue.addFiles([

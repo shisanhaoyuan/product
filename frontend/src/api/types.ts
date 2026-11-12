@@ -148,6 +148,25 @@ export interface ImportRecord {
   namespace: string;
   label: string;
   result: ImportResult;
+  kind: 'folder' | 'files' | 'legacy';
+  file_count: number;
+  started_at: string;
+  files: {
+    id: number;
+    at: string;
+    label: string;
+    namespace: string;
+    path: string;
+    result: ImportResult;
+  }[];
+}
+
+export interface ImportContext {
+  batch_id: string;
+  file_id: string;
+  name: string;
+  kind: 'folder' | 'files';
+  path: string;
 }
 
 export interface SellerBlock {

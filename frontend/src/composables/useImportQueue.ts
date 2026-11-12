@@ -1,6 +1,6 @@
 import { computed, ref } from 'vue';
 import { ApiError, catalogApi } from '../api/client';
-import type { ImportResult } from '../api/types';
+import type { ImportContext, ImportResult } from '../api/types';
 import { errorMessage } from '../utils/display';
 import {
   MAX_IMPORT_BYTES,
@@ -21,6 +21,7 @@ export interface QueueEntry {
   raw?: string;
   digest?: string;
   result?: ImportResult;
+  context?: ImportContext;
 }
 
 export function useImportQueue() {
@@ -112,13 +113,27 @@ export function useImportQueue() {
     if (!selected.length) return;
     busy.value = true;
     error.value = '';
+    const groups = new Map<string, string>();
+    for (const entry of selected) {
+      if (entry.context) continue; // Explicit retries remain in their original folder batch.
+      const folder = entry.path.includes('/') ? entry.path.split('/')[0]! : '';
+      const groupKey = folder ? `folder:${folder}` : 'files';
+      if (!groups.has(groupKey)) groups.set(groupKey, crypto.randomUUID());
+      entry.context = {
+        batch_id: groups.get(groupKey)!,
+        file_id: crypto.randomUUID(),
+        name: folder || '文件批量导入',
+        kind: folder ? 'folder' : 'files',
+        path: entry.path,
+      };
+    }
     try {
       // Each file uses the existing server transaction; never retry a write automatically.
       for (const entry of selected) {
         entry.state = 'importing';
         entry.message = '';
         try {
-          entry.result = await catalogApi.importJson(entry.raw!, token);
+          entry.result = await catalogApi.importJson(entry.raw!, token, entry.context);
           entry.state = 'success';
         } catch (reason) {
           entry.state = 'failed';

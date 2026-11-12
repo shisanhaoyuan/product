@@ -1,6 +1,7 @@
 import type {
   SourceCapture,
   ImportRecord,
+  ImportContext,
   ImportResult,
   ProductDetail,
   ProductPage,
@@ -153,10 +154,10 @@ export const catalogApi = {
   product: (id: string, signal?: AbortSignal) =>
     request<ProductDetail>(`/api/products/${encodeURIComponent(id)}`, { signal }),
   imports: (signal?: AbortSignal) => request<ImportRecord[]>('/api/imports', { signal }),
-  importJson: (body: string, token: string) =>
+  importJson: (body: string, token: string, context?: ImportContext) =>
     request<ImportResult>('/api/imports', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Import-Token': token },
-      body,
+      body: context ? JSON.stringify({ ...JSON.parse(body), import_context: context }) : body,
     }),
 };

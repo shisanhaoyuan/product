@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 from urllib.parse import urlparse
+from uuid import UUID
 import re
 
 
@@ -124,8 +125,18 @@ class Listing(BaseModel):
         return self
 
 
+class ImportContext(BaseModel):
+    batch_id: UUID
+    file_id: UUID
+    name: str = Field(min_length=1, max_length=255)
+    kind: Literal['folder', 'files']
+    path: str = Field(min_length=1, max_length=2048)
+
+
 class ImportBundle(BaseModel):
     schema_version: Literal[1] = 1
     namespace: str = Field(pattern=r"^[a-zA-Z0-9_.-]{1,80}$")
     label: str = Field(min_length=1, max_length=200)
     listings: list[Listing] = Field(max_length=5000)
+    # Transport metadata only: never changes source evidence or bundle digests.
+    import_context: ImportContext | None = Field(default=None, exclude=True)

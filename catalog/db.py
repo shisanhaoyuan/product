@@ -104,6 +104,13 @@ class Catalog:
         rank = {"source_only": 0, "editor_snapshot": 1, "persisted_readback": 2}
         with self.connect() as db:
             write_lock(db)
+            from .import_history import context_data, previous_result
+            context = context_data(bundle.import_context, actor_id)
+            bundle_digest = hashlib.sha256(encoded(bundle.model_dump()).encode()).hexdigest()
+            if context:
+                previous = previous_result(db, self.postgres, context, bundle_digest)
+                if previous is not None:
+                    return previous
             for item in bundle.listings:
                 if item.external_id in seen:
                     raise ValueError("同一次导入存在重复 external_id")
@@ -156,7 +163,7 @@ class Catalog:
                 self.refresh(db, lid)
             db.execute("INSERT INTO imports(at,namespace,label,digest,result_json) VALUES(?,?,?,?,?)",
                        (datetime.now(timezone.utc).isoformat(),bundle.namespace,bundle.label,
-                        hashlib.sha256(encoded(bundle.model_dump()).encode()).hexdigest(),encoded(result)))
+                        bundle_digest,encoded(result | ({'_context': context} if context else {}))))
             if actor_id is not None:
                 db.execute('INSERT INTO audit_events(at,actor_id,action,target) VALUES(?,?,?,?)',
                            (int(datetime.now(timezone.utc).timestamp()),actor_id,'catalog.import',bundle.namespace))
@@ -192,7 +199,8 @@ class Catalog:
                 FROM current_listings l JOIN products p ON p.id=l.product_id""").fetchone())
             return counts
 
-    def filter_sql(self, q="", store="", brand="", status="", date="", category="", seller_status=""):
+    def filter_sql(self, q="", store="", brand="", status="", date="", category="", seller_status="",
+                   listing_count_min=None, listing_count_max=None):
         clauses, args = ["1=1"], []
         if q:
             clauses.append(f"{'strpos' if self.postgres else 'instr'}(search_text,?)>0"); args.append(q.casefold())
@@ -210,6 +218,17 @@ class Catalog:
                 ON b.source_key=s.source_key AND b.seller_key=s.seller_key
                 WHERE b.active=1 AND s.listing_id=listings.id)""" if self.postgres else BLOCKED_SQL
             clauses.append(("NOT " if seller_status == "unblocked" else "") + blocked)
+        if listing_count_min is not None or listing_count_max is not None:
+            # Same global ASIN/template count as listing_coverage, before other filters
+            # and pagination. Missing ASINs keep their individual count of one.
+            count_sql = """(CASE WHEN (SELECT asin FROM products WHERE id=listings.product_id)=''
+                THEN 1 ELSE (SELECT COUNT(*) FROM listings counted
+                    JOIN products counted_product ON counted_product.id=counted.product_id
+                    WHERE counted_product.asin=(SELECT asin FROM products WHERE id=listings.product_id)) END)"""
+            for value, operator in ((listing_count_min, '>='), (listing_count_max, '<=')):
+                if value is not None:
+                    clauses.append(f'{count_sql}{operator}?')
+                    args.append(value)
         where = " AND ".join(clauses)
         if category:
             if category == 'missing' or category.startswith('type:'):
@@ -232,9 +251,11 @@ class Catalog:
                 WHERE {where}) AS grouped_listings WHERE asin_position=1"""
         return query, args
 
-    def find(self, q="", store="", brand="", status="", date="", page=1, page_size=24, category="", seller_status="", deduplicate=False):
+    def find(self, q="", store="", brand="", status="", date="", page=1, page_size=24, category="", seller_status="", deduplicate=False,
+             listing_count_min=None, listing_count_max=None):
         query, args = self.selection_sql(q=q,store=store,brand=brand,status=status,date=date,
-                                         category=category,seller_status=seller_status,deduplicate=deduplicate)
+                                         category=category,seller_status=seller_status,deduplicate=deduplicate,
+                                         listing_count_min=listing_count_min,listing_count_max=listing_count_max)
         with self.connect() as db:
             read_snapshot(db)
             total = db.execute(f"SELECT COUNT(*) FROM ({query}) AS listings",args).fetchone()[0]
@@ -273,8 +294,9 @@ class Catalog:
                 "SELECT id,observed_at,evidence_kind,digest FROM snapshots WHERE listing_id=? ORDER BY observed_at DESC",(listing_id,))])
 
     def imports(self):
+        from .import_history import grouped_imports
         with self.connect() as db:
-            return [dict(r) | {'result':json.loads(r['result_json'])} for r in db.execute("SELECT * FROM imports ORDER BY id DESC LIMIT 100")]
+            return grouped_imports(db, self.postgres)
 
     def export(self):
         with self.connect() as db:
