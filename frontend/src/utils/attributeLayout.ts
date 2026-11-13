@@ -18,6 +18,7 @@ const names: Record<string, string> = {
   description: '商品描述',
   title: '商品标题',
   msrp: '建议零售价',
+  dc_fulfillmenttype: '配送方式',
   'manufacturer part number': '制造商零件编号',
   'recommended locations': '建议使用场所',
   'country of origin - substantial transformation': '原产国',
@@ -55,9 +56,11 @@ export function groupedAttributes(value: unknown, query = ''): AttributeGroup[] 
     const base = row.label.split(/ · | \/ /)[0] || '';
     const key = base.toLowerCase();
     const title = names[key] ? row.label.replace(base, names[key]!) : row.label || '内容';
-    const readable = /<\/?[a-z][^>]*>|&(?:#\d+|#x[\da-f]+|[a-z]+);/i.test(row.value)
+    let readable = /<\/?[a-z][^>]*>|&(?:#\d+|#x[\da-f]+|[a-z]+);/i.test(row.value)
       ? plain(row.value)
       : row.value;
+    if (key === 'dc_fulfillmenttype' && readable.trim().toLowerCase() === 'seller')
+      readable = '卖家自配送（seller）';
     const empty = !readable.trim() || readable === '空';
     if (
       query.trim() &&
@@ -67,7 +70,7 @@ export function groupedAttributes(value: unknown, query = ''): AttributeGroup[] 
     const id =
       /^(listingstageattrsplugin|dc_|pgsiteid|platformsiteid|platformcategoryid|templetname|record_id)/i.test(
         key,
-      )
+      ) && key !== 'dc_fulfillmenttype'
         ? 'internal'
         : /key features|description|^title$/.test(key)
           ? 'copy'

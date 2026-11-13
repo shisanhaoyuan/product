@@ -2,6 +2,17 @@ import { describe, expect, it } from 'vitest';
 import { groupedAttributes } from './attributeLayout';
 
 describe('product attribute layout', () => {
+  it('explains seller fulfillment without changing source identifiers or values', () => {
+    const source = { dc_fulfillmentType: 'seller' };
+    const row = groupedAttributes(source, '配送').flatMap((g) => g.rows)[0];
+    expect(row).toMatchObject({
+      title: '配送方式',
+      label: 'dc_fulfillmentType',
+      value: '卖家自配送（seller）',
+    });
+    expect(groupedAttributes(source)[0]?.id).not.toBe('internal');
+    expect(source.dc_fulfillmentType).toBe('seller');
+  });
   it('separates copy, dimensions, compliance and technical fields without mutating source', () => {
     const source = {
       'Brand Name': { val: ['Erguoguo'] },

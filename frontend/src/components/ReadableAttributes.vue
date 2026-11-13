@@ -15,7 +15,7 @@ const groups = computed(() => groupedAttributes(props.value, props.query));
         <component :is="group.id === 'internal' ? 'summary' : 'h4'" class="attribute-group-title">
           {{ group.title }} <span>{{ group.rows.length }} 项</span>
         </component>
-        <dl class="organized-grid">
+        <dl class="organized-grid" :style="{ '--field-count': Math.min(group.rows.length, 3) }">
           <div
             v-for="(row, index) in group.rows"
             :key="index"
@@ -58,18 +58,16 @@ summary.attribute-group-title {
 }
 .organized-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1px;
-  background: #e8edf3;
-  border: 1px solid #e8edf3;
-  border-radius: 10px;
-  overflow: hidden;
+  grid-template-columns: repeat(var(--field-count), minmax(0, 1fr));
+  gap: 10px;
   margin: 0;
 }
 .organized-field {
   min-width: 0;
   padding: 14px 18px;
   background: #fff;
+  border: 1px solid #e8edf3;
+  border-radius: 10px;
 }
 .organized-field.is-long {
   grid-column: 1 / -1;
@@ -106,7 +104,7 @@ dd {
 }
 @media (max-width: 1000px) {
   .organized-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(min(var(--field-count), 2), minmax(0, 1fr));
   }
 }
 @media (max-width: 600px) {

@@ -48,6 +48,7 @@ const names: Record<string, string> = {
   material: '材质',
   'product type': '商品类型',
   dc_producttype: '商品类型',
+  dc_fulfillmenttype: '配送方式',
   'net content::unit': '净含量单位',
   'net content::measure': '净含量',
   dc_productid: '商品编码',
@@ -117,7 +118,14 @@ export function reviewIssues(product: ProductDetail): ReviewIssue[] {
       targetField = field;
     let title = names[lower] || key || '商品信息';
     let message = reasonText(issue.reason) || reasonText(issue.errors);
-    if (sourceSection === 'pricing_checks') {
+    if (sourceSection === 'parent_price_stock' || lower === 'parent_price_stock') {
+      title = '主商品价格与库存待核对';
+      targetField = product.variants.length ? '' : 'price';
+      section = product.variants.length ? 'variants' : 'identity';
+      message ||= product.variants.length
+        ? '请逐行核对子商品的售价、倍率和库存。'
+        : '请核对主商品售价、倍率和库存。';
+    } else if (sourceSection === 'pricing_checks') {
       title = '售价待核对';
       targetField = 'price';
       section = 'identity';

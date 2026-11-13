@@ -11,6 +11,21 @@ const product = (issues: Record<string, unknown>[]) =>
     ],
   }) as ProductDetail;
 describe('Chinese review reasons and identity targets', () => {
+  it('routes aggregate parent price/stock checks to actual content, not attribute search', () => {
+    for (const issue of [
+      { section: 'fields', key: 'parent_price_stock' },
+      { section: 'parent_price_stock' },
+    ]) {
+      const p = product([issue]);
+      expect(reviewIssues(p)[0]).toMatchObject({
+        title: '主商品价格与库存待核对',
+        section: 'variants',
+        field: '',
+      });
+      p.variants = [];
+      expect(reviewIssues(p)[0]).toMatchObject({ section: 'identity', field: 'price' });
+    }
+  });
   it('uses exact SKU regardless of row order and translates price codes', () => {
     const rows = reviewIssues(
       product([

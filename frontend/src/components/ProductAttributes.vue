@@ -8,6 +8,10 @@ import InlineEdit from './InlineEdit.vue';
 const props = defineProps<{ fields: Record<string, unknown>; query: string }>();
 const sources: Record<string, { title: string; note: string }> = {
   dynamic_attributes: { title: '商品属性', note: '导入记录中的动态属性，按信息用途分组。' },
+  raw_saved_template: {
+    title: '保存模板记录',
+    note: '导入文件保留的模板字段，供对照查看；与编辑器回读分开展示。',
+  },
   live_schema_values: {
     title: '编辑器回读',
     note: '采集时编辑框中的实际值，供对照查看；不等同于重新打开后的保存验证。',

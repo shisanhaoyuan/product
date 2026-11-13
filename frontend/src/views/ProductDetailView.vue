@@ -65,8 +65,8 @@ async function locateIssue(issue: ReviewIssue) {
   if (editActive.value || editBusy.value) return;
   locateMessage.value = '';
   if (issue.sku) variantPanel.value?.selectVariant(issue.sku);
-  if (issue.section === 'attributes')
-    attributeSearch.value = issue.field.replace(/::(?:measure|unit)$/, '');
+  // Review identifiers can describe checks, not actual fields. Never use them as filters.
+  attributeSearch.value = '';
   await nextTick();
   let node: HTMLElement | undefined;
   if (issue.field && issue.section !== 'attributes') {
@@ -79,10 +79,13 @@ async function locateIssue(issue: ReviewIssue) {
     );
   }
   if (issue.section === 'attributes') {
-    const base = issue.field.replace(/::(?:measure|unit)$/, '');
-    node = Array.from(
+    const normalize = (value: string) => value.replace(/::(?:measure|unit)$/i, '').toLowerCase();
+    const base = normalize(issue.field);
+    const candidates = Array.from(
       document.querySelectorAll<HTMLElement>('#section-attributes [data-field-key]'),
-    ).find((el) => el.dataset.fieldKey === base || el.dataset.fieldKey === issue.field);
+    );
+    node = candidates.find((el) => normalize(el.dataset.fieldKey || '') === base);
+    node ||= candidates.find((el) => normalize(el.dataset.fieldKey || '').endsWith(' / ' + base));
   }
   if (!node && issue.sku)
     node = Array.from(document.querySelectorAll<HTMLElement>('[data-variant]')).find(
@@ -101,7 +104,7 @@ async function locateIssue(issue: ReviewIssue) {
   clearTimeout(highlightTimer);
   highlighted = node;
   node.classList.add('review-location-highlight');
-  node.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+  node.scrollIntoView({ behavior: 'smooth', block: exact ? 'center' : 'start', inline: 'center' });
   node.setAttribute('tabindex', node.getAttribute('tabindex') || '-1');
   node.focus({ preventScroll: true });
   highlightTimer = setTimeout(() => node?.classList.remove('review-location-highlight'), 3500);
