@@ -77,6 +77,8 @@ def local_product(raw, changes_json, revision, updated, edited_source, source_di
     data = json.loads(raw)
     data['variants'] = [with_variant_fields(v) for v in data['variants']]
     changes = json.loads(changes_json or '[]')
+    review = next((c['value'] for c in changes if c['field'] == '_manual_review'), None)
+    changes = [c for c in changes if c['field'] != '_manual_review']
     conflicts = []
     for change in changes:
         try:
@@ -96,6 +98,14 @@ def local_product(raw, changes_json, revision, updated, edited_source, source_di
         data['local_edit']['source_status'] = {k: data[k] for k in (
             'save_succeeded', 'fill_complete', 'readback_verified')}
         data.update(save_succeeded=False, fill_complete=False, readback_verified=False)
+    data['manual_review'] = None
+    if review:
+        valid = review['source_digest'] == source_digest and not conflicts
+        data['manual_review'] = {**review, 'valid': valid}
+        if valid:
+            # Local human assessment only; never assert an ERP save or readback.
+            data['manual_review']['source_fill_complete'] = data['fill_complete']
+            data['fill_complete'] = review['complete']
     return encoded(data)
 
 
@@ -123,6 +133,11 @@ class EditInput(RevisionInput):
     variant_sku: str = Field(default='', max_length=200)
     key: str = Field(default='', max_length=300)
     value: Any
+
+
+class ReviewInput(RevisionInput):
+    complete: bool = True
+    note: str = Field(default='', max_length=1000)
 
 
 def validate_change(data, change):
@@ -193,7 +208,7 @@ def validate_change(data, change):
 def editing_routes(catalog):
     router = APIRouter(prefix='/api/products')
 
-    def mutate(listing_id, data, request, reset=False):
+    def mutate(listing_id, data, request, reset=False, review=False):
         with catalog.connect() as db:
             write_lock(db)
             row = db.execute('SELECT * FROM listings WHERE id=?', (listing_id,)).fetchone()
@@ -207,7 +222,19 @@ def editing_routes(catalog):
             raw['variants'] = [with_variant_fields(v) for v in raw['variants']]
             changes = json.loads(old['changes_json']) if old else []
             before = encoded(changes)
-            if reset:
+            previous_review = next((c['value'] for c in changes if c['field'] == '_manual_review'), None)
+            changes = [c for c in changes if c['field'] != '_manual_review']
+            user = getattr(request.state, 'user', None)
+            if review:
+                effective = json.loads(local_product(row['data_json'], encoded(changes), version,
+                    old['updated_at'] if old else '', old['source_digest'] if old else '', row['digest']))
+                if effective['local_edit']['conflicts']:
+                    raise HTTPException(409, '存在已失效的子 SKU 修改，请先处理后再确认完整')
+                marker = dict(complete=data.complete, note=data.note.strip(),
+                    at=datetime.now(timezone.utc).isoformat(), actor_id=user['id'] if user else None,
+                    actor=user['username'] if user else '本机用户', source_digest=row['digest'])
+                changes.append(dict(field='_manual_review', variant_sku='', key='', value=marker))
+            elif reset:
                 changes = []
             else:
                 try:
@@ -219,6 +246,11 @@ def editing_routes(catalog):
                 changes = [c for c in changes if identity(c) != identity(change)]
                 if change['value'] != target.get(key):
                     changes.append(change)
+                # A no-op edit must not silently invalidate an existing review.
+                prior_changes = [c for c in json.loads(before) if c['field'] != '_manual_review']
+                if sorted(changes, key=identity) == sorted(prior_changes, key=identity) and previous_review:
+                    changes = prior_changes
+                    changes.append(dict(field='_manual_review', variant_sku='', key='', value=previous_review))
             if encoded(changes) == before:
                 return catalog.get(listing_id)
             now = datetime.now(timezone.utc).isoformat()
@@ -226,9 +258,8 @@ def editing_routes(catalog):
                 DO UPDATE SET revision=excluded.revision,source_digest=excluded.source_digest,
                     changes_json=excluded.changes_json,updated_at=excluded.updated_at''',
                 (listing_id, version + 1, row['digest'], encoded(changes), now))
-            user = getattr(request.state, 'user', None)
             db.execute('INSERT INTO product_edit_events(listing_id,at,actor_id,action,data_json) VALUES(?,?,?,?,?)',
-                (listing_id, now, user['id'] if user else None, 'reset' if reset else 'edit',
+                (listing_id, now, user['id'] if user else None, 'review' if review else 'reset' if reset else 'edit',
                  encoded({'before': json.loads(before), 'after': changes})))
             catalog.refresh(db, listing_id)
         return catalog.get(listing_id)
@@ -240,5 +271,9 @@ def editing_routes(catalog):
     @router.post('/{listing_id}/edits/reset')
     def reset(listing_id: str, data: RevisionInput, request: Request):
         return mutate(listing_id, data, request, reset=True)
+
+    @router.post('/{listing_id}/review')
+    def review(listing_id: str, data: ReviewInput, request: Request):
+        return mutate(listing_id, data, request, review=True)
 
     return router

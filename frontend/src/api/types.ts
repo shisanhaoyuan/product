@@ -23,6 +23,13 @@ export interface ProductCopy {
   features: string[];
 }
 export interface EvidenceStatus {
+  manual_review?: {
+    complete: boolean;
+    valid: boolean;
+    at: string;
+    actor: string;
+    note: string;
+  } | null;
   evidence_kind: EvidenceKind;
   fill_complete: boolean;
   save_succeeded: boolean;

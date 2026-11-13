@@ -48,6 +48,7 @@ watch(
 const selected = computed(() =>
   props.variants.find((variant) => variant.sku === selectedSku.value),
 );
+defineExpose({ selectVariant });
 </script>
 <template>
   <div v-if="variants.length" class="variant-toolbar">

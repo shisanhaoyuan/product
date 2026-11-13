@@ -20,6 +20,7 @@ const groups = computed(() => groupedAttributes(props.value, props.query));
             v-for="(row, index) in group.rows"
             :key="index"
             class="organized-field"
+            :data-field-key="row.label"
             :class="{ 'is-long': row.long, 'is-empty': row.empty }"
           >
             <dt>

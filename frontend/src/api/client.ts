@@ -134,6 +134,12 @@ export const catalogApi = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ expected_revision }),
     }),
+  reviewProduct: (id: string, expected_revision: string, complete: boolean, note: string) =>
+    request<ProductDetail>(`/api/products/${encodeURIComponent(id)}/review`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expected_revision, complete, note }),
+    }),
   blacklist: (query: string, signal?: AbortSignal) =>
     request<SellerBlockPage>(`/api/seller-blacklist?${query}`, { signal }),
   blockSeller: (data: { source: string; seller: string; reason: string }) =>

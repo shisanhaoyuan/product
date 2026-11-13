@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, provide, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, provide, ref, watch } from 'vue';
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router';
 import { catalogApi } from '../api/client';
 import type { ProductDetail } from '../api/types';
@@ -22,6 +22,8 @@ import PrelistingComposer from '../components/PrelistingComposer.vue';
 import SellerRiskPanel from '../components/SellerRiskPanel.vue';
 import InlineEdit from '../components/InlineEdit.vue';
 import ProductAttributes from '../components/ProductAttributes.vue';
+import ReviewIssueList from '../components/ReviewIssueList.vue';
+import { reviewIssues, type ReviewIssue } from '../utils/reviewIssues';
 import SourceCapturePanel from '../components/SourceCapturePanel.vue';
 import { productEditingKey, type EditTarget } from '../composables/useProductEditing';
 import { useAuth } from '../composables/useAuth';
@@ -48,6 +50,90 @@ const editActive = ref(''),
   editBusy = ref(false),
   editMessage = ref(''),
   resetConfirm = ref(false);
+const variantPanel = ref<InstanceType<typeof VariantPanel>>();
+const reviewConfirm = ref(false),
+  reviewNote = ref(''),
+  reviewError = ref(''),
+  locateMessage = ref('');
+const readableIssues = computed(() => (product.value ? reviewIssues(product.value) : []));
+const reviewed = computed(
+  () => !!product.value?.manual_review?.valid && product.value.manual_review.complete,
+);
+let highlighted: HTMLElement | undefined;
+let highlightTimer: ReturnType<typeof setTimeout> | undefined;
+async function locateIssue(issue: ReviewIssue) {
+  if (editActive.value || editBusy.value) return;
+  locateMessage.value = '';
+  if (issue.sku) variantPanel.value?.selectVariant(issue.sku);
+  if (issue.section === 'attributes')
+    attributeSearch.value = issue.field.replace(/::(?:measure|unit)$/, '');
+  await nextTick();
+  let node: HTMLElement | undefined;
+  if (issue.field && issue.section !== 'attributes') {
+    const scope =
+      issue.sku && issue.field.startsWith('copy.')
+        ? document.getElementById('variant-detail')
+        : document;
+    node = Array.from(scope?.querySelectorAll<HTMLElement>('[data-edit-field]') || []).find(
+      (el) => el.dataset.editField === issue.field && el.dataset.editSku === issue.sku,
+    );
+  }
+  if (issue.section === 'attributes') {
+    const base = issue.field.replace(/::(?:measure|unit)$/, '');
+    node = Array.from(
+      document.querySelectorAll<HTMLElement>('#section-attributes [data-field-key]'),
+    ).find((el) => el.dataset.fieldKey === base || el.dataset.fieldKey === issue.field);
+  }
+  if (!node && issue.sku)
+    node = Array.from(document.querySelectorAll<HTMLElement>('[data-variant]')).find(
+      (el) => el.dataset.variant === issue.sku,
+    );
+  const exact = !!node;
+  node ||= document.getElementById('section-' + issue.section) || undefined;
+  if (!node) return;
+  let parent = node.parentElement;
+  while (parent) {
+    if (parent instanceof HTMLDetailsElement) parent.open = true;
+    parent = parent.parentElement;
+  }
+  activeSection.value = issue.section;
+  highlighted?.classList.remove('review-location-highlight');
+  clearTimeout(highlightTimer);
+  highlighted = node;
+  node.classList.add('review-location-highlight');
+  node.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+  node.setAttribute('tabindex', node.getAttribute('tabindex') || '-1');
+  node.focus({ preventScroll: true });
+  highlightTimer = setTimeout(() => node?.classList.remove('review-location-highlight'), 3500);
+  locateMessage.value = exact
+    ? `已定位：${issue.location} · ${issue.title}`
+    : `已打开${issue.location}；原记录未提供可对应的具体字段，请核对该区域。`;
+}
+async function saveReview(complete: boolean) {
+  if (!product.value?.local_edit || editBusy.value || editActive.value) return;
+  editBusy.value = true;
+  reviewError.value = '';
+  try {
+    product.value = await catalogApi.reviewProduct(
+      product.value.id,
+      product.value.local_edit.revision,
+      complete,
+      reviewNote.value,
+    );
+    reviewConfirm.value = false;
+    reviewNote.value = '';
+    editMessage.value = complete ? '已标记为已核验完整 · 人工确认' : '已恢复为待复核';
+    try {
+      await refreshStats();
+    } catch {
+      reviewError.value = '确认已保存，但统计刷新失败，请刷新页面查看。';
+    }
+  } catch (error) {
+    reviewError.value = errorMessage(error);
+  } finally {
+    editBusy.value = false;
+  }
+}
 const canEdit = computed(
   () => !auth.enabled || ['admin', 'editor'].includes(auth.user?.role || ''),
 );
@@ -152,6 +238,10 @@ async function load() {
   editActive.value = '';
   editMessage.value = '';
   resetConfirm.value = false;
+  reviewConfirm.value = false;
+  reviewNote.value = '';
+  reviewError.value = '';
+  locateMessage.value = '';
   try {
     const result = await catalogApi.product(String(route.params.id), request.signal);
     if (!request.signal.aborted) product.value = result;
@@ -176,6 +266,7 @@ async function copyAsin() {
 }
 watch(() => route.params.id, load, { immediate: true });
 onBeforeUnmount(() => {
+  clearTimeout(highlightTimer);
   controller?.abort();
   window.removeEventListener('beforeunload', beforeUnload);
 });
@@ -255,7 +346,7 @@ onBeforeUnmount(() => {
       <section class="section">
         <VariantImages :key="product.id" :images="product.images" :asin="product.asin" hero />
       </section>
-      <section class="section">
+      <section class="section" id="section-identity">
         <div class="section-head">
           <h2>商品档案</h2>
           <StatusBadge>{{
@@ -369,6 +460,7 @@ onBeforeUnmount(() => {
         >{{ section.label }}</a
       >
     </div>
+    <p v-if="locateMessage" class="review-location-message" role="status">{{ locateMessage }}</p>
     <div class="detail-content">
       <section class="section" id="section-copy">
         <div class="section-head">
@@ -396,7 +488,12 @@ onBeforeUnmount(() => {
           </div>
           <StatusBadge>{{ product.variants.length }} 个 SKU</StatusBadge>
         </div>
-        <VariantPanel :key="product.id" :variants="product.variants" @prelist="openVariantPlan" />
+        <VariantPanel
+          ref="variantPanel"
+          :key="product.id"
+          :variants="product.variants"
+          @prelist="openVariantPlan"
+        />
       </section>
       <section class="section" id="section-attributes">
         <div class="section-head">
@@ -426,8 +523,58 @@ onBeforeUnmount(() => {
             <h2>核验与待复核</h2>
             <p>保存状态、独立回读与填写完整性分别记录。</p>
           </div>
+          <button
+            v-if="canEdit && !product.fill_complete"
+            class="btn primary"
+            :disabled="editBusy || !!editActive"
+            @click="reviewConfirm = true"
+          >
+            标记为已核验完整
+          </button>
+          <button
+            v-else-if="canEdit && reviewed"
+            class="btn small"
+            :disabled="editBusy || !!editActive"
+            @click="saveReview(false)"
+          >
+            恢复待复核
+          </button>
         </div>
         <div class="section-body">
+          <div v-if="reviewConfirm" class="review-confirm-box">
+            <strong>确认当前商品已检查完整</strong>
+            <p>
+              请核对主商品和子商品。确认只更新商品库人工核验状态，保留原始异常记录，不代表已同步或保存到
+              ERP。后续修改或导入新内容需重新核验。
+            </p>
+            <label for="review-note">核验备注（选填）</label>
+            <textarea
+              id="review-note"
+              v-model="reviewNote"
+              maxlength="1000"
+              rows="2"
+              placeholder="例如：已逐项核对售价、库存和文案"
+              :disabled="editBusy"
+            />
+            <div class="actions">
+              <button
+                class="btn primary"
+                :disabled="editBusy || !!editActive"
+                @click="saveReview(true)"
+              >
+                {{ editBusy ? '正在保存…' : '确认已核验完整' }}</button
+              ><button class="btn" :disabled="editBusy" @click="reviewConfirm = false">取消</button>
+            </div>
+          </div>
+          <p v-if="reviewError" class="error-box" role="alert">{{ reviewError }}</p>
+          <p v-if="product.manual_review?.valid" class="notice">
+            人工核验：{{ product.manual_review.actor }} ·
+            {{ new Date(product.manual_review.at).toLocaleString('zh-CN')
+            }}{{ product.manual_review.note ? ' · ' + product.manual_review.note : '' }}
+          </p>
+          <p v-else-if="product.manual_review" class="subtitle">
+            来源内容已更新，原人工确认已失效，请重新核对。
+          </p>
           <div class="summary-box">
             <div class="check-box">
               <label>保存状态</label
@@ -452,15 +599,21 @@ onBeforeUnmount(() => {
               }}</StatusBadge>
             </div>
           </div>
-          <div v-for="(issue, index) in product.issues" :key="index" class="issue">
-            <span class="section-name">{{ issue.section || '检查项' }}</span
-            >{{ issue.label || issue.field_id || issue.reason || '历史审计异常' }}
-            {{ issue.reason && (issue.label || issue.field_id) ? '· ' + issue.reason : ''
-            }}<template v-if="issue.current_value !== undefined">
-              · 当前值：{{ text(issue.current_value) }}</template
-            ><template v-if="issue.errors"> · {{ text(issue.errors) }}</template>
-          </div>
-          <p v-if="!product.issues.length" class="subtitle">
+          <ReviewIssueList
+            v-if="!reviewed"
+            :issues="readableIssues"
+            :disabled="editBusy || !!editActive"
+            @locate="locateIssue"
+          />
+          <details v-else-if="readableIssues.length" class="details">
+            <summary>查看人工确认前的异常记录（{{ readableIssues.length }} 项）</summary>
+            <ReviewIssueList
+              :issues="readableIssues"
+              :disabled="editBusy || !!editActive"
+              @locate="locateIssue"
+            />
+          </details>
+          <p v-if="!product.issues.length && product.fill_complete && !reviewed" class="subtitle">
             {{
               product.fill_complete
                 ? '历史核验未记录未完成项。'

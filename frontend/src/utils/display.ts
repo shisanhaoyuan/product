@@ -48,6 +48,10 @@ export function priceRange(values: (string | number | null)[]): string {
   return min === max ? money(min) : `${money(min)} – ${money(max)}`;
 }
 export function productStatus(product: EvidenceStatus) {
+  if (product.manual_review?.valid)
+    return product.manual_review.complete
+      ? { label: '已核验完整', type: 'good' }
+      : { label: '待复核', type: 'warn' };
   if (product.local_edit?.changed) return { label: '本地已修改', type: 'warn' };
   return product.fill_complete
     ? { label: '已核验完整', type: 'good' }

@@ -119,6 +119,8 @@ onBeforeUnmount(() => {
 <template>
   <div
     v-if="editing"
+    :data-edit-field="target.field"
+    :data-edit-sku="target.variant_sku || ''"
     ref="input"
     class="inline-editor"
     :class="{ 'inline-editor-in-place': inPlace }"
@@ -202,6 +204,8 @@ onBeforeUnmount(() => {
   </div>
   <div
     v-else
+    :data-edit-field="target.field"
+    :data-edit-sku="target.variant_sku || ''"
     :class="{ 'editable-value': enabled }"
     :role="enabled ? 'button' : undefined"
     :tabindex="enabled ? 0 : undefined"

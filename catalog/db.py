@@ -275,11 +275,12 @@ class Catalog:
                 d=json.loads(r["data_json"])
                 prices=[v.get('price') for v in d['variants']] if d['variants'] else [d['price']]
                 prices=[p for p in prices if p not in (None,'')]
+                review = d.get('manual_review') or {}
                 items.append({k:d[k] for k in ('asin','sku','source','source_url','seller','store','brand',
                     'template','creator','uploaded_at','observed_at','evidence_kind','save_succeeded',
-                    'fill_complete','readback_verified','local_edit')} | dict(id=r['id'],title=d['copy']['title'],
+                    'fill_complete','readback_verified','local_edit')} | dict(manual_review=d.get('manual_review'),id=r['id'],title=d['copy']['title'],
                     image=d['images'][0] if d['images'] else next((v['images'][0] for v in d['variants'] if v['images']),''),
-                    variant_count=len(d['variants']),prices=prices,issue_count=len(d['issues']),category=r['category'],seller_blacklist=matches(d, entries),
+                    variant_count=len(d['variants']),prices=prices,issue_count=0 if review.get('valid') and review.get('complete') else len(d['issues']),category=r['category'],seller_blacklist=matches(d, entries),
                     listing_count=sum(s['count'] for s in coverage.get(d['asin'], [])) or 1,
                     listing_stores=coverage.get(d['asin'], [dict(store=d['store'],count=1)])))
             return dict(items=items,total=total,page=page,page_size=page_size)
