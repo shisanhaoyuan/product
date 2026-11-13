@@ -21,14 +21,9 @@ import VariantPanel from '../components/VariantPanel.vue';
 import PrelistingComposer from '../components/PrelistingComposer.vue';
 import SellerRiskPanel from '../components/SellerRiskPanel.vue';
 import InlineEdit from '../components/InlineEdit.vue';
-import AttributeValue from '../components/AttributeValue.vue';
-import { isStructured } from '../utils/attributes';
+import ProductAttributes from '../components/ProductAttributes.vue';
 import SourceCapturePanel from '../components/SourceCapturePanel.vue';
-import {
-  productEditingKey,
-  lockedAttributeKeys,
-  type EditTarget,
-} from '../composables/useProductEditing';
+import { productEditingKey, type EditTarget } from '../composables/useProductEditing';
 import { useAuth } from '../composables/useAuth';
 const { auth } = useAuth();
 const route = useRoute();
@@ -111,11 +106,6 @@ function beforeUnload(event: BeforeUnloadEvent) {
 }
 window.addEventListener('beforeunload', beforeUnload);
 let controller: AbortController | undefined;
-const attributes = computed(() =>
-  Object.entries(product.value?.fields || {}).filter(([key, value]) =>
-    (key + ' ' + text(value)).toLowerCase().includes(attributeSearch.value.toLowerCase()),
-  ),
-);
 const sections = computed(() => [
   { id: 'copy', label: '主商品文案' },
   { id: 'variants', label: `子变体 ${product.value?.variants.length || 0}` },
@@ -412,7 +402,7 @@ onBeforeUnmount(() => {
         <div class="section-head">
           <div>
             <h2>填写属性</h2>
-            <p>商品属性与编辑框回读，包括空值。</p>
+            <p>按来源分开展示。展开区块查看详情，搜索可定位到具体字段。</p>
           </div>
           <input
             class="attributes-search"
@@ -423,29 +413,7 @@ onBeforeUnmount(() => {
           />
         </div>
         <div class="section-body">
-          <div class="attribute-grid">
-            <div
-              v-for="[key, value] in attributes"
-              :key="key"
-              class="attribute"
-              :class="{ 'attribute-structured': isStructured(value) }"
-              :data-attribute="key"
-            >
-              <label>{{
-                key === 'dynamic_attributes'
-                  ? '动态属性 · dynamic_attributes'
-                  : key === 'live_schema_values'
-                    ? '编辑框回读 · live_schema_values'
-                    : key
-              }}</label>
-              <AttributeValue
-                :value="value"
-                :target="{ field: 'fields', key }"
-                :label="key"
-                :readonly="lockedAttributeKeys.has(key.toLowerCase())"
-              />
-            </div>
-          </div>
+          <ProductAttributes :fields="product.fields" :query="attributeSearch" />
           <details v-if="product.management.length" class="details">
             <summary>管理多属性组合</summary>
             <pre class="json-block">{{ text(product.management) }}</pre>

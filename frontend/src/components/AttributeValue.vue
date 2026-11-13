@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import InlineEdit from './InlineEdit.vue';
+import ReadableAttributes from './ReadableAttributes.vue';
 import { attributeRows, isStructured } from '../utils/attributes';
 import { plain, text } from '../utils/display';
 import type { EditTarget } from '../composables/useProductEditing';
@@ -10,6 +11,8 @@ const props = defineProps<{
   label: string;
   target: EditTarget;
   readonly?: boolean;
+  organized?: boolean;
+  query?: string;
 }>();
 const structured = computed(() => isStructured(props.value));
 const rows = computed(() => attributeRows(props.value));
@@ -19,7 +22,8 @@ function readable(value: string) {
 }
 </script>
 <template>
-  <dl v-if="structured" class="attribute-readable">
+  <ReadableAttributes v-if="structured && organized" :value="value" :query="query" />
+  <dl v-else-if="structured" class="attribute-readable">
     <div v-for="(row, index) in rows" :key="index" class="attribute-readable-row">
       <dt v-if="row.label">{{ row.label }}</dt>
       <dd>{{ readable(row.value) }}</dd>
