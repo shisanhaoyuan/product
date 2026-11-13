@@ -10,6 +10,7 @@ export interface ProductEditing {
   active: Ref<string>;
   busy: Ref<boolean>;
   save: (target: EditTarget, value: unknown) => Promise<void>;
+  refresh?: () => Promise<void>;
 }
 export const productEditingKey: InjectionKey<ProductEditing> = Symbol('product-editing');
 export const useProductEditing = () => inject(productEditingKey, undefined);

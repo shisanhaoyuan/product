@@ -68,7 +68,7 @@ def value_at(data, change):
     field = change['field']
     if field.startswith('copy.'):
         return target['copy'], field[5:]
-    if field in {'fields', 'attributes'}:
+    if field in {'fields', 'attributes', 'source_facts'}:
         return target[field], change['key']
     return target, field
 
@@ -82,6 +82,12 @@ def local_product(raw, changes_json, revision, updated, edited_source, source_di
     conflicts = []
     for change in changes:
         try:
+            if change.get('capture_asin'):
+                item = data if not change['variant_sku'] else next(
+                    (v for v in data['variants'] if v['sku'] == change['variant_sku']), {})
+                if item.get('asin') != change['capture_asin'] or data['source'] != change['capture_source']:
+                    conflicts.append(change['variant_sku'] or '主商品')
+                    continue
             target, key = value_at(data, change)
             target[key] = change['value']
             mirror = MIRRORS.get(change['field'])
@@ -98,6 +104,8 @@ def local_product(raw, changes_json, revision, updated, edited_source, source_di
         data['local_edit']['source_status'] = {k: data[k] for k in (
             'save_succeeded', 'fill_complete', 'readback_verified')}
         data.update(save_succeeded=False, fill_complete=False, readback_verified=False)
+        from .source_sync import resolve_missing_issues
+        resolve_missing_issues(data)
     data['manual_review'] = None
     if review:
         valid = review['source_digest'] == source_digest and not conflicts
@@ -243,6 +251,9 @@ def editing_routes(catalog):
                 except ValueError as exc:
                     raise HTTPException(409, str(exc))
                 identity = lambda c: (c['variant_sku'], c['field'], c['key'])
+                prior = next((c for c in changes if identity(c) == identity(change)), None)
+                if prior and prior['value'] == change['value']:
+                    change = prior
                 changes = [c for c in changes if identity(c) != identity(change)]
                 if change['value'] != target.get(key):
                     changes.append(change)

@@ -11,6 +11,15 @@ const product = (issues: Record<string, unknown>[]) =>
     ],
   }) as ProductDetail;
 describe('Chinese review reasons and identity targets', () => {
+  it('identifies seller aliases in Chinese and locates the exact child seller', () => {
+    const issue = reviewIssues(product([{ field: 'seller_name', sku: 'child-a' }]))[0];
+    expect(issue).toMatchObject({
+      title: '卖家待核对',
+      field: 'seller',
+      sku: 'child-a',
+      section: 'variants',
+    });
+  });
   it('routes aggregate parent price/stock checks to actual content, not attribute search', () => {
     for (const issue of [
       { section: 'fields', key: 'parent_price_stock' },

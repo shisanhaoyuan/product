@@ -15,6 +15,7 @@ export interface SourceCapture {
   delivery?: string | null;
   delivery_location?: string | null;
   offer_scope?: string;
+  sync?: { filled: string[]; preserved: string[] };
   issues?: string[];
 }
 export interface ProductCopy {
@@ -117,6 +118,7 @@ export interface ProductDetail extends EvidenceStatus {
   variants: Variant[];
   source_facts: Fields;
   issues: Fields[];
+  resolved_issues?: Fields[];
   checks: Fields;
   evidence: Fields;
   history: { id: number; observed_at: string; evidence_kind: EvidenceKind; digest: string }[];

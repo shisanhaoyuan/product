@@ -49,15 +49,20 @@ watch(
   { immediate: true },
 );
 
-async function capture() {
+async function capture(reuse = false) {
   if (disabled.value) return;
   const request = new AbortController();
   controller = request;
   busy.value = true;
+  if (editing) editing.busy.value = true;
   error.value = '';
   helper.value = false;
   try {
-    let result = await catalogApi.captureSource(props.listingId, props.sku, request.signal);
+    let result = await (reuse ? catalogApi.syncSource : catalogApi.captureSource)(
+      props.listingId,
+      props.sku,
+      request.signal,
+    );
     if (request.signal.aborted) return;
     if (['verification_required', 'browser_required'].includes(result.status)) {
       waiting.value = helper.value = true;
@@ -75,6 +80,11 @@ async function capture() {
       throw new Error('报价列表尚未展开，请在来源页面展开后重新采集。');
     record.value = result;
     helper.value = false;
+    try {
+      await editing?.refresh?.();
+    } catch {
+      error.value = '采集结果已保存，但页面刷新失败，请刷新后查看同步信息。';
+    }
   } catch (e) {
     if (controller === request) error.value = errorMessage(e);
   } finally {
@@ -82,6 +92,7 @@ async function capture() {
       busy.value = false;
       waiting.value = false;
     }
+    if (editing) editing.busy.value = false;
   }
 }
 onBeforeUnmount(() => controller?.abort());
@@ -92,10 +103,18 @@ onBeforeUnmount(() => controller?.abort());
     <div class="source-capture-head">
       <h3>来源采集</h3>
       <button
+        v-if="editing?.enabled.value && record"
+        class="btn small"
+        :disabled="disabled"
+        @click="capture(true)"
+      >
+        补齐到商品档案
+      </button>
+      <button
         v-if="editing?.enabled.value"
         class="btn small"
         :disabled="disabled || !asin"
-        @click="capture"
+        @click="capture(false)"
       >
         <AppIcon name="RotateCcw" />{{
           busy ? '正在采集…' : record ? '重新采集' : '采集卖家与报价'
@@ -110,6 +129,12 @@ onBeforeUnmount(() => controller?.abort());
           <dd>{{ value }}</dd>
         </div>
       </dl>
+      <p v-if="record.sync?.filled.length" class="source-capture-meta" role="status">
+        已同步补齐商品档案 {{ record.sync.filled.length }} 处信息。
+      </p>
+      <p v-if="record.sync?.preserved.length" class="source-capture-meta">
+        已有填写值已保留，请对照本次来源信息核对。
+      </p>
       <p class="source-capture-meta">
         <a
           v-if="safeUrl(record.source_url)"

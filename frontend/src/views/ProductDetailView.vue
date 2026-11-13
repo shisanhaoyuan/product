@@ -163,6 +163,14 @@ provide(productEditingKey, {
   active: editActive,
   busy: editBusy,
   save: saveField,
+  refresh: async () => {
+    if (!product.value) return;
+    const id = product.value.id;
+    const updated = await catalogApi.product(id);
+    if (product.value?.id !== id) return;
+    product.value = updated;
+    await refreshStats();
+  },
 });
 async function resetEdits() {
   if (!product.value?.local_edit || editBusy.value || editActive.value) return;
@@ -626,6 +634,11 @@ onBeforeUnmount(() => {
           <details class="details">
             <summary>展开历史逐项检查</summary>
             <pre class="json-block">{{ text(product.checks) }}</pre>
+          </details>
+          <details v-if="product.resolved_issues?.length" class="details">
+            <summary>已补齐的缺项（{{ product.resolved_issues.length }} 项）</summary>
+            <p class="subtitle">当前商品库内容已补齐，原始检查记录保留如下；不代表已同步 ERP。</p>
+            <pre class="json-block">{{ text(product.resolved_issues) }}</pre>
           </details>
         </div>
       </section>

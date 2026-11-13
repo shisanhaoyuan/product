@@ -282,6 +282,9 @@ def source_routes(catalog):
             db.execute('INSERT INTO source_captures VALUES(?,?,?,?,?,?,?)',
                        (uuid.uuid4().hex, lid, sku or '', asin, result['captured_at'],
                         user['id'] if user else None, json.dumps(result, ensure_ascii=False)))
+            from .source_sync import sync_capture
+            result['sync'] = sync_capture(catalog, db, lid, sku, asin, result,
+                                          user['id'] if user else None)
         return result
 
     @router.get('/{lid}/source-capture')
@@ -307,6 +310,29 @@ def source_routes(catalog):
         if result['status'] == 'partial':
             return {'status': 'browser_required', 'asin': asin, 'source_url': url}
         return save(lid, data.variant_sku, asin, result, request, url, 'server')
+
+    @router.post('/{lid}/source-capture/sync')
+    def sync_existing(lid: str, data: CaptureInput, request: Request):
+        v = target(lid, data.variant_sku)
+        with catalog.connect() as db:
+            write_lock(db)
+            row = db.execute('SELECT data_json FROM listings WHERE id=?', (lid,)).fetchone()
+            p = json.loads(row[0]) if row else {}
+            current = p if not data.variant_sku else next(
+                (child for child in p.get('variants', []) if child['sku'] == data.variant_sku), {})
+            if current.get('asin') != v['asin'] or p.get('source', '').casefold() != 'amazon':
+                raise HTTPException(409, '商品身份已变化，请刷新后重新采集')
+            row = db.execute('''SELECT data_json FROM source_captures
+                WHERE listing_id=? AND variant_sku=? AND asin=? ORDER BY captured_at DESC,id DESC LIMIT 1''',
+                (lid, data.variant_sku or '', v['asin'])).fetchone()
+            if not row:
+                raise HTTPException(404, '没有可补齐的采集记录，请先采集来源信息')
+            result = json.loads(row[0])
+            from .source_sync import sync_capture
+            user = getattr(request.state, 'user', None)
+            result['sync'] = sync_capture(catalog, db, lid, data.variant_sku, v['asin'], result,
+                                          user['id'] if user else None)
+        return result
 
     @router.post('/{lid}/source-capture/browser')
     def browser(lid: str, data: BrowserCaptureInput, request: Request):

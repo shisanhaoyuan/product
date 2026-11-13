@@ -118,7 +118,12 @@ def test_save_reopen_and_parent_child_isolation(local, monkeypatch):
     assert reopened.get(path).json()['seller'] == 'Garden Store'
     assert reopened.get(path, params={'variant_sku': child['sku']}).json()['seller'] == 'Child Seller'
     assert reopened.get(path, params={'variant_sku': before['variants'][0]['sku']}).json() is None
-    assert detail(client) == before
+    after = detail(client)
+    assert after['seller'] == before['seller']  # Existing values are preserved.
+    assert after['variants'][1]['seller'] == child['seller']
+    assert after['variants'][1]['source_facts']['shipping'] == '4.99'
+    for key in ('price', 'stock', 'msrp', 'copy', 'images', 'checks'):
+        assert after[key] == before[key]
     for changes in [{'variant_sku': 'wrong'}, {'source_url': 'https://evil.test'},
                     {'html': page('B111111111')}, {'source_url': 'https://['},
                     {'html': 'Robot Check'}, {'asin': 'B111111111'}]:
@@ -155,5 +160,8 @@ def test_source_capture_permissions(team, role):
     body = {'source_url': f"https://www.amazon.com/dp/{p['asin']}", 'html': page(p['asin'])}
     assert TestClient(team, base_url=ORIGIN).post(path, json=body).status_code == 401
     assert client.post(path, json=body).status_code == (403 if role == 'viewer' else 200)
+    sync_path = f"/api/products/{p['id']}/source-capture/sync"
+    assert client.post(sync_path, json={}).status_code == (403 if role == 'viewer' else 200)
     client.headers.pop('X-CSRF-Token')
     assert client.post(path, json=body).status_code == 403
+    assert client.post(sync_path, json={}).status_code == 403

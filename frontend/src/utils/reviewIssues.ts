@@ -42,6 +42,14 @@ const names: Record<string, string> = {
   brand: '品牌',
   'brand name': '品牌',
   ean: '商品编码',
+  seller: '卖家',
+  seller_name: '卖家',
+  sold_by: '卖家',
+  merchant_name: '卖家',
+  source_price: '来源价格',
+  source_shipping: '来源运费',
+  delivery: '配送时间',
+  delivery_time: '配送时间',
   color: '颜色',
   colour: '颜色',
   size: '尺寸',
@@ -57,6 +65,7 @@ const names: Record<string, string> = {
   images: '图片',
 };
 const fieldKeys: Record<string, string> = {
+  seller: 'seller',
   title: 'copy.title',
   description: 'copy.description',
   features: 'copy.features',
@@ -65,6 +74,9 @@ const fieldKeys: Record<string, string> = {
   dc_initlistingquantity: 'stock',
   'brand name': 'brand',
   dc_productid: 'ean',
+  seller_name: 'seller',
+  sold_by: 'seller',
+  merchant_name: 'seller',
 };
 const scalar = (v: unknown) =>
   v == null
@@ -125,6 +137,10 @@ export function reviewIssues(product: ProductDetail): ReviewIssue[] {
       message ||= product.variants.length
         ? '请逐行核对子商品的售价、倍率和库存。'
         : '请核对主商品售价、倍率和库存。';
+    } else if (field === 'seller') {
+      title = '卖家待核对';
+      section = 'identity';
+      message ||= '尚未记录卖家，可采集当前商品的来源信息后自动补齐。';
     } else if (sourceSection === 'pricing_checks') {
       title = '售价待核对';
       targetField = 'price';

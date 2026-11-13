@@ -59,6 +59,13 @@ export async function request<T>(path: string, options?: RequestInit): Promise<T
 }
 
 export const catalogApi = {
+  syncSource: (id: string, sku?: string, signal?: AbortSignal) =>
+    request<SourceCapture>(`/api/products/${encodeURIComponent(id)}/source-capture/sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ variant_sku: sku }),
+      signal,
+    }),
   sourceCapture: (id: string, sku?: string, signal?: AbortSignal) =>
     request<SourceCapture | null>(
       `/api/products/${encodeURIComponent(id)}/source-capture${sku ? '?variant_sku=' + encodeURIComponent(sku) : ''}`,
