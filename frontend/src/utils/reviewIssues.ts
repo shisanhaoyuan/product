@@ -43,6 +43,7 @@ const names: Record<string, string> = {
   'brand name': '品牌',
   ean: '商品编码',
   seller: '卖家',
+  shipping_weight: '运输重量',
   seller_name: '卖家',
   sold_by: '卖家',
   merchant_name: '卖家',
@@ -121,7 +122,14 @@ export function reviewIssues(product: ProductDetail): ReviewIssue[] {
     ).replace(/^\*/, '');
     const lower = key.toLowerCase();
     const field = fieldKeys[lower] || (lower === 'msrp' ? 'msrp' : key);
-    const originalSku = String(issue.sku || (sourceSection === 'rows' ? issue.key : '') || '');
+    const originalSku = String(
+      issue.sku ||
+        issue.variant_sku ||
+        details.sku ||
+        details.variant_sku ||
+        (sourceSection === 'rows' ? issue.key : '') ||
+        '',
+    );
     const matches = product.variants.filter((v) => v.sku === originalSku);
     const asinMatches = product.variants.filter((v) => v.asin && v.asin === originalSku);
     const variant =
@@ -137,6 +145,10 @@ export function reviewIssues(product: ProductDetail): ReviewIssue[] {
       message ||= product.variants.length
         ? '请逐行核对子商品的售价、倍率和库存。'
         : '请核对主商品售价、倍率和库存。';
+    } else if (field === 'shipping_weight') {
+      title = '运输重量待补齐';
+      section = 'variants';
+      message ||= '请填写该子商品的运输重量（磅）；运费金额不能代替重量。';
     } else if (field === 'seller') {
       title = '卖家待核对';
       section = 'identity';

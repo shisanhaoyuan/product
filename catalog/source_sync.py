@@ -1,6 +1,8 @@
 """Fill verified source facts into the local overlay, never rewrite ERP evidence."""
 import json
 import re
+from html import unescape
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 
 
@@ -20,7 +22,7 @@ def empty(value):
         return all(empty(item) for item in value)
     if isinstance(value, dict) and set(value) == {'val'}:
         return empty(value['val'])
-    return isinstance(value, str) and re.sub(r'<[^>]*>', '', value).strip().casefold() in {
+    return isinstance(value, str) and unescape(re.sub(r'<[^>]*>', '', value)).strip().casefold() in {
         '', '未采集', '未填写', '未记录', '未核验', '请选择', '--', 'none', 'null',
     }
 
@@ -134,20 +136,46 @@ def resolve_missing_issues(data):
     """Only retire explicit missing-fact checks; price mismatches and save checks remain."""
     resolved, pending = [], []
     for issue in data['issues']:
-        field = str(issue.get('field_id') or issue.get('field') or issue.get('key') or '').casefold()
+        details = issue.get('details') if isinstance(issue.get('details'), dict) else {}
+        field = str(issue.get('field_id') or issue.get('field') or issue.get('key')
+                    or details.get('field') or '').strip().lstrip('*').casefold()
         canonical = next((key for key, aliases in ALIASES.items() if field in aliases), None)
-        sku = issue.get('sku') or issue.get('variant_sku')
+        if field == 'shipping_weight':
+            canonical = field
+        sku = issue.get('sku') or issue.get('variant_sku') or details.get('sku') or details.get('variant_sku')
         candidates = [v for v in data['variants'] if v['sku'] == sku] if sku else [data]
+        if sku and not candidates:
+            candidates = [v for v in data['variants'] if v.get('asin') == sku]
         target = candidates[0] if len(candidates) == 1 else {}
-        value = target.get('seller') if canonical == 'seller' else target.get('source_facts', {}).get(canonical)
-        reasons = issue.get('errors', issue.get('reason', ''))
-        reasons = reasons if isinstance(reasons, list) else [reasons]
-        missing = all(str(reason).strip().casefold() in {
-            '', 'missing', 'missing_value', 'required', 'empty', 'not_collected',
-            'missing_seller', 'seller_missing', '未采集', '未填写', '未记录', '卖家未采集',
-        } for reason in reasons)
+        value = target.get(canonical) if canonical in {'seller', 'shipping_weight'} else target.get('source_facts', {}).get(canonical)
+        reasons = []
+        for record in (issue, details):
+            for key in ('reason', 'errors'):
+                value_reason = record.get(key, '')
+                reasons.extend(value_reason if isinstance(value_reason, list) else [value_reason])
+        def missing_reason(reason):
+            text = str(reason or '').strip().casefold()
+            if not text:
+                return True
+            # Never mistake a mixed missing/mismatch error for a simple absent field.
+            if re.search(r'mismatch|differ|conflict|invalid|ambiguous|未核验|不一致|冲突|无效|多个', text):
+                return False
+            return bool(re.fullmatch(r'(?:missing|empty|required|not[ _]collected|not[ _]recorded|not[ _]provided)(?:[ _].+)?', text)
+                        or re.fullmatch(r'.+?(?:[ _](?:is[ _])?)?(?:missing|empty|not[ _]collected|not[ _]recorded|not[ _]provided)', text)
+                        or re.fullmatch(r'(?:卖家|商品卖家|运输重量|配送时间|来源运费)?(?:信息)?(?:未采集|未填写|未记录|为空|缺失|缺少)(?:信息)?[。.!！]?', text)
+                        or re.fullmatch(r'(?:缺少|缺失)(?:卖家|商品卖家|运输重量|配送时间|来源运费)(?:信息)?[。.!！]?', text))
+        missing = all(missing_reason(reason) for reason in reasons)
+        if issue.get('section') in {'save', 'save_confirmation', 'reopen', 'persistence', 'identity', 'pricing_checks', 'stock_checks'}:
+            missing = False
         # An expected value / nonempty prior value indicates a mismatch, not a missing fact.
-        missing = missing and not issue.get('expected') and empty(issue.get('actual'))
+        missing = missing and all(empty(record.get('expected')) and empty(record.get('actual'))
+                                  for record in (issue, details))
+        if canonical == 'shipping_weight':
+            try:
+                weight = Decimal(str(value))
+                missing = missing and weight.is_finite() and weight > 0
+            except InvalidOperation:
+                missing = False
         if canonical and missing and not empty(value):
             resolved.append(issue)
         else:

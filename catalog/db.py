@@ -33,6 +33,10 @@ class Catalog:
                                [(v,) for v in (1,2,3,5,6,7)])
                 from .source_capture import initialize as initialize_source_capture
                 initialize_source_capture(db)
+                if not db.execute('SELECT 1 FROM migrations WHERE version=12').fetchone():
+                    from .projection import rebuild
+                    rebuild(db)
+                    db.execute('INSERT INTO migrations VALUES(12) ON CONFLICT DO NOTHING')
             return
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -77,6 +81,7 @@ class Catalog:
             initialize_images(db)
             from .source_capture import initialize as initialize_source_capture
             initialize_source_capture(db)
+            db.execute('INSERT OR IGNORE INTO migrations VALUES(12)')
 
     @contextmanager
     def connect(self):

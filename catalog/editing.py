@@ -108,8 +108,8 @@ def local_product(raw, changes_json, revision, updated, edited_source, source_di
         data['local_edit']['source_status'] = {k: data[k] for k in (
             'save_succeeded', 'fill_complete', 'readback_verified')}
         data.update(save_succeeded=False, fill_complete=False, readback_verified=False)
-        from .source_sync import resolve_missing_issues
-        resolve_missing_issues(data)
+    from .source_sync import resolve_missing_issues
+    resolve_missing_issues(data)
     data['manual_review'] = None
     if review:
         valid = review['source_digest'] == source_digest and not conflicts
