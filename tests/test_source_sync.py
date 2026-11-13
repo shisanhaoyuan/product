@@ -53,14 +53,20 @@ def test_capture_fills_shared_identity_and_aliases_persists_without_changing_pri
     assert child['seller'] == child['attributes']['sold_by'] == 'Garden Store'
     assert child['attributes']['source_price'] == '37.99'
     assert after['fields']['source_shipping'] == '0.00'
-    assert other == before['variants'][1]
+    assert other['seller'] == 'Garden Store'
+    assert other['attributes']['sold_by'] == 'Garden Store'
+    assert other['seller_origin'] == 'parent'
+    assert other['source_facts'] == before['variants'][1]['source_facts']
+    assert other['attributes']['source_price'] == ''
+    for key in ('price', 'stock', 'images', 'copy', 'price_check', 'stock_check', 'ean'):
+        assert other[key] == before['variants'][1][key]
     assert after['fields']['dc_fulfillmentType'] == 'seller'
     assert after['fields']['dc_price'] == '99.99'
     for old, new in [(before, after), (before['variants'][0], child)]:
         for key in ('price', 'stock', 'copy', 'images'):
             assert old[key] == new[key]
-    assert len(after['resolved_issues']) == 2
-    assert len(after['issues']) == 3
+    assert len(after['resolved_issues']) == 3
+    assert len(after['issues']) == 2
     assert not after['fill_complete'] and not after['readback_verified']
     assert catalog.export() == original
     assert client.get('/api/products?q=Garden%20Store').json()['total'] == 1
@@ -112,6 +118,55 @@ def test_other_sku_is_isolated_and_partial_capture_only_fills_known_facts(local)
     assert len(p['resolved_issues']) == 1
 
 
+def test_parent_capture_propagates_seller_to_children_with_different_asins(local):
+    client, catalog = local
+    seed(catalog)
+    p = detail(client)
+    # Parent and children may legitimately have distinct ASINs.
+    with catalog.connect() as db:
+        raw = json.loads(db.execute('SELECT data_json FROM listings WHERE id=?', (p['id'],)).fetchone()[0])
+        raw['variants'][0]['asin'] = 'B111111111'
+        raw['variants'][1]['asin'] = 'B222222222'
+        db.execute('UPDATE listings SET data_json=? WHERE id=?', (json.dumps(raw), p['id']))
+    result = capture(client)
+    assert result.status_code == 200, result.text
+    updated = detail(client)
+    assert updated['seller'] == 'Garden Store'
+    assert [v['seller'] for v in updated['variants']] == ['Garden Store', 'Garden Store']
+    assert all('price' not in v['source_facts'] for v in updated['variants'])
+
+
+def test_direct_child_capture_replaces_inheritance_but_keeps_manual_seller(local):
+    client, catalog = local
+    seed(catalog)
+    assert capture(client).status_code == 200
+    assert detail(client)['variants'][1]['seller_origin'] == 'parent'
+    assert capture(client, seller='Child Store', sku='other').status_code == 200
+    p = detail(client)
+    assert p['seller'] == p['variants'][0]['seller'] == 'Garden Store'
+    assert p['variants'][1]['seller'] == 'Child Store'
+    assert p['variants'][1]['seller_origin'] == 'direct'
+    assert p['variants'][1]['attributes']['sold_by'] == 'Child Store'
+    assert edit(client, {'field': 'seller', 'variant_sku': 'other'}, 'Manual Store').status_code == 200
+    assert capture(client, seller='Changed Store').status_code == 200
+    assert detail(client)['variants'][1]['seller'] == 'Manual Store'
+
+
+def test_inherited_seller_identity_guard(local):
+    client, catalog = local
+    seed(catalog)
+    assert capture(client).status_code == 200
+    p = detail(client)
+    with catalog.connect() as db:
+        raw = json.loads(db.execute('SELECT data_json FROM listings WHERE id=?', (p['id'],)).fetchone()[0])
+        raw['variants'][1]['asin'] = 'B333333333'
+        db.execute('UPDATE listings SET data_json=? WHERE id=?', (json.dumps(raw), p['id']))
+        catalog.refresh(db, p['id'])
+    p = detail(client)
+    assert p['variants'][1]['seller'] == ''
+    assert 'other' in p['local_edit']['conflicts']
+
+
 def test_concurrent_manual_seller_and_review_are_preserved_or_invalidated_correctly(local, monkeypatch):
     client, catalog = local
     seed(catalog)
@@ -148,4 +203,4 @@ def test_new_source_identity_never_inherits_captured_values(local):
     p = detail(client)
     assert p['seller'] == 'Garden Store' and p['variants'][0]['seller'] == ''
     assert p['local_edit']['conflicts']
-    assert len(p['issues']) == 4
+    assert len(p['issues']) == 3

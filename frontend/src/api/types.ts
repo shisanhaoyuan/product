@@ -45,6 +45,7 @@ export interface EvidenceStatus {
   };
 }
 export interface Variant {
+  seller_origin?: 'parent' | 'direct';
   sku: string;
   asin: string;
   source_url: string;

@@ -44,18 +44,29 @@ def sync_capture(catalog, db, lid, sku, asin, result, actor_id):
     current = json.loads(local_product(row['data_json'], encoded(before), version,
         old['updated_at'] if old else '', old['source_digest'] if old else '', row['digest']))
     target = current if not sku else next(v for v in current['variants'] if v['sku'] == sku)
-    targets = [(sku or '', target)]
-    # Share only an unambiguous parent/child identity, never all siblings of a parent.
+    targets = [(sku or '', target, False)]
+    # Share offer facts only with an unambiguous matching parent/child identity.
     same = [v for v in current['variants'] if v['asin'] == asin]
     if current['asin'] == asin and len(same) == 1:
-        targets = [('', current), (same[0]['sku'], same[0])]
+        targets = [('', current, False), (same[0]['sku'], same[0], False)]
+    # User-requested parent seller inheritance is a catalog default, not proof of
+    # the seller on a different ASIN. Preserve that provenance and never inherit prices.
+    if not sku and not empty(result.get('seller')):
+        selected = {target_sku for target_sku, _, _ in targets}
+        targets.extend((v['sku'], v, True) for v in current['variants'] if v['sku'] not in selected)
     changes = list(before)
     filled = []
     preserved = []
 
+    def inherited(target_sku, field, key=''):
+        return any(c.get('inherited_parent_seller') and c['variant_sku'] == target_sku
+                   and c['field'] == field and c['key'] == key for c in changes)
+
     def add(target_sku, field, key, value):
         change = dict(variant_sku=target_sku, field=field, key=key, value=value,
                       capture_asin=asin, capture_source=current['source'], captured_at=result['captured_at'])
+        if shared_seller:
+            change.update(capture_target_asin=item['asin'], inherited_parent_seller=True)
         identity = lambda c: (c['variant_sku'], c['field'], c['key'])
         # A deliberately edited blank is also a user decision: don't overwrite it.
         prior = next((c for c in changes if identity(c) == identity(change)), None)
@@ -68,16 +79,18 @@ def sync_capture(catalog, db, lid, sku, asin, result, actor_id):
         dest[dest_key] = value
         filled.append(f'{target_sku or "主商品"}:{key or field}')
 
-    for target_sku, item in targets:
+    for target_sku, item, shared_seller in targets:
         seller = result.get('seller')
         if not empty(seller):
-            if empty(item.get('seller')):
+            if empty(item.get('seller')) or (not shared_seller and inherited(target_sku, 'seller')):
                 add(target_sku, 'seller', '', seller)
             elif item['seller'] != seller:
                 preserved.append(f'{target_sku or "主商品"}:seller')
         # Source facts are explicitly source values, not the listing's multiplied price.
         facts = item.setdefault('source_facts', {})
-        for key in ('seller', 'price', 'shipping', 'delivery', 'original_price', 'basis_price', 'currency'):
+        keys = () if shared_seller else (
+            'seller', 'price', 'shipping', 'delivery', 'original_price', 'basis_price', 'currency')
+        for key in keys:
             value = result.get(key)
             if not empty(value) and empty(facts.get(key)):
                 add(target_sku, 'source_facts', key, value)
@@ -85,7 +98,10 @@ def sync_capture(catalog, db, lid, sku, asin, result, actor_id):
         for key, previous in list(item[container].items()):
             canonical = next((name for name, names in ALIASES.items() if key.casefold() in names), None)
             value = item.get('seller') if canonical == 'seller' else result.get(canonical or '')
-            if canonical and empty(previous) and not empty(value):
+            if shared_seller and canonical != 'seller':
+                continue
+            replace_inherited = not shared_seller and canonical == 'seller' and inherited(target_sku, container, key)
+            if canonical and (empty(previous) or replace_inherited) and not empty(value):
                 add(target_sku, container, key, filled_value(previous, value))
         dynamic = item[container].get('dynamic_attributes')
         if isinstance(dynamic, dict):
@@ -93,7 +109,10 @@ def sync_capture(catalog, db, lid, sku, asin, result, actor_id):
             for key, previous in dynamic.items():
                 canonical = next((name for name, names in ALIASES.items() if key.casefold() in names), None)
                 value = item.get('seller') if canonical == 'seller' else result.get(canonical or '')
-                if canonical and empty(previous) and not empty(value):
+                if shared_seller and canonical != 'seller':
+                    continue
+                replace_inherited = not shared_seller and canonical == 'seller' and inherited(target_sku, container, 'dynamic_attributes')
+                if canonical and (empty(previous) or replace_inherited) and not empty(value):
                     updated[key] = filled_value(previous, value)
             if updated != dynamic:
                 add(target_sku, container, 'dynamic_attributes', updated)

@@ -262,7 +262,10 @@ defineExpose({ selectVariant });
         {{ selected.identity_note }}
       </div>
       <div class="variant-edit-meta">
-        <label>卖家</label
+        <label
+          >卖家<span v-if="selected.seller_origin === 'parent'" class="muted">
+            · 沿用主商品</span
+          ></label
         ><InlineEdit
           :value="selected.seller"
           :target="{ field: 'seller', variant_sku: selected.sku }"

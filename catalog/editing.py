@@ -85,11 +85,15 @@ def local_product(raw, changes_json, revision, updated, edited_source, source_di
             if change.get('capture_asin'):
                 item = data if not change['variant_sku'] else next(
                     (v for v in data['variants'] if v['sku'] == change['variant_sku']), {})
-                if item.get('asin') != change['capture_asin'] or data['source'] != change['capture_source']:
+                expected_asin = change.get('capture_target_asin', change['capture_asin'])
+                parent_changed = change.get('inherited_parent_seller') and data['asin'] != change['capture_asin']
+                if item.get('asin') != expected_asin or parent_changed or data['source'] != change['capture_source']:
                     conflicts.append(change['variant_sku'] or '主商品')
                     continue
             target, key = value_at(data, change)
             target[key] = change['value']
+            if change['field'] == 'seller':
+                target['seller_origin'] = 'parent' if change.get('inherited_parent_seller') else 'direct'
             mirror = MIRRORS.get(change['field'])
             if not change.get('variant_sku') and mirror in data['fields']:
                 data['fields'][mirror] = change['value']
