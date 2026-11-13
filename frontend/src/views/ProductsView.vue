@@ -57,6 +57,8 @@ const filters = computed(() => {
     if (typeof value === 'string' && value) params.set(key, value);
   }
   if (route.path === '/review' && !params.has('status')) params.set('status', 'review');
+  if (isGiga.value && route.query.inventory_status === 'out_of_stock')
+    params.set('inventory_status', 'out_of_stock');
   params.set('source', source.value);
   return params;
 });
@@ -384,6 +386,17 @@ onBeforeUnmount(() => {
           @input="searchInput"
         />
       </div>
+      <FilterSelect
+        v-if="isGiga"
+        label="筛选库存"
+        title="按大建云仓 Seller 可售库存筛选；未返回库存不计入无库存"
+        :model-value="filters.get('inventory_status') || ''"
+        :options="[
+          { value: '', label: '全部库存状态' },
+          { value: 'out_of_stock', label: '无库存（可售库存为 0）' },
+        ]"
+        @update:model-value="changeFilter('inventory_status', $event)"
+      />
       <FilterSelect
         label="筛选卖家黑名单"
         :model-value="filters.get('seller_status') || ''"

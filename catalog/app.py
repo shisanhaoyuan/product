@@ -115,8 +115,8 @@ def create_app(database=None):
         return dict(listing_count_min=listing_count_min, listing_count_max=listing_count_max)
 
     @app.get('/api/products')
-    def products(q:str='',store:str='',brand:str='',status:str='',date:str='',page:int=Query(1,ge=1),page_size:int=Query(24,ge=1,le=100),category:str='',seller_status:str=Query('',pattern='^(blocked|unblocked)?$'),deduplicate:bool=False,counts:dict=Depends(listing_counts),source:Literal['', 'Amazon', 'GigaB2B']=''):
-        return catalog.find(q,store,brand,status,date,page,page_size,category=category,seller_status=seller_status,deduplicate=deduplicate,source=source,**counts)
+    def products(q:str='',store:str='',brand:str='',status:str='',date:str='',page:int=Query(1,ge=1),page_size:int=Query(24,ge=1,le=100),category:str='',seller_status:str=Query('',pattern='^(blocked|unblocked)?$'),deduplicate:bool=False,counts:dict=Depends(listing_counts),source:Literal['', 'Amazon', 'GigaB2B']='',inventory_status:Literal['', 'out_of_stock']=''):
+        return catalog.find(q,store,brand,status,date,page,page_size,category=category,seller_status=seller_status,deduplicate=deduplicate,source=source,inventory_status=inventory_status,**counts)
 
     @app.get('/api/products/{listing_id}')
     def detail(listing_id:str):
@@ -161,7 +161,7 @@ def create_app(database=None):
                         headers={'Content-Disposition':'attachment; filename="catalog-backup.json"'})
 
     @app.get('/api/export.csv')
-    def export_csv(q:str='',store:str='',brand:str='',status:str='',date:str='',category:str='',seller_status:str=Query('',pattern='^(blocked|unblocked)?$'),counts:dict=Depends(listing_counts),source:Literal['', 'Amazon', 'GigaB2B']=''):
+    def export_csv(q:str='',store:str='',brand:str='',status:str='',date:str='',category:str='',seller_status:str=Query('',pattern='^(blocked|unblocked)?$'),counts:dict=Depends(listing_counts),source:Literal['', 'Amazon', 'GigaB2B']='',inventory_status:Literal['', 'out_of_stock']=''):
         buffer=io.StringIO();writer=csv.writer(buffer)
         writer.writerow(['ASIN','商品SKU','平台SKU','店铺','品牌','商品来源','来源链接','商品卖家','标题','子变体数','保存确认','填写完整','证据类型','上传时间','商品类目','卖家黑名单原因'])
         page=1
@@ -169,7 +169,7 @@ def create_app(database=None):
             text='' if value is None else str(value)
             return "'"+text if text.lstrip().startswith(('=','+','-','@')) else text
         while True:
-            found=catalog.find(q,store,brand,status,date,page,100,category=category,seller_status=seller_status,source=source,**counts)
+            found=catalog.find(q,store,brand,status,date,page,100,category=category,seller_status=seller_status,source=source,inventory_status=inventory_status,**counts)
             for row in found['items']:
                 detail=catalog.get(row['id'])
                 writer.writerow([safe(v) for v in [row['asin'],row['sku'],detail['platform_sku'],row['store'],row['brand'],row['source'],

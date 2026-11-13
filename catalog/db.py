@@ -219,11 +219,20 @@ class Catalog:
             return counts
 
     def filter_sql(self, q="", store="", brand="", status="", date="", category="", seller_status="",
-                   listing_count_min=None, listing_count_max=None, source=""):
+                   listing_count_min=None, listing_count_max=None, source="", inventory_status=""):
         clauses, args = ["1=1"], []
         if source:
             clauses.append("listings.product_id IN (SELECT id FROM products WHERE source=?)")
             args.append(source)
+        if inventory_status == 'out_of_stock':
+            # Filter source stock before pagination; local edits are not supplier availability.
+            clauses.append("listings.product_id IN (SELECT id FROM products WHERE source='GigaB2B')")
+            if self.postgres:
+                stock = "(data_json::jsonb #> '{source_facts,giga,inventory,sellerInventoryInfo,sellerAvailableInventory}')"
+                clauses.append(f"jsonb_typeof({stock})='number' AND {stock}::text='0'")
+            else:
+                path = '$.source_facts.giga.inventory.sellerInventoryInfo.sellerAvailableInventory'
+                clauses.append(f"json_type(data_json,'{path}')='integer' AND json_extract(data_json,'{path}')=0")
         if q:
             clauses.append(f"{'strpos' if self.postgres else 'instr'}(search_text,?)>0"); args.append(q.casefold())
         for key, value in (("store",store),("brand",brand)):
@@ -274,10 +283,10 @@ class Catalog:
         return query, args
 
     def find(self, q="", store="", brand="", status="", date="", page=1, page_size=24, category="", seller_status="", deduplicate=False,
-             listing_count_min=None, listing_count_max=None, source=""):
+             listing_count_min=None, listing_count_max=None, source="", inventory_status=""):
         query, args = self.selection_sql(q=q,store=store,brand=brand,status=status,date=date,
                                          category=category,seller_status=seller_status,deduplicate=deduplicate,
-                                         listing_count_min=listing_count_min,listing_count_max=listing_count_max,source=source)
+                                         listing_count_min=listing_count_min,listing_count_max=listing_count_max,source=source,inventory_status=inventory_status)
         with self.connect() as db:
             read_snapshot(db)
             total = db.execute(f"SELECT COUNT(*) FROM ({query}) AS listings",args).fetchone()[0]
