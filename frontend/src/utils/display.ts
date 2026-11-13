@@ -29,10 +29,11 @@ export function safeUrl(value: unknown): string {
     return '';
   }
 }
-export function money(value: string | number | null | undefined): string {
+export function money(value: string | number | null | undefined, currency = 'USD'): string {
   const number = monetaryNumber(value);
   return number !== null
-    ? '$' + number.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    ? (currency === 'USD' ? '$' : currency ? currency + ' ' : '') +
+        number.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
     : '—';
 }
 function monetaryNumber(value: string | number | null | undefined): number | null {
@@ -40,19 +41,21 @@ function monetaryNumber(value: string | number | null | undefined): number | nul
   const result = Number(value);
   return Number.isFinite(result) ? result : null;
 }
-export function priceRange(values: (string | number | null)[]): string {
+export function priceRange(values: (string | number | null)[], currency = 'USD'): string {
   const numbers = values.map(monetaryNumber).filter((value): value is number => value !== null);
   if (!numbers.length) return '—';
   const min = Math.min(...numbers),
     max = Math.max(...numbers);
-  return min === max ? money(min) : `${money(min)} – ${money(max)}`;
+  return min === max ? money(min, currency) : `${money(min, currency)} – ${money(max, currency)}`;
 }
-export function productStatus(product: EvidenceStatus) {
+export function productStatus(product: EvidenceStatus & { source?: string }) {
   if (product.manual_review?.valid)
     return product.manual_review.complete
       ? { label: '已核验完整', type: 'good' }
       : { label: '待复核', type: 'warn' };
   if (product.local_edit?.changed) return { label: '本地已修改', type: 'warn' };
+  if (product.source === 'GigaB2B' && product.evidence_kind === 'source_only')
+    return { label: '云仓来源资料', type: 'good' };
   return product.fill_complete
     ? { label: '已核验完整', type: 'good' }
     : product.evidence_kind === 'persisted_readback'

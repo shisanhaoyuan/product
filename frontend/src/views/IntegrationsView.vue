@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import AppIcon from '../components/AppIcon.vue';
+import GigaIntegration from '../components/GigaIntegration.vue';
 import ImportUploader from '../components/ImportUploader.vue';
 import StatusBadge from '../components/StatusBadge.vue';
 import { useAuth } from '../composables/useAuth';
@@ -14,6 +15,7 @@ const { auth } = useAuth();
     <a class="btn" href="/docs" target="_blank" rel="noopener">API 文档 ↗</a>
   </div>
   <div class="integration-grid">
+    <GigaIntegration />
     <section class="section">
       <div class="section-head">
         <h2>商品 JSON 导入</h2>

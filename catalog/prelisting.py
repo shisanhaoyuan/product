@@ -100,6 +100,7 @@ class StoreState(StoreCodeInput):
 
 
 class Filters(StrictInput):
+    source: Literal['', 'Amazon', 'GigaB2B'] = ''
     deduplicate: bool = False
     q: str = Field(default='', max_length=300)
     store: str = Field(default='', max_length=100)

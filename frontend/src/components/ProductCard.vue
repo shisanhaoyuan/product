@@ -10,8 +10,8 @@ defineProps<{ product: ProductSummary }>();
 <template>
   <RouterLink
     class="product-card"
-    :to="'/product/' + product.id"
-    :aria-label="'查看 ' + product.asin"
+    :to="(product.source === 'GigaB2B' ? '/giga-product/' : '/product/') + product.id"
+    :aria-label="'查看 ' + (product.asin || product.sku)"
   >
     <div class="card-image">
       <StatusBadge :type="productStatus(product).type">{{
@@ -39,10 +39,12 @@ defineProps<{ product: ProductSummary }>();
       >
         卖家已拉黑 · {{ product.seller_blacklist.length }} 位（含子变体）
       </p>
-      <ListingCoverage :product="product" />
+      <ListingCoverage v-if="product.source !== 'GigaB2B'" :product="product" />
       <div class="card-meta">
-        <span class="meta-label">ASIN</span><span class="mono">{{ product.asin }}</span
-        ><span class="meta-label">SKU</span
+        <template v-if="product.source !== 'GigaB2B'"
+          ><span class="meta-label">ASIN</span
+          ><span class="mono">{{ product.asin }}</span></template
+        ><span class="meta-label">{{ product.source === 'GigaB2B' ? '供应商 SKU' : 'SKU' }}</span
         ><span class="mono" :title="product.sku">{{ product.sku }}</span>
       </div>
       <div class="source-seller">
@@ -54,10 +56,14 @@ defineProps<{ product: ProductSummary }>();
     </div>
     <div class="card-footer">
       <div>
-        <span class="price-caption">售价 / USD</span
+        <span class="price-caption"
+          >{{ product.source === 'GigaB2B' ? '原价' : '售价' }} /
+          {{ product.currency ?? 'USD' }}</span
         ><span class="price"
-          >{{ priceRange(product.prices)
-          }}<small v-if="product.evidence_kind !== 'persisted_readback'">编辑快照</small></span
+          >{{ priceRange(product.prices, product.currency ?? 'USD')
+          }}<small v-if="product.evidence_kind !== 'persisted_readback'">{{
+            product.source === 'GigaB2B' ? '供应商资料' : '编辑快照'
+          }}</small></span
         >
       </div>
       <span class="detail-link"><AppIcon name="ArrowRight" /></span>

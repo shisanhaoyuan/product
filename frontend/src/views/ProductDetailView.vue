@@ -24,6 +24,7 @@ import InlineEdit from '../components/InlineEdit.vue';
 import ProductAttributes from '../components/ProductAttributes.vue';
 import ReviewIssueList from '../components/ReviewIssueList.vue';
 import { reviewIssues, type ReviewIssue } from '../utils/reviewIssues';
+import GigaSourceFacts from '../components/GigaSourceFacts.vue';
 import SourceCapturePanel from '../components/SourceCapturePanel.vue';
 import { productEditingKey, type EditTarget } from '../composables/useProductEditing';
 import { useAuth } from '../composables/useAuth';
@@ -39,7 +40,9 @@ function variantPlanCreated(id: string) {
   listingSkus.value = undefined;
   void router.push('/prelisting/' + id);
 }
-const { stats, refreshStats } = useCatalog();
+const { stats, refreshStats } = useCatalog(
+  () => product.value?.source || (route.path.startsWith('/giga-') ? 'GigaB2B' : 'Amazon'),
+);
 const product = ref<ProductDetail>(),
   loading = ref(true),
   error = ref('');
@@ -214,7 +217,10 @@ const identity = computed(() => {
   const p = product.value;
   if (!p) return [];
   return [
-    ['商品类目（已记录 Product Type）', p.category || '未记录类目'],
+    [
+      p.source === 'GigaB2B' ? '大建云仓来源类目' : '商品类目（已记录 Product Type）',
+      p.category || '未记录类目',
+    ],
     ['商品 SKU', p.sku],
     ['平台 SKU', p.platform_sku || (p.variants.length ? '见子变体表' : '未记录')],
     ['商品卖家', p.seller || '未采集 · 不以品牌替代'],
@@ -255,7 +261,10 @@ async function load() {
   locateMessage.value = '';
   try {
     const result = await catalogApi.product(String(route.params.id), request.signal);
-    if (!request.signal.aborted) product.value = result;
+    if (request.signal.aborted) return;
+    product.value = result;
+    const expectedPath = (result.source === 'GigaB2B' ? '/giga-product/' : '/product/') + result.id;
+    if (route.path !== expectedPath) await router.replace(expectedPath);
     if (!stats.value) await refreshStats();
   } catch (reason) {
     if (!request.signal.aborted) error.value = errorMessage(reason);
@@ -283,7 +292,19 @@ onBeforeUnmount(() => {
 });
 </script>
 <template>
-  <RouterLink class="back-link" to="/products"><AppIcon name="ArrowLeft" />返回商品库</RouterLink>
+  <RouterLink
+    class="back-link"
+    :to="
+      product?.source === 'GigaB2B' || route.path.startsWith('/giga-')
+        ? '/giga-products'
+        : '/products'
+    "
+    ><AppIcon name="ArrowLeft" />{{
+      product?.source === 'GigaB2B' || route.path.startsWith('/giga-')
+        ? '返回大建云仓商品库'
+        : '返回亚马逊商品库'
+    }}</RouterLink
+  >
   <div v-if="loading" class="loading">正在读取商品详情…</div>
   <div v-else-if="error" class="error-box">
     {{ error }} <button class="btn small" @click="load">重试</button>
@@ -351,7 +372,11 @@ onBeforeUnmount(() => {
       }}
     </div>
     <div v-if="product.evidence_kind !== 'persisted_readback'" class="notice warning notice-space">
-      本商品没有可用的独立产品库回读。下方为历史编辑快照，不能视为已保存的 ERP 内容。
+      {{
+        product.source === 'GigaB2B'
+          ? '本商品为大建云仓 API 来源资料，尚未完成目标店铺的填写与上架核验。'
+          : '本商品没有可用的独立产品库回读。下方为历史编辑快照，不能视为已保存的 ERP 内容。'
+      }}
     </div>
     <div class="detail-top">
       <section class="section">
@@ -369,8 +394,9 @@ onBeforeUnmount(() => {
             <div class="identity-item">
               <label>ASIN</label>
               <div class="value mono">
-                {{ product.asin
+                {{ product.asin || '不适用'
                 }}<button
+                  v-if="product.asin"
                   class="copy-button"
                   title="复制 ASIN"
                   aria-label="复制 ASIN"
@@ -414,7 +440,20 @@ onBeforeUnmount(() => {
           </div>
           <div class="detail-facts">
             <div class="detail-fact">
-              <label>{{ product.variants.length ? '子变体售价范围' : '售价' }} · USD</label
+              <label
+                >{{
+                  product.source === 'GigaB2B'
+                    ? '商品原价'
+                    : product.variants.length
+                      ? '子变体售价范围'
+                      : '售价'
+                }}
+                ·
+                {{
+                  product.source === 'GigaB2B'
+                    ? product.source_facts.currency || '币种未返回'
+                    : 'USD'
+                }}</label
               ><InlineEdit
                 :value="product.price"
                 :target="{ field: 'price' }"
@@ -426,6 +465,9 @@ onBeforeUnmount(() => {
                     product.variants.length
                       ? product.variants.map((variant) => variant.price)
                       : [product.price],
+                    product.source === 'GigaB2B'
+                      ? String(product.source_facts.currency || '')
+                      : 'USD',
                   )
                 }}</strong></InlineEdit
               >
@@ -455,7 +497,8 @@ onBeforeUnmount(() => {
               >
             </div>
           </div>
-          <SourceCapturePanel :listing-id="product.id" :asin="product.asin" />
+          <GigaSourceFacts v-if="product.source === 'GigaB2B'" :facts="product.source_facts" />
+          <SourceCapturePanel v-else :listing-id="product.id" :asin="product.asin" />
         </div>
       </section>
     </div>
@@ -483,7 +526,9 @@ onBeforeUnmount(() => {
                   ? product.local_edit?.changed
                     ? '商品库本地编辑内容 · 未同步 ERP'
                     : '产品库重新打开后读取的原始内容'
-                  : '历史编辑框快照'
+                  : product.source === 'GigaB2B'
+                    ? '供应商文案'
+                    : '历史编辑框快照'
               }}
               · 仅以安全文本呈现 HTML
             </p>
@@ -646,7 +691,7 @@ onBeforeUnmount(() => {
         <div class="section-head">
           <div>
             <h2>来源证据</h2>
-            <p>本地历史记录</p>
+            <p>{{ product.source === 'GigaB2B' ? '大建云仓 API 同步记录' : '本地历史记录' }}</p>
           </div>
         </div>
         <div class="section-body">
@@ -655,7 +700,7 @@ onBeforeUnmount(() => {
             ><span class="mono">{{ text(value) }}</span>
           </div>
           <details class="details">
-            <summary>Amazon 来源资料</summary>
+            <summary>{{ product.source }} 来源资料</summary>
             <pre class="json-block">{{ text(product.source_facts) }}</pre>
           </details>
           <details class="details">

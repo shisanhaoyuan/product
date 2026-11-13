@@ -87,6 +87,7 @@ export interface ProductSummary extends EvidenceStatus {
   image: string;
   variant_count: number;
   prices: (string | null)[];
+  currency?: string;
   issue_count: number;
 }
 export interface ProductDetail extends EvidenceStatus {

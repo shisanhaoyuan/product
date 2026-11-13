@@ -7,7 +7,8 @@ from .editing import local_product, local_search
 
 
 def category(data):
-    value = data.get('fields', {}).get('dc_productType')
+    key = 'GIGA category' if data.get('source') == 'GigaB2B' else 'dc_productType'
+    value = data.get('fields', {}).get(key)
     value = value.strip('\t\n\r ') if isinstance(value, str) else ''
     return '' if value.lower() in ('', '请选择', '请选择类目', 'please select', 'select', '--') else value
 

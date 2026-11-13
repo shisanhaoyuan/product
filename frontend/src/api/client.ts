@@ -161,7 +161,7 @@ export const catalogApi = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     }),
-  stats: () => request<Stats>('/api/stats'),
+  stats: (source = '') => request<Stats>('/api/stats?' + new URLSearchParams({ source })),
   products: (query: string, signal?: AbortSignal) =>
     request<ProductPage>(`/api/products?${query}`, { signal }),
   product: (id: string, signal?: AbortSignal) =>

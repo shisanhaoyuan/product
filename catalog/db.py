@@ -24,6 +24,8 @@ class Catalog:
             with self.connect() as db:
                 write_lock(db, 'schema')
                 db.raw.execute(Path(__file__).with_name('postgres.sql').read_text())
+                from .supplier_schema import initialize as initialize_suppliers
+                initialize_suppliers(db, True)
                 from .prelisting import initialize as initialize_prelisting
                 initialize_prelisting(db)
                 if not db.execute('SELECT 1 FROM migrations WHERE version=7').fetchone():
@@ -73,6 +75,8 @@ class Catalog:
                     label TEXT NOT NULL, digest TEXT NOT NULL, result_json TEXT NOT NULL);
             """)
 
+            from .supplier_schema import initialize as initialize_suppliers
+            initialize_suppliers(db)
             initialize(db)
             initialize_editing(db)
             from .prelisting import initialize as initialize_prelisting
@@ -124,7 +128,8 @@ class Catalog:
                 raw = encoded(data)
                 digest = hashlib.sha256(raw.encode()).hexdigest()
                 lid = hashlib.sha256(f"{bundle.namespace}:{item.external_id}".encode()).hexdigest()[:24]
-                pid = hashlib.sha256(f"{item.source}:{item.asin}".encode()).hexdigest()[:24]
+                identity = f"{bundle.namespace}:{item.sku}" if item.source == "GigaB2B" and not item.asin else item.asin
+                pid = hashlib.sha256(f"{item.source}:{identity}".encode()).hexdigest()[:24]
                 old = db.execute("SELECT * FROM listings WHERE id=?", (lid,)).fetchone()
                 if old:
                     prev = json.loads(old["data_json"])
@@ -183,30 +188,37 @@ class Catalog:
     def category_sql(self):
         return 'category' if self.postgres else CATEGORY_SQL
 
-    def stats(self):
+    def stats(self, source=""):
+        # Filter every metric and option from the same source-scoped relation.
+        where, args = self.filter_sql(source=source)
+        relation = f"(SELECT listings.* FROM current_listings AS listings WHERE {where})"
         with self.connect() as db:
             read_snapshot(db)
-            counts = dict(db.execute("""SELECT COUNT(*) listings,COALESCE(SUM(saved),0) saved,
+            counts = dict(db.execute(f"""SELECT COUNT(*) listings,COALESCE(SUM(saved),0) saved,
                 COALESCE(SUM(complete),0) complete,COALESCE(SUM(verified),0) verified,
-                COALESCE(SUM(CASE WHEN evidence_kind='persisted_readback' THEN 1 ELSE 0 END),0) reopened FROM current_listings""").fetchone())
-            counts["products"] = db.execute("SELECT COUNT(*) FROM products").fetchone()[0]
-            counts["variants"] = db.execute("SELECT COUNT(*) FROM variants").fetchone()[0]
-            counts["stores"] = [dict(r) for r in db.execute("SELECT store,COUNT(*) count FROM current_listings GROUP BY store ORDER BY store")]
-            counts["brands"] = [r[0] for r in db.execute("SELECT DISTINCT brand FROM current_listings ORDER BY brand")]
-            counts["dates"] = [r[0] for r in db.execute("SELECT DISTINCT substr(uploaded_at,1,10) AS day FROM listings ORDER BY day DESC")]
+                COALESCE(SUM(CASE WHEN evidence_kind='persisted_readback' THEN 1 ELSE 0 END),0) reopened
+                FROM {relation} scoped""", args).fetchone())
+            counts["products"] = db.execute(f"SELECT COUNT(DISTINCT product_id) FROM {relation} scoped", args).fetchone()[0]
+            counts["variants"] = db.execute(f"SELECT COUNT(*) FROM variants WHERE listing_id IN (SELECT id FROM {relation} scoped)", args).fetchone()[0]
+            counts["stores"] = [dict(r) for r in db.execute(f"SELECT store,COUNT(*) count FROM {relation} scoped GROUP BY store ORDER BY store", args)]
+            counts["brands"] = [r[0] for r in db.execute(f"SELECT DISTINCT brand FROM {relation} scoped ORDER BY brand", args)]
+            counts["dates"] = [r[0] for r in db.execute(f"SELECT DISTINCT substr(uploaded_at,1,10) AS day FROM {relation} scoped ORDER BY day DESC", args)]
             counts["categories"] = [category_option(row['category']) | {'count': row['count']}
-                for row in db.execute(f"SELECT category,COUNT(*) AS count FROM (SELECT {self.category_sql} AS category FROM current_listings) c GROUP BY category ORDER BY category='' ASC,lower(category)")]
+                for row in db.execute(f"SELECT category,COUNT(*) AS count FROM (SELECT {self.category_sql} AS category FROM {relation} scoped) c GROUP BY category ORDER BY category='' ASC,lower(category)", args)]
             counts["review"] = counts["listings"] - counts["complete"]
-            counts["unique_counts"] = dict(db.execute("""SELECT
+            counts["unique_counts"] = dict(db.execute(f"""SELECT
                 COUNT(DISTINCT COALESCE(NULLIF(p.asin,''),l.id)) AS all_products,
                 COUNT(DISTINCT CASE WHEN l.complete=1 THEN COALESCE(NULLIF(p.asin,''),l.id) END) AS complete,
                 COUNT(DISTINCT CASE WHEN l.complete=0 THEN COALESCE(NULLIF(p.asin,''),l.id) END) AS review
-                FROM current_listings l JOIN products p ON p.id=l.product_id""").fetchone())
+                FROM {relation} l JOIN products p ON p.id=l.product_id""", args).fetchone())
             return counts
 
     def filter_sql(self, q="", store="", brand="", status="", date="", category="", seller_status="",
-                   listing_count_min=None, listing_count_max=None):
+                   listing_count_min=None, listing_count_max=None, source=""):
         clauses, args = ["1=1"], []
+        if source:
+            clauses.append("listings.product_id IN (SELECT id FROM products WHERE source=?)")
+            args.append(source)
         if q:
             clauses.append(f"{'strpos' if self.postgres else 'instr'}(search_text,?)>0"); args.append(q.casefold())
         for key, value in (("store",store),("brand",brand)):
@@ -257,10 +269,10 @@ class Catalog:
         return query, args
 
     def find(self, q="", store="", brand="", status="", date="", page=1, page_size=24, category="", seller_status="", deduplicate=False,
-             listing_count_min=None, listing_count_max=None):
+             listing_count_min=None, listing_count_max=None, source=""):
         query, args = self.selection_sql(q=q,store=store,brand=brand,status=status,date=date,
                                          category=category,seller_status=seller_status,deduplicate=deduplicate,
-                                         listing_count_min=listing_count_min,listing_count_max=listing_count_max)
+                                         listing_count_min=listing_count_min,listing_count_max=listing_count_max,source=source)
         with self.connect() as db:
             read_snapshot(db)
             total = db.execute(f"SELECT COUNT(*) FROM ({query}) AS listings",args).fetchone()[0]
@@ -285,7 +297,7 @@ class Catalog:
                     'template','creator','uploaded_at','observed_at','evidence_kind','save_succeeded',
                     'fill_complete','readback_verified','local_edit')} | dict(manual_review=d.get('manual_review'),id=r['id'],title=d['copy']['title'],
                     image=d['images'][0] if d['images'] else next((v['images'][0] for v in d['variants'] if v['images']),''),
-                    variant_count=len(d['variants']),prices=prices,issue_count=0 if review.get('valid') and review.get('complete') else len(d['issues']),category=r['category'],seller_blacklist=matches(d, entries),
+                    variant_count=len(d['variants']),prices=prices,currency=(d.get('source_facts',{}).get('currency') or '') if d['source']=='GigaB2B' else 'USD',issue_count=0 if review.get('valid') and review.get('complete') else len(d['issues']),category=r['category'],seller_blacklist=matches(d, entries),
                     listing_count=sum(s['count'] for s in coverage.get(d['asin'], [])) or 1,
                     listing_stores=coverage.get(d['asin'], [dict(store=d['store'],count=1)])))
             return dict(items=items,total=total,page=page,page_size=page_size)

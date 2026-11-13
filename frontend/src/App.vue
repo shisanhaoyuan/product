@@ -19,7 +19,8 @@ const route = useRoute();
 const { stats } = useCatalog();
 const fatalError = ref('');
 const navigation = [
-  { path: '/products', name: '商品库', icon: 'LayoutGrid' },
+  { path: '/products', name: '亚马逊商品库', icon: 'LayoutGrid' },
+  { path: '/giga-products', name: '大建云仓', icon: 'Package' },
   { path: '/prelisting', name: '预上架', icon: 'Upload' },
   { path: '/blacklist', name: '卖家黑名单', icon: 'ShieldCheck' },
   { path: '/review', name: '待复核', icon: 'CircleDashed' },
@@ -27,8 +28,10 @@ const navigation = [
   { path: '/imports', name: '导入记录', icon: 'History' },
 ];
 const current = computed(() =>
-  route.path.startsWith('/product/')
-    ? '商品详情'
+  route.path.startsWith('/product/') || route.path.startsWith('/giga-product/')
+    ? route.path.startsWith('/giga-')
+      ? '大建云仓商品详情'
+      : '亚马逊商品详情'
     : route.path.startsWith('/prelisting/')
       ? '预上架批次'
       : route.path === '/listing-stores'
@@ -38,7 +41,11 @@ const current = computed(() =>
 function active(path: string) {
   if (path === '/prelisting')
     return route.path.startsWith('/prelisting') || route.path === '/listing-stores';
-  if (path === '/review') return route.path === '/review' || route.query.status === 'review';
+  if (path === '/giga-products') return route.path.startsWith('/giga-product');
+  if (path === '/review')
+    return (
+      route.path === '/review' || (route.path === '/products' && route.query.status === 'review')
+    );
   if (path === '/products')
     return route.path.startsWith('/product') && route.query.status !== 'review';
   return route.path === path;

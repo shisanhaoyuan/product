@@ -16,7 +16,7 @@ import PrelistingComposer from '../components/PrelistingComposer.vue';
 import { useAuth } from '../composables/useAuth';
 const { auth } = useAuth();
 const canEdit = computed(
-  () => !auth.enabled || ['admin', 'editor'].includes(auth.user?.role || ''),
+  () => !isGiga.value && (!auth.enabled || ['admin', 'editor'].includes(auth.user?.role || '')),
 );
 const selected = ref(new Set<string>()),
   allFiltered = ref(false),
@@ -26,7 +26,12 @@ const composerSelection = ref<PrelistingSelection>({}),
 
 const route = useRoute(),
   router = useRouter();
-const { stats, refreshStats } = useCatalog();
+const isGiga = computed(() => route.path === '/giga-products');
+const source = computed(() => (isGiga.value ? 'GigaB2B' : 'Amazon'));
+const libraryPath = computed(() => (isGiga.value ? '/giga-products' : '/products'));
+const libraryName = computed(() => (isGiga.value ? '大建云仓商品库' : '亚马逊商品库'));
+const { stats, refreshStats } = useCatalog(source);
+const detailPath = (id: string) => (isGiga.value ? '/giga-product/' : '/product/') + id;
 const data = ref<ProductPage>();
 const loading = ref(true),
   error = ref(''),
@@ -51,6 +56,7 @@ const filters = computed(() => {
     if (typeof value === 'string' && value) params.set(key, value);
   }
   if (route.path === '/review' && !params.has('status')) params.set('status', 'review');
+  params.set('source', source.value);
   return params;
 });
 const categoryOptions = computed(() => {
@@ -136,53 +142,98 @@ function created(id: string) {
   clearSelection();
   void router.push('/prelisting/' + id);
 }
-watch(() => JSON.stringify(selectionFilters.value), clearSelection);
+watch(
+  () => JSON.stringify(selectionFilters.value),
+  () => {
+    clearSelection();
+    composer.value = false;
+  },
+);
 const pages = computed(() =>
   Math.max(1, Math.ceil((data.value?.total || 0) / (data.value?.page_size || 24))),
 );
 const metrics = computed(() =>
   stats.value
-    ? [
-        {
-          label: '商品模板',
-          value: stats.value.listings,
-          icon: 'Package',
-          foot: `${stats.value.products} 个来源商品 · ${stats.value.stores.length} 家店铺`,
-          type: 'products',
-          progress: null,
-        },
-        {
-          label: '子变体',
-          value: stats.value.variants,
-          icon: 'Layers',
-          foot: '按 SKU 独立记录',
-          type: 'variants',
-          progress: null,
-        },
-        {
-          label: '保存已确认',
-          value: stats.value.saved,
-          icon: 'ShieldCheck',
-          foot: `${stats.value.reopened} 个模板含重开回读`,
-          type: 'saved',
-          progress: stats.value.saved,
-        },
-        {
-          label: '待复核',
-          value: stats.value.review,
-          icon: 'ScanLine',
-          foot: `${stats.value.complete} 个模板已核验完整`,
-          type: 'review',
-          progress: stats.value.review,
-        },
-      ]
+    ? isGiga.value
+      ? [
+          {
+            label: '供应商商品',
+            value: stats.value.products,
+            icon: 'Package',
+            foot: '大建云仓独立来源库',
+            type: 'products',
+            progress: null,
+          },
+          {
+            label: '商品记录',
+            value: stats.value.listings,
+            icon: 'Layers',
+            foot: '按账号与 SKU 去重',
+            type: 'variants',
+            progress: null,
+          },
+          {
+            label: '来源类目',
+            value: stats.value.categories.filter((c) => c.value !== 'missing').length,
+            icon: 'LayoutGrid',
+            foot: '大建云仓原始类目',
+            type: 'saved',
+            progress: null,
+          },
+          {
+            label: '来源品牌',
+            value: stats.value.brands.filter(Boolean).length,
+            icon: 'Package',
+            foot: '接口已提供的品牌',
+            type: 'review',
+            progress: null,
+          },
+        ]
+      : [
+          {
+            label: '商品模板',
+            value: stats.value.listings,
+            icon: 'Package',
+            foot: `${stats.value.products} 个来源商品 · ${stats.value.stores.length} 家店铺`,
+            type: 'products',
+            progress: null,
+          },
+          {
+            label: '子变体',
+            value: stats.value.variants,
+            icon: 'Layers',
+            foot: '按 SKU 独立记录',
+            type: 'variants',
+            progress: null,
+          },
+          {
+            label: '保存已确认',
+            value: stats.value.saved,
+            icon: 'ShieldCheck',
+            foot: `${stats.value.reopened} 个模板含重开回读`,
+            type: 'saved',
+            progress: stats.value.saved,
+          },
+          {
+            label: '待复核',
+            value: stats.value.review,
+            icon: 'ScanLine',
+            foot: `${stats.value.complete} 个模板已核验完整`,
+            type: 'review',
+            progress: stats.value.review,
+          },
+        ]
     : [],
 );
-const tabs = computed(() => [
-  { value: '', label: '全部商品', count: stats.value?.unique_counts?.all_products },
-  { value: 'complete', label: '核验完整', count: stats.value?.unique_counts?.complete },
-  { value: 'review', label: '待复核', count: stats.value?.unique_counts?.review },
-]);
+const tabs = computed(() =>
+  isGiga.value
+    ? [{ value: '', label: '全部云仓商品', count: stats.value?.unique_counts?.all_products }]
+    : [
+        { value: '', label: '全部商品', count: stats.value?.unique_counts?.all_products },
+        { value: 'complete', label: '核验完整', count: stats.value?.unique_counts?.complete },
+        { value: 'review', label: '待复核', count: stats.value?.unique_counts?.review },
+      ],
+);
 
 function changeFilter(key: string, value: string) {
   clearTimeout(searchTimer);
@@ -190,7 +241,7 @@ function changeFilter(key: string, value: string) {
   if (value) query[key] = value;
   else delete query[key];
   delete query.page;
-  return router.push({ path: '/products', query });
+  return router.push({ path: libraryPath.value, query });
 }
 function changeListingCount(value: { minimum: string; maximum: string }) {
   clearTimeout(searchTimer);
@@ -203,7 +254,7 @@ function changeListingCount(value: { minimum: string; maximum: string }) {
     else delete query[key];
   }
   delete query.page;
-  return router.push({ path: '/products', query });
+  return router.push({ path: libraryPath.value, query });
 }
 function searchInput(event: Event) {
   search.value = (event.target as HTMLInputElement).value;
@@ -216,7 +267,7 @@ function changeView(value: string) {
 }
 function changePage(offset: number) {
   router.push({
-    path: '/products',
+    path: libraryPath.value,
     query: { ...Object.fromEntries(filters.value), page: String((data.value?.page || 1) + offset) },
   });
   window.scrollTo(0, 0);
@@ -228,9 +279,10 @@ async function load() {
   clearTimeout(searchTimer);
   search.value = filters.value.get('q') || '';
   loading.value = true;
+  data.value = undefined;
   error.value = '';
   try {
-    if (!stats.value) await refreshStats();
+    await refreshStats();
     if (request.signal.aborted) return;
     const params = new URLSearchParams(filters.value);
     params.set('deduplicate', 'true');
@@ -253,11 +305,11 @@ onBeforeUnmount(() => {
     <div>
       <p class="eyebrow">CATALOG / 商品管理</p>
       <h1>
-        商品库<span class="heading-count">{{ data?.total ?? '—' }}</span>
+        {{ libraryName }}<span class="heading-count">{{ data?.total ?? '—' }}</span>
       </h1>
     </div>
     <div class="actions">
-      <RouterLink class="btn" to="/prelisting">预上架批次</RouterLink>
+      <RouterLink v-if="!isGiga" class="btn" to="/prelisting">预上架批次</RouterLink>
       <a
         class="btn"
         id="export-button"
@@ -323,7 +375,9 @@ onBeforeUnmount(() => {
           type="search"
           name="q"
           :value="search"
-          placeholder="搜索 ASIN、SKU、商品名称、卖家…"
+          :placeholder="
+            isGiga ? '搜索供应商 SKU、商品名称、卖家…' : '搜索 ASIN、SKU、商品名称、卖家…'
+          "
           aria-label="搜索商品"
           @input="searchInput"
         />
@@ -341,7 +395,7 @@ onBeforeUnmount(() => {
       <FilterSelect
         class="category-filter"
         label="筛选商品类目"
-        title="按已记录的 Product Type 筛选；括号内数量为全库模板数"
+        title="按已记录的 Product Type 或供应商来源类目筛选；括号内数量为全库记录数"
         :model-value="filters.get('category') || ''"
         :options="categoryOptions"
         @update:model-value="changeFilter('category', $event)"
@@ -365,6 +419,7 @@ onBeforeUnmount(() => {
         @update:model-value="changeFilter('date', $event)"
       />
       <ListingCountFilter
+        v-if="!isGiga"
         :minimum="filters.get('listing_count_min') || ''"
         :maximum="filters.get('listing_count_max') || ''"
         @change="changeListingCount"
@@ -375,7 +430,7 @@ onBeforeUnmount(() => {
         type="button"
         title="重置筛选"
         aria-label="重置筛选"
-        @click="router.push('/products')"
+        @click="router.push(libraryPath)"
       >
         <AppIcon name="RotateCcw" />
       </button>
@@ -420,9 +475,14 @@ onBeforeUnmount(() => {
       <span id="result-count"
         ><template v-if="!loading && data"
           >共 <strong>{{ data.total }}</strong> 个商品 <span class="dot-separator">·</span>
-          {{ filters.size ? '已应用筛选' : '按上传时间排序' }}</template
+          {{ filters.size > 1 ? '已应用筛选' : '按上传时间排序' }}</template
         ><template v-else>正在读取商品…</template></span
-      ><span class="data-note"><i></i>按 ASIN 去重 · 上架次数按全库店铺模板统计</span>
+      ><span class="data-note"
+        ><i></i
+        >{{
+          isGiga ? '按大建云仓账号与 SKU 独立建档' : '按 ASIN 去重 · 上架次数按亚马逊店铺模板统计'
+        }}</span
+      >
     </div>
     <div v-if="error" class="error-box">
       加载失败：{{ error }} <button class="btn small" @click="load">重试</button>
@@ -451,11 +511,11 @@ onBeforeUnmount(() => {
             <tr>
               <th v-if="canEdit">选择</th>
               <th>商品</th>
-              <th>上架次数 / 店铺</th>
-              <th>ASIN / SKU</th>
+              <th v-if="!isGiga">上架次数 / 店铺</th>
+              <th>{{ isGiga ? '供应商 SKU' : 'ASIN / SKU' }}</th>
               <th>店铺 / 品牌</th>
               <th>来源 / 卖家</th>
-              <th>售价 USD</th>
+              <th>价格 / 币种</th>
               <th>状态</th>
               <th></th>
             </tr>
@@ -472,7 +532,7 @@ onBeforeUnmount(() => {
                 />
               </td>
               <td>
-                <RouterLink class="table-product" :to="'/product/' + product.id"
+                <RouterLink class="table-product" :to="detailPath(product.id)"
                   ><ProductImage :src="product.image" image-class="table-thumb" /><span
                     class="table-product-copy"
                     ><span class="table-product-title">{{ product.title || '暂无标题' }}</span
@@ -482,9 +542,12 @@ onBeforeUnmount(() => {
                   ></RouterLink
                 >
               </td>
-              <td class="listing-coverage-cell"><ListingCoverage :product="product" /></td>
+              <td v-if="!isGiga" class="listing-coverage-cell">
+                <ListingCoverage :product="product" />
+              </td>
               <td class="mono">
-                {{ product.asin }}<br /><span class="muted">{{ product.sku }}</span>
+                <template v-if="!isGiga">{{ product.asin }}<br /></template
+                ><span class="muted">{{ product.sku }}</span>
               </td>
               <td>
                 {{ product.store }}<br /><span class="muted">{{ product.brand }}</span>
@@ -497,14 +560,14 @@ onBeforeUnmount(() => {
                   卖家已拉黑 · {{ product.seller_blacklist.length }} 位
                 </div>
               </td>
-              <td>{{ priceRange(product.prices) }}</td>
+              <td>{{ priceRange(product.prices, product.currency ?? 'USD') }}</td>
               <td>
                 <StatusBadge :type="productStatus(product).type">{{
                   productStatus(product).label
                 }}</StatusBadge>
               </td>
               <td>
-                <RouterLink class="detail-link" :to="'/product/' + product.id">详情 ↗</RouterLink>
+                <RouterLink class="detail-link" :to="detailPath(product.id)">详情 ↗</RouterLink>
               </td>
             </tr>
           </tbody>
@@ -540,7 +603,7 @@ onBeforeUnmount(() => {
     <div v-else class="empty">
       没有找到对应商品
       <p>试试其他 ASIN、SKU，或重置筛选条件。</p>
-      <button class="btn small" @click="router.push('/products')">重置筛选</button>
+      <button class="btn small" @click="router.push(libraryPath)">重置筛选</button>
     </div>
   </section>
   <PrelistingComposer
@@ -552,6 +615,12 @@ onBeforeUnmount(() => {
   />
   <div class="notice">
     <AppIcon name="Database" />
-    <div>历史快照 · 商品价格、库存与文案以详情中的回读记录为准。</div>
+    <div>
+      {{
+        isGiga
+          ? '大建云仓 API 来源资料 · 原价、运费与可售库存分开记录。'
+          : '历史快照 · 商品价格、库存与文案以详情中的回读记录为准。'
+      }}
+    </div>
   </div>
 </template>
