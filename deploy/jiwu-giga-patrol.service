@@ -1,0 +1,20 @@
+[Unit]
+Description=Jiwu GigaB2B weekly price and inventory patrol
+After=network-online.target postgresql-16.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=jiwu
+Group=jiwu
+WorkingDirectory=/www/wwwroot/jiwu
+EnvironmentFile=/etc/jiwu.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/www/wwwroot/jiwu/.venv/bin/python -m catalog.giga_patrol
+TimeoutStartSec=6h
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/www/server/jiwu-data

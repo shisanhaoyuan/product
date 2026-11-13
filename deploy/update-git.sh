@@ -13,7 +13,7 @@ main() {
   umask 027
   local app_dir=/www/wwwroot/jiwu data_dir=/www/server/jiwu-data
   local backup_root=/www/server/jiwu-backups before_sha target_sha backup_dir origin
-  local stopped=0
+  local stopped=0 patrol_timer_active=0
   for executable in git node npm flock systemctl runuser curl pg_dump tar; do
     command -v "$executable" >/dev/null || { printf '缺少命令：%s\n' "$executable" >&2; return 1; }
   done
@@ -65,6 +65,13 @@ PY
   trap 'if [[ $stopped == 1 ]]; then systemctl stop jiwu || true; printf "更新未完成，服务已停止。备份：%s；原提交：%s。请检查错误后再启动，勿直接覆盖数据库。\n" "$backup_dir" "$before_sha" >&2; fi' EXIT
   # Stop before backup so the backup includes the last accepted write.
   stopped=1
+  if systemctl is-active --quiet jiwu-giga-patrol.timer; then
+    patrol_timer_active=1
+    systemctl stop jiwu-giga-patrol.timer
+  fi
+  if systemctl cat jiwu-giga-patrol.service >/dev/null 2>&1; then
+    systemctl stop jiwu-giga-patrol.service
+  fi
   systemctl stop jiwu
   bash deploy/backup.sh > "$backup_dir/data-backup.txt"
   cat "$backup_dir/data-backup.txt"
@@ -87,6 +94,13 @@ PY
   if [[ $healthy != 1 ]] || ! systemctl is-active --quiet jiwu; then
     printf '%s\n' '服务健康检查失败。' >&2
     exit 1
+  fi
+  # Keep an already-installed weekly task current; do not enable it implicitly.
+  if [[ -f /etc/systemd/system/jiwu-giga-patrol.service ]]; then
+    install -m 644 deploy/jiwu-giga-patrol.service /etc/systemd/system/jiwu-giga-patrol.service
+    install -m 644 deploy/jiwu-giga-patrol.timer /etc/systemd/system/jiwu-giga-patrol.timer
+    systemctl daemon-reload
+    if [[ $patrol_timer_active == 1 ]]; then systemctl start jiwu-giga-patrol.timer; fi
   fi
   stopped=0
   trap - EXIT

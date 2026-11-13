@@ -309,6 +309,7 @@ onBeforeUnmount(() => {
       </h1>
     </div>
     <div class="actions">
+      <RouterLink v-if="isGiga" class="btn" to="/giga-patrol">价格与库存巡查</RouterLink>
       <RouterLink v-if="!isGiga" class="btn" to="/prelisting">预上架批次</RouterLink>
       <a
         class="btn"

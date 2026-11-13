@@ -48,6 +48,8 @@ def create_app(database=None):
     app.include_router(source_routes(catalog))
     from .giga import giga_routes
     app.include_router(giga_routes(catalog))
+    from .giga_patrol import patrol_routes
+    app.include_router(patrol_routes(catalog))
 
     @app.middleware('http')
     async def guard(request:Request, call_next):
@@ -99,7 +101,7 @@ def create_app(database=None):
     def health():
         with catalog.connect() as db:
             db.execute('SELECT 1').fetchone()
-        return {'status':'ok','schema_version':13,
+        return {'status':'ok','schema_version':14,
                 'database':'postgresql' if catalog.postgres else 'sqlite',
                 'images':storage.backend if storage else 'sqlite'}
 

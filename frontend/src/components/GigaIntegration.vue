@@ -102,6 +102,7 @@ onBeforeUnmount(() => {
         管理员需先在服务器配置 API 环境、Client ID 和 Client Secret。密钥不在网页中填写。
       </p>
       <div class="actions integration-actions">
+        <RouterLink class="btn" to="/giga-patrol">价格与库存巡查</RouterLink>
         <RouterLink class="btn" to="/giga-products">打开大建云仓商品库</RouterLink>
         <button
           v-if="writable"

@@ -9,6 +9,7 @@ export const router = createRouter({
     { path: '/account', component: () => import('./views/AccountView.vue') },
     { path: '/users', component: () => import('./views/UsersView.vue') },
     { path: '/products', component: () => import('./views/ProductsView.vue') },
+    { path: '/giga-patrol', component: () => import('./views/GigaPatrolView.vue') },
     { path: '/giga-products', component: () => import('./views/ProductsView.vue') },
     { path: '/giga-product/:id', component: () => import('./views/ProductDetailView.vue') },
     { path: '/review', component: () => import('./views/ProductsView.vue') },

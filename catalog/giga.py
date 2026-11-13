@@ -192,7 +192,7 @@ def sync_lease(catalog, namespace):
         db.execute('INSERT INTO integration_leases VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET token=excluded.token,expires_at=excluded.expires_at',
                    (namespace, token, time.time() + 180))
     try:
-        yield
+        yield token
     finally:
         with catalog.connect() as db:
             write_lock(db)

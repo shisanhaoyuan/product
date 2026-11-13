@@ -36,12 +36,14 @@ const current = computed(() =>
       ? '预上架批次'
       : route.path === '/listing-stores'
         ? '上架店铺'
-        : navigation.find((item) => item.path === route.path)?.name || '商品库',
+        : route.path === '/giga-patrol'
+          ? '云仓价格与库存巡查'
+          : navigation.find((item) => item.path === route.path)?.name || '商品库',
 );
 function active(path: string) {
   if (path === '/prelisting')
     return route.path.startsWith('/prelisting') || route.path === '/listing-stores';
-  if (path === '/giga-products') return route.path.startsWith('/giga-product');
+  if (path === '/giga-products') return route.path.startsWith('/giga-');
   if (path === '/review')
     return (
       route.path === '/review' || (route.path === '/products' && route.query.status === 'review')

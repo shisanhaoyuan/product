@@ -26,6 +26,8 @@ class Catalog:
                 db.raw.execute(Path(__file__).with_name('postgres.sql').read_text())
                 from .supplier_schema import initialize as initialize_suppliers
                 initialize_suppliers(db, True)
+                from .giga_patrol import initialize as initialize_patrol
+                initialize_patrol(db)
                 from .prelisting import initialize as initialize_prelisting
                 initialize_prelisting(db)
                 if not db.execute('SELECT 1 FROM migrations WHERE version=7').fetchone():
@@ -77,6 +79,8 @@ class Catalog:
 
             from .supplier_schema import initialize as initialize_suppliers
             initialize_suppliers(db)
+            from .giga_patrol import initialize as initialize_patrol
+            initialize_patrol(db)
             initialize(db)
             initialize_editing(db)
             from .prelisting import initialize as initialize_prelisting
