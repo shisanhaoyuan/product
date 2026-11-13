@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import GigaQuickFacts from '../components/GigaQuickFacts.vue';
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { catalogApi } from '../api/client';
@@ -561,7 +562,17 @@ onBeforeUnmount(() => {
                   卖家已拉黑 · {{ product.seller_blacklist.length }} 位
                 </div>
               </td>
-              <td>{{ priceRange(product.prices, product.currency ?? 'USD') }}</td>
+              <td>
+                <span v-if="isGiga" class="giga-table-price">预计总额（含打包）</span
+                >{{
+                  priceRange(
+                    product.source === 'GigaB2B'
+                      ? product.giga_summary?.estimated_totals || []
+                      : product.prices,
+                    product.currency ?? 'USD',
+                  )
+                }}<GigaQuickFacts v-if="isGiga" :summary="product.giga_summary" />
+              </td>
               <td>
                 <StatusBadge :type="productStatus(product).type">{{
                   productStatus(product).label

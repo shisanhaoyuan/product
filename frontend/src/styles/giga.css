@@ -1,0 +1,311 @@
+/* GIGA supplier facts are read-only; local product edits retain their own controls. */
+.giga-source {
+  display: grid;
+  gap: 24px;
+  margin: 28px 0;
+  font-size: 16px;
+  line-height: 1.65;
+  color: #243443;
+}
+.giga-source h2,
+.giga-source h3,
+.giga-source p,
+.giga-source dl {
+  margin: 0;
+}
+.giga-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+.giga-heading h2 {
+  font-size: 26px;
+  letter-spacing: -0.02em;
+}
+.giga-eyebrow {
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  color: #617887;
+  font-weight: 600;
+}
+.giga-chip {
+  padding: 6px 14px;
+  border: 1px solid #ccdbe3;
+  background: #eff5f8;
+  color: #426277;
+  border-radius: 20px;
+  font-size: 14px;
+}
+.giga-overview {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.giga-total,
+.giga-stat {
+  padding: 24px;
+  border-radius: 16px;
+  border: 1px solid #d6e2e9;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: #fff;
+}
+.giga-total {
+  background: #eaf1f6;
+  border-color: #cedee9;
+}
+.giga-total > strong {
+  font-size: 36px;
+  line-height: 1.25;
+  color: #224a66;
+  letter-spacing: -0.025em;
+  overflow-wrap: anywhere;
+}
+.giga-total > span,
+.giga-stat > span {
+  font-size: 15px;
+  font-weight: 600;
+}
+.giga-total p {
+  font-size: 15px;
+}
+.giga-total p span {
+  margin: 0 6px;
+}
+.giga-total small,
+.giga-stat small,
+.giga-help,
+.giga-muted {
+  color: #627481;
+  font-size: 14px;
+}
+.giga-stat > strong {
+  font-size: 32px;
+  line-height: 1.5;
+}
+.giga-two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+.giga-panel {
+  min-width: 0;
+  padding: 24px;
+  background: #fff;
+  border: 1px solid #dce4e9;
+  border-radius: 16px;
+  display: grid;
+  align-content: start;
+  gap: 18px;
+}
+.giga-panel h3 {
+  font-size: 20px;
+  font-weight: 650;
+  border-bottom: 1px solid #e6ecef;
+  padding-bottom: 12px;
+}
+.giga-panel h3 small {
+  font-size: 13px;
+  color: #71838e;
+  margin-left: 10px;
+  font-weight: 400;
+}
+.giga-warehouses {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 12px;
+}
+.giga-warehouse {
+  padding: 14px;
+  border: 1px solid #e0e8ed;
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  background: #f7fafb;
+}
+.giga-warehouse > span {
+  font-size: 14px;
+  font-weight: 600;
+}
+.giga-warehouse > strong {
+  font-size: 24px;
+}
+.giga-metrics {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.giga-metrics > div {
+  padding: 12px;
+  border-radius: 8px;
+  background: #f6f8fa;
+  display: flex;
+  flex-direction: column;
+}
+.giga-metrics span {
+  font-size: 14px;
+}
+.giga-metrics strong {
+  font-size: 22px;
+}
+.giga-seller {
+  font-size: 20px;
+  font-weight: 600;
+}
+.giga-seller small {
+  font-size: 14px;
+  font-weight: 400;
+  color: #627481;
+}
+.giga-source .giga-field-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 20px 24px;
+}
+.giga-field {
+  min-width: 0;
+}
+.giga-field dt {
+  font-size: 14px;
+  color: #627481;
+  margin-bottom: 5px;
+}
+.giga-field dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.giga-field-wide {
+  grid-column: 1/-1;
+}
+.giga-source .giga-nested {
+  border-left: 2px solid #dde7ed;
+  padding-left: 16px;
+}
+.giga-value-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding-left: 22px;
+}
+.giga-resource {
+  display: inline-flex;
+  flex-direction: column;
+  max-width: 100%;
+  font-size: 15px;
+}
+.giga-resource span {
+  font-size: 12px;
+  color: #73838e;
+  overflow-wrap: anywhere;
+}
+.giga-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.giga-source details > summary {
+  cursor: pointer;
+  color: #47667e;
+  font-size: 15px;
+}
+.giga-source details[open] > summary {
+  margin-bottom: 16px;
+}
+.giga-alerts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.giga-risk {
+  color: #b42332;
+  background: #fff0f0;
+  border: 1px solid #f3cccc;
+  border-radius: 6px;
+  padding: 4px 9px;
+  font-size: 13px;
+  font-weight: 650;
+}
+.giga-danger {
+  color: #b42332 !important;
+}
+.giga-stat.giga-danger,
+.giga-warehouse.giga-danger,
+.giga-metrics .giga-danger {
+  background: #fff3f3;
+  border-color: #efc6cb;
+}
+.giga-stat.giga-danger small {
+  color: #ae3e4b;
+}
+.giga-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  font-size: 14px;
+  margin-top: 12px;
+}
+.giga-quick .giga-alerts {
+  width: 100%;
+}
+.giga-page .product-title {
+  font-size: 17px;
+  line-height: 1.5;
+}
+.giga-page .card-meta,
+.giga-page .source-seller,
+.giga-page .category-label,
+.giga-page .identity-item .value {
+  font-size: 14px;
+}
+.giga-page .identity-item label,
+.giga-page .price-caption,
+.giga-page .detail-fact label {
+  font-size: 13px;
+}
+.giga-page .detail-facts {
+  border-top: 1px solid #e0e8ed;
+  margin-top: 22px;
+}
+.giga-page .data-table td {
+  font-size: 14px;
+}
+.giga-page .giga-table-price {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: #617887;
+}
+@media (max-width: 1000px) {
+  .giga-overview {
+    grid-template-columns: 1fr 1fr;
+  }
+  .giga-total {
+    grid-column: 1/-1;
+  }
+  .giga-two-col {
+    grid-template-columns: 1fr;
+  }
+  .giga-source .giga-field-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+@media (max-width: 600px) {
+  .giga-panel,
+  .giga-total,
+  .giga-stat {
+    padding: 18px;
+  }
+  .giga-source .giga-field-grid {
+    grid-template-columns: 1fr;
+  }
+  .giga-total > strong {
+    font-size: 30px;
+  }
+  .giga-heading h2 {
+    font-size: 22px;
+  }
+  .giga-chip {
+    white-space: nowrap;
+  }
+}

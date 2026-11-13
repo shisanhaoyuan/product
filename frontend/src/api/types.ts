@@ -66,7 +66,21 @@ export interface Variant {
   raw_cells: Fields;
   identity_note: string;
 }
+export interface GigaSummary {
+  estimated_totals: string[];
+  unit_price: string | null;
+  shipping_fee: string | null;
+  currency: string;
+  price_note: string;
+  inventory: number | null;
+  giga_index: string | null;
+  low_score_threshold: number;
+  seller: Fields;
+  product_return_rate?: unknown;
+  risks: string[];
+}
 export interface ProductSummary extends EvidenceStatus {
+  giga_summary?: GigaSummary | null;
   listing_count: number;
   listing_stores: { store: string; count: number }[];
   seller_blacklist: SellerBlock[];
@@ -91,6 +105,7 @@ export interface ProductSummary extends EvidenceStatus {
   issue_count: number;
 }
 export interface ProductDetail extends EvidenceStatus {
+  giga_summary?: GigaSummary | null;
   seller_blacklist: SellerBlock[];
   category: string;
   id: string;

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import GigaQuickFacts from './GigaQuickFacts.vue';
 import type { ProductSummary } from '../api/types';
 import { priceRange, productStatus } from '../utils/display';
 import AppIcon from './AppIcon.vue';
@@ -39,6 +40,7 @@ defineProps<{ product: ProductSummary }>();
       >
         卖家已拉黑 · {{ product.seller_blacklist.length }} 位（含子变体）
       </p>
+      <GigaQuickFacts v-if="product.source === 'GigaB2B'" :summary="product.giga_summary" />
       <ListingCoverage v-if="product.source !== 'GigaB2B'" :product="product" />
       <div class="card-meta">
         <template v-if="product.source !== 'GigaB2B'"
@@ -57,10 +59,16 @@ defineProps<{ product: ProductSummary }>();
     <div class="card-footer">
       <div>
         <span class="price-caption"
-          >{{ product.source === 'GigaB2B' ? '原价' : '售价' }} /
+          >{{ product.source === 'GigaB2B' ? '预计总额（含打包）' : '售价' }} /
           {{ product.currency ?? 'USD' }}</span
         ><span class="price"
-          >{{ priceRange(product.prices, product.currency ?? 'USD')
+          >{{
+            priceRange(
+              product.source === 'GigaB2B'
+                ? product.giga_summary?.estimated_totals || []
+                : product.prices,
+              product.currency ?? 'USD',
+            )
           }}<small v-if="product.evidence_kind !== 'persisted_readback'">{{
             product.source === 'GigaB2B' ? '供应商资料' : '编辑快照'
           }}</small></span

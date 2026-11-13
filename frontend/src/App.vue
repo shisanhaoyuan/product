@@ -99,7 +99,7 @@ onErrorCaptured((error) => {
       </div>
     </div>
   </header>
-  <main>
+  <main :class="{ 'giga-page': route.path.startsWith('/giga-') }">
     <div class="topbar">
       <div class="breadcrumb">
         <span>工作空间</span><AppIcon name="ChevronRight" /><span id="breadcrumb-current">{{

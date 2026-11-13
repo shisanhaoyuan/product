@@ -443,7 +443,7 @@ onBeforeUnmount(() => {
               <label
                 >{{
                   product.source === 'GigaB2B'
-                    ? '商品原价'
+                    ? '商品库编辑单价'
                     : product.variants.length
                       ? '子变体售价范围'
                       : '售价'
@@ -473,13 +473,24 @@ onBeforeUnmount(() => {
               >
             </div>
             <div class="detail-fact">
-              <label>MSRP · USD</label
+              <label
+                >MSRP ·
+                {{
+                  product.source === 'GigaB2B' ? product.source_facts.currency || '—' : 'USD'
+                }}</label
               ><InlineEdit
                 :value="product.msrp"
                 :target="{ field: 'msrp' }"
                 label="MSRP"
                 kind="money"
-                ><strong>{{ money(product.msrp) }}</strong></InlineEdit
+                ><strong>{{
+                  money(
+                    product.msrp,
+                    product.source === 'GigaB2B'
+                      ? String(product.source_facts.currency || '')
+                      : 'USD',
+                  )
+                }}</strong></InlineEdit
               >
             </div>
             <div class="detail-fact">
@@ -497,11 +508,19 @@ onBeforeUnmount(() => {
               >
             </div>
           </div>
-          <GigaSourceFacts v-if="product.source === 'GigaB2B'" :facts="product.source_facts" />
-          <SourceCapturePanel v-else :listing-id="product.id" :asin="product.asin" />
+          <SourceCapturePanel
+            v-if="product.source !== 'GigaB2B'"
+            :listing-id="product.id"
+            :asin="product.asin"
+          />
         </div>
       </section>
     </div>
+    <GigaSourceFacts
+      v-if="product.source === 'GigaB2B'"
+      :facts="product.source_facts"
+      :summary="product.giga_summary"
+    />
     <SellerRiskPanel :product="product" />
     <div class="detail-tabs">
       <a

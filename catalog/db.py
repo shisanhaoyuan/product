@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from .models import ImportBundle
+from .giga_presentation import summary as giga_summary
 from .categories import CATEGORY_SQL, category_option
 from .blacklist import initialize, seller_key, BLOCKED_SQL, active_entries, matches
 from .editing import initialize as initialize_editing, register as register_editing
@@ -301,6 +302,7 @@ class Catalog:
                     'template','creator','uploaded_at','observed_at','evidence_kind','save_succeeded',
                     'fill_complete','readback_verified','local_edit')} | dict(manual_review=d.get('manual_review'),id=r['id'],title=d['copy']['title'],
                     image=d['images'][0] if d['images'] else next((v['images'][0] for v in d['variants'] if v['images']),''),
+                    giga_summary=giga_summary(d.get('source_facts')) if d['source']=='GigaB2B' else None,
                     variant_count=len(d['variants']),prices=prices,currency=(d.get('source_facts',{}).get('currency') or '') if d['source']=='GigaB2B' else 'USD',issue_count=0 if review.get('valid') and review.get('complete') else len(d['issues']),category=r['category'],seller_blacklist=matches(d, entries),
                     listing_count=sum(s['count'] for s in coverage.get(d['asin'], [])) or 1,
                     listing_stores=coverage.get(d['asin'], [dict(store=d['store'],count=1)])))
@@ -311,7 +313,9 @@ class Catalog:
             read_snapshot(db)
             r=db.execute(f"SELECT data_json,{self.category_sql} AS category FROM current_listings WHERE id=?",(listing_id,)).fetchone()
             if not r:return None
-            return json.loads(r[0]) | dict(id=listing_id,category=r['category'],
+            data = json.loads(r[0])
+            return data | dict(id=listing_id,category=r['category'],
+                giga_summary=giga_summary(data.get('source_facts')) if data['source']=='GigaB2B' else None,
                 seller_blacklist=matches(json.loads(r[0]), active_entries(db)),history=[dict(h) for h in db.execute(
                 "SELECT id,observed_at,evidence_kind,digest FROM snapshots WHERE listing_id=? ORDER BY observed_at DESC",(listing_id,))])
 
