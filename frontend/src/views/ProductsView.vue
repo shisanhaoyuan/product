@@ -18,7 +18,7 @@ import { parseBatchIdentifiers, productSearch } from '../utils/batchSearch';
 import { useAuth } from '../composables/useAuth';
 const { auth } = useAuth();
 const canEdit = computed(
-  () => !isGiga.value && (!auth.enabled || ['admin', 'editor'].includes(auth.user?.role || '')),
+  () => !auth.enabled || ['admin', 'editor'].includes(auth.user?.role || ''),
 );
 const selected = ref(new Set<string>()),
   allFiltered = ref(false),
@@ -366,7 +366,7 @@ onBeforeUnmount(() => {
     </div>
     <div class="actions">
       <RouterLink v-if="isGiga" class="btn" to="/giga-patrol">价格与库存巡查</RouterLink>
-      <RouterLink v-if="!isGiga" class="btn" to="/prelisting">预上架批次</RouterLink>
+      <RouterLink class="btn" to="/prelisting">预上架批次</RouterLink>
       <a
         class="btn"
         id="export-button"
@@ -695,6 +695,7 @@ onBeforeUnmount(() => {
     v-if="composer"
     :selection="composerSelection"
     :count="composerCount"
+    :source="source"
     @close="composer = false"
     @created="created"
   />

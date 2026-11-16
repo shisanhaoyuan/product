@@ -32,12 +32,14 @@ const { auth } = useAuth();
 const route = useRoute();
 const router = useRouter();
 const listingSkus = ref<string[]>();
+const wholeProductPlan = ref(false);
 function openVariantPlan(skus: string[]) {
   if (editActive.value || editBusy.value || !skus.length) return;
   listingSkus.value = skus;
 }
 function variantPlanCreated(id: string) {
   listingSkus.value = undefined;
+  wholeProductPlan.value = false;
   void router.push('/prelisting/' + id);
 }
 const { stats, refreshStats } = useCatalog(
@@ -320,6 +322,14 @@ onBeforeUnmount(() => {
           {{ product.store }} <span class="dot-separator">/</span> {{ product.brand }}
           <span class="dot-separator">/</span> {{ product.template }}
         </p>
+        <button
+          v-if="product.source === 'GigaB2B' && canEdit"
+          class="btn primary"
+          :disabled="!!editActive || editBusy"
+          @click="wholeProductPlan = true"
+        >
+          预上架此商品
+        </button>
         <div class="detail-status">
           <StatusBadge :type="productStatus(product).type">{{
             productStatus(product).label
@@ -755,10 +765,18 @@ onBeforeUnmount(() => {
       </section>
     </div>
     <PrelistingComposer
-      v-if="listingSkus?.length"
-      :selection="{ listing_ids: [product.id], variant_skus: { [product.id]: listingSkus } }"
-      :count="listingSkus.length"
-      @close="listingSkus = undefined"
+      v-if="listingSkus?.length || wholeProductPlan"
+      :selection="
+        listingSkus?.length
+          ? { listing_ids: [product.id], variant_skus: { [product.id]: listingSkus } }
+          : { listing_ids: [product.id] }
+      "
+      :count="listingSkus?.length || 1"
+      :source="product.source"
+      @close="
+        listingSkus = undefined;
+        wholeProductPlan = false;
+      "
       @created="variantPlanCreated"
     />
   </template>

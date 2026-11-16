@@ -24,10 +24,10 @@ defineProps<{ preview: PrelistingPreview }>();
   <p class="notice notice-space">
     预检查通过 {{ preview.ready_count }} 件 · 待复核
     {{ preview.total - preview.ready_count }}
-    件。价格基于历史核验记录，执行前需重新采集价格、库存及核对目标文案。
+    件。价格基于已保存的来源快照，正式提交前需更新价格、库存并核对沃尔玛必填项及目标文案。
   </p>
   <p v-if="!preview.can_create" class="error-box">
-    存在重复 ASIN 或该店铺已有未取消批次，请调整选择。
+    存在重复商品编号（ASIN / 供应商 SKU），或该店铺已有未取消批次，请调整选择。
   </p>
   <details v-for="item in preview.items" :key="item.listing_id" class="plan-item">
     <summary>
@@ -35,7 +35,7 @@ defineProps<{ preview: PrelistingPreview }>();
         item.status === 'ready' ? '预检查通过' : '待复核'
       }}</StatusBadge
       ><strong>{{ item.sku }}</strong
-      ><span>{{ item.title }}</span>
+      ><span>{{ item.source === 'GigaB2B' ? '大建云仓 · ' : '' }}{{ item.title }}</span>
     </summary>
     <div class="plan-item-body">
       <p class="subtitle">
@@ -50,18 +50,20 @@ defineProps<{ preview: PrelistingPreview }>();
             <tr>
               <th>SKU / ASIN</th>
               <th>目标店铺 SKU</th>
-              <th>当前售价</th>
+              <th>{{ item.source === 'GigaB2B' ? '来源商品单价' : '当前售价' }}</th>
               <th>来源含运费</th>
-              <th>首次 ERP 原价</th>
+              <th>{{ item.source === 'GigaB2B' ? '物流费（含打包）' : '首次 ERP 原价' }}</th>
               <th>计价基准</th>
               <th>预上架售价</th>
-              <th>历史库存</th>
+              <th>{{ item.source === 'GigaB2B' ? '来源可售 / 上架库存' : '历史库存' }}</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="v in item.variants" :key="v.sku">
               <td>
-                {{ v.sku }}<br /><span class="muted">{{ v.asin || '缺少 ASIN' }}</span>
+                {{ v.sku }}<br /><span class="muted">{{
+                  item.source === 'GigaB2B' ? '大建云仓供应商 SKU' : v.asin || '缺少 ASIN'
+                }}</span>
               </td>
               <td class="platform-sku">
                 <strong v-if="v.platform_sku">{{ v.platform_sku }}</strong>
@@ -70,15 +72,19 @@ defineProps<{ preview: PrelistingPreview }>();
                 >
                 <span v-else class="muted">旧批次未分配</span>
               </td>
-              <td>{{ money(v.current_price) }}</td>
+              <td>{{ money(item.source === 'GigaB2B' ? v.unit_price : v.current_price) }}</td>
               <td>{{ money(v.landed) }}</td>
-              <td>{{ money(v.original) }}</td>
+              <td>{{ money(item.source === 'GigaB2B' ? v.shipping_fee : v.original) }}</td>
               <td>{{ money(v.base) }}</td>
               <td>
                 <strong>{{ money(v.price) }}</strong>
                 <p v-if="v.error" class="seller-risk-label">{{ v.error }}</p>
               </td>
-              <td>{{ v.stock ?? '未记录' }}</td>
+              <td>
+                <template v-if="item.source === 'GigaB2B'"
+                  >{{ v.source_stock ?? '未记录' }} / </template
+                >{{ v.stock ?? '未记录' }}
+              </td>
             </tr>
           </tbody>
         </table>
@@ -88,7 +94,9 @@ defineProps<{ preview: PrelistingPreview }>();
         :key="'content-' + v.sku"
         class="details"
       >
-        <summary>{{ v.sku }} · 子商品完整内容</summary>
+        <summary>
+          {{ v.sku }} · {{ item.source === 'GigaB2B' ? '云仓商品内容' : '子商品完整内容' }}
+        </summary>
         <template v-if="v.content">
           <p class="subtitle">
             以下为本次批次冻结的商品库内容；目标品牌为

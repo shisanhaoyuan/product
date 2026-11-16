@@ -13,6 +13,7 @@ from .blacklist import active_entries, matches, seller_key
 from .database import INTEGRITY_ERRORS, write_lock, read_snapshot, insert_id, is_postgres
 from . import platform_sku
 from .product_search import normalize_identifiers
+from .giga_prelisting import claim_identity, prepare as prepare_giga
 
 # Only names visible in the user's screenshots; marketplace aliases are explicit.
 SCREENSHOT_STORES = [
@@ -234,17 +235,18 @@ def build_preview(catalog, db, data, exclude_batch=None):
     items, seen, seen_variants, conflict = [], set(), set(), False
     for row in rows:
         d = json.loads(row['data_json'])
-        key = (seller_key(d['source']), d['asin'])
+        is_giga = d['source'] == 'GigaB2B'
+        key = (seller_key(d['source']), claim_identity(d))
         errors, warnings = [], ['使用历史核验记录；正式执行前需重新采集价格和库存']
-        if d.get('local_edit', {}).get('changed'):
+        if not is_giga and d.get('local_edit', {}).get('changed'):
             errors.append('存在本地手工修改，尚未同步 ERP 或重新核验')
         reserved = db.execute('SELECT batch_id FROM prelisting_claims WHERE source_key=? AND asin=? AND store_id=?', (*key, data.store_id)).fetchone()
         if key in seen or (reserved and reserved['batch_id'] != exclude_batch):
-            errors.append('同来源 ASIN 已在本次选择或该目标店铺的未取消批次中'); conflict = True
+            errors.append(('同来源供应商 SKU' if is_giga else '同来源 ASIN') + ' 已在本次选择或该目标店铺的未取消批次中'); conflict = True
         seen.add(key)
         blocked = matches(d, entries)
         errors += [f"卖家已拉黑：{b['seller']}（{b['reason']}）" for b in blocked]
-        if not d['fill_complete']:
+        if not is_giga and not d['fill_complete']:
             errors.append('商品填写尚未核验完整')
         children = d['variants']
         if data.variant_skus is not None:
@@ -252,7 +254,11 @@ def build_preview(catalog, db, data, exclude_batch=None):
             if not selected.issubset({v['sku'] for v in children}):
                 raise HTTPException(409, '所选子 SKU 不属于该商品或已不存在，请刷新后重新选择')
             children = [v for v in children if v['sku'] in selected]
-        if children:
+        if is_giga:
+            original = json.loads(db.execute('SELECT data_json FROM listings WHERE id=?', (row['id'],)).fetchone()[0])
+            priced, giga_errors, warnings = prepare_giga(d, original, data.multiplier)
+            errors.extend(giga_errors)
+        elif children:
             priced = [dict(sku=v['sku'], asin=v['asin'], current_price=v['price'], stock=v['stock'],
                            content={k: v.get(k) for k in ('images', 'attributes', 'product_id_type', 'ean',
                                'swatch_attribute', 'swatch_image', 'shipping_weight', 'copy', 'source_url', 'seller')},
@@ -269,8 +275,9 @@ def build_preview(catalog, db, data, exclude_batch=None):
         seen_variants.update(identities)
         for variant in priced:
             variant['platform_sku'] = platform_sku.lookup(db, data.store_id, d['source'], variant)
-        errors += [f"{v['sku']}：{v['error']}" for v in priced if v['error']]
-        errors += [f"{v['sku']}：库存缺失或不符合 0 / 10 规则，执行前需核验" for v in priced if str(v['stock']) not in {'0', '10'}]
+        if not is_giga:
+            errors += [f"{v['sku']}：{v['error']}" for v in priced if v['error']]
+            errors += [f"{v['sku']}：库存缺失或不符合 0 / 10 规则，执行前需核验" for v in priced if str(v['stock']) not in {'0', '10'}]
         if not d['seller'] or any(not v['seller'] for v in children):
             warnings.append('部分卖家未采集，无法完整检查卖家黑名单')
         msrp = None if any(v['price'] is None for v in priced) else f"{max(Decimal(v['price']) for v in priced)*2:.2f}"
@@ -281,7 +288,10 @@ def build_preview(catalog, db, data, exclude_batch=None):
     result = dict(store=dict(store), brand=data.brand, multiplier=str(data.multiplier), items=items,
                   total=len(items), variant_count=sum(len(d['variants']) for d in items),
                   ready_count=sum(d['status'] == 'ready' for d in items), can_create=not conflict,
-                  execution_enabled=False, price_rule='verified_higher_basis_v1', sku_rule=platform_sku.RULE)
+                  execution_enabled=False,
+                  price_rule=('giga_regular_landed_v1' if all(i['source'] == 'GigaB2B' for i in items)
+                              else 'source_specific_v1' if any(i['source'] == 'GigaB2B' for i in items)
+                              else 'verified_higher_basis_v1'), sku_rule=platform_sku.RULE)
     # Allocation occurs only on creation; its persisted value is verified separately on confirmation.
     result['preview_hash'] = preview_fingerprint(result)
     return result, rows
@@ -426,7 +436,7 @@ def prelisting_routes(catalog):
                        (bid, str(data.request_key), request_hash, 'draft', now, now, actor(request), encoded(settings), encoded(result)))
             for row, item in zip(rows, result['items']):
                 db.execute('INSERT INTO prelisting_items VALUES(?,?,?,?)', (bid,row['id'],row['digest'],row['data_json']))
-                db.execute('INSERT INTO prelisting_claims VALUES(?,?,?,?)', (seller_key(item['source']),item['asin'],data.store_id,bid))
+                db.execute('INSERT INTO prelisting_claims VALUES(?,?,?,?)', (seller_key(item['source']),claim_identity(item),data.store_id,bid))
             event(db, bid, request, 'create', now)
             return batch(db, bid)
 

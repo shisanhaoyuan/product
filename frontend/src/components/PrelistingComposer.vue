@@ -10,7 +10,7 @@ import type {
 import { errorMessage } from '../utils/display';
 import PrelistingPreview from './PrelistingPreview.vue';
 import AppIcon from './AppIcon.vue';
-const props = defineProps<{ selection: PrelistingSelection; count: number }>();
+const props = defineProps<{ selection: PrelistingSelection; count: number; source?: string }>();
 const emit = defineEmits<{ close: []; created: [id: string] }>();
 const dialog = ref<HTMLDialogElement>();
 const stores = ref<ListingStore[]>([]),
@@ -149,7 +149,12 @@ async function create() {
       </form>
       <div class="composer-actions">
         <p class="composer-hint">
-          基准价格 × 本次倍率<br /><span>多变体 .99 尾价 · 单商品保留两位小数</span>
+          {{ source === 'GigaB2B' ? '来源普通单价＋物流费（含打包）' : '基准价格' }} × 本次倍率<br />
+          <span>{{
+            source === 'GigaB2B'
+              ? '云仓按供应商 SKU 独立计价 · 保留两位小数'
+              : '多变体 .99 尾价 · 单商品保留两位小数'
+          }}</span>
         </p>
         <button
           form="prelisting-settings"

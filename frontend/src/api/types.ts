@@ -230,6 +230,10 @@ export interface PlanInput extends PrelistingSelection {
   multiplier: string;
 }
 export interface PricePlan {
+  source_stock?: number | null;
+  unit_price?: string | null;
+  shipping_fee?: string | null;
+  currency?: string;
   sku: string;
   platform_sku?: string | null;
   asin: string;
@@ -266,6 +270,7 @@ export interface PrelistingPreview {
   preview_hash: string;
   execution_enabled: boolean;
   items: {
+    source?: string;
     listing_id: string;
     asin: string;
     sku: string;

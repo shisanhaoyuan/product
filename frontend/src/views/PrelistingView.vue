@@ -90,7 +90,8 @@ onBeforeUnmount(() => controller?.abort());
       <h1>{{ route.params.id ? '批次详情' : '预上架批次' }}</h1>
     </div>
     <div class="actions">
-      <RouterLink class="btn primary" to="/products">选择商品</RouterLink>
+      <RouterLink class="btn" to="/giga-products">选择云仓商品</RouterLink>
+      <RouterLink class="btn primary" to="/products">选择亚马逊商品</RouterLink>
     </div>
   </div>
   <p class="notice notice-space">
