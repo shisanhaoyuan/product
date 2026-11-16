@@ -153,7 +153,7 @@ def walmart_routes(catalog):
             rows = db.execute('SELECT * FROM listing_stores ORDER BY lower(name)').fetchall()
             result = [dict(store_id=s['id'], name=s['name'], active=bool(s['active']),
                            sku_code=s['sku_code'], account=public(account(db, s['id']))) for s in rows]
-        return dict(vault=vault, stores=result, execution_enabled=False)
+        return dict(vault=vault, stores=result, execution_enabled=True)
 
     @router.post('/accounts/preview')
     async def preview(request: Request):
@@ -189,6 +189,8 @@ def walmart_routes(catalog):
         try:
             with catalog.connect() as db:
                 write_lock(db)
+                from .walmart_publishing import assert_not_sending
+                assert_not_sending(db, store_id)
                 store(db, store_id)
                 draft = db.execute('SELECT * FROM walmart_binding_previews WHERE id=? AND store_id=? AND actor_id=?',
                                    (str(data.verification_id), store_id, actor(request))).fetchone()
@@ -234,6 +236,8 @@ def walmart_routes(catalog):
             error = str(exc)
         with catalog.connect() as db:
             write_lock(db)
+            from .walmart_publishing import assert_not_sending
+            assert_not_sending(db, store_id)
             store(db, store_id)
             current = account(db, store_id)
             check_revision(current, data.revision)
@@ -251,6 +255,8 @@ def walmart_routes(catalog):
         data = await body(request, Revision)
         with catalog.connect() as db:
             write_lock(db)
+            from .walmart_publishing import assert_not_sending
+            assert_not_sending(db, store_id)
             # Unbinding a disabled store is allowed.
             row = account(db, store_id)
             check_revision(row, data.revision)

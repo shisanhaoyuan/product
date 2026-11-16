@@ -6,6 +6,9 @@ import secrets
 from pathlib import Path
 from urllib.parse import urlparse
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
@@ -36,7 +39,7 @@ def create_app(database=None):
         if (origin_url.scheme != 'https' or not secure_cookie) and origin_url.hostname not in {'127.0.0.1','localhost'}:
             raise RuntimeError('服务器团队模式必须使用 HTTPS 和 Secure Cookie')
     auth=AuthStore(catalog) if auth_enabled else None
-    app=FastAPI(title='商品库 API',version='1.0.0',docs_url=None,redoc_url=None,description='独立商品库；仅本系统数据库读写，不会修改或刊登 ERP 商品。')
+    app=FastAPI(title='商品库 API',version='1.0.0',docs_url=None,redoc_url=None,description='独立商品库；可通过绑定店铺明确提交沃尔玛商品，不操作 ERP。')
     app.state.catalog=catalog
     app.state.auth=auth
     app.include_router(auth_routes(auth,secure_cookie))
@@ -55,6 +58,18 @@ def create_app(database=None):
     from .walmart_accounts import walmart_routes
     app.state.walmart_verifier=WalmartVerifier()
     app.include_router(walmart_routes(catalog))
+    from .walmart_publishing_client import WalmartPublishingClient
+    from .walmart_publishing import publishing_routes, public_media_routes
+    app.state.walmart_publisher=WalmartPublishingClient()
+    app.include_router(publishing_routes(catalog))
+    app.include_router(public_media_routes(catalog,storage))
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request, exc):
+        if request.url.path.startswith('/api/prelisting/') and '/walmart' in request.url.path:
+            # Do not echo arbitrary payloads (including non-finite numbers) in errors.
+            return JSONResponse({'detail':'刊登资料格式不正确，请检查商品编码、SKU、数值及资料版本'},status_code=422)
+        return await request_validation_exception_handler(request,exc)
 
     @app.middleware('http')
     async def guard(request:Request, call_next):
@@ -66,7 +81,8 @@ def create_app(database=None):
             return Response('未启用团队模式',status_code=404)
         public_paths={'/api/health','/api/auth/me','/api/auth/login'}
         protected=path.startswith('/api/') or path in {'/docs','/openapi.json'}
-        if auth_enabled and protected and path not in public_paths:
+        public_listing_image=request.method in ('GET','HEAD') and path.startswith('/api/listing-media/')
+        if auth_enabled and protected and path not in public_paths and not public_listing_image:
             user=auth.session(request.cookies.get(COOKIE))
             if not user:
                 return Response('请先登录',status_code=401,headers={'Cache-Control':'no-store'})
@@ -106,7 +122,7 @@ def create_app(database=None):
     def health():
         with catalog.connect() as db:
             db.execute('SELECT 1').fetchone()
-        return {'status':'ok','schema_version':15,
+        return {'status':'ok','schema_version':16,
                 'database':'postgresql' if catalog.postgres else 'sqlite',
                 'images':storage.backend if storage else 'sqlite'}
 

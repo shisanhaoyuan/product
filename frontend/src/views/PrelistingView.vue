@@ -6,6 +6,7 @@ import type { BatchPage, PrelistingBatch } from '../api/types';
 import { useAuth } from '../composables/useAuth';
 import { errorMessage } from '../utils/display';
 import PrelistingPreview from '../components/PrelistingPreview.vue';
+import WalmartListingEditor from '../components/WalmartListingEditor.vue';
 const route = useRoute();
 const { auth } = useAuth();
 const canEdit = computed(
@@ -18,7 +19,7 @@ const data = ref<BatchPage>(),
   error = ref(''),
   message = ref(''),
   page = ref(1);
-const labels = { draft: '待确认', confirmed: '已确认 · 待接入执行', cancelled: '已取消' };
+const labels = { draft: '上架准备中', confirmed: '已确认', cancelled: '已取消' };
 const legacySkuBatch = computed(
   () =>
     !!batch.value &&
@@ -61,7 +62,7 @@ async function act(action: 'confirm' | 'cancel' | 'upgrade_skus') {
       action === 'upgrade_skus'
         ? '目标 SKU 已升级为字母和数字混合尾码。'
         : action === 'confirm'
-          ? '批次已确认。执行接口尚未接入，未进行平台刊登。'
+          ? '批次已确认。请在商品刊登资料中校验并提交沃尔玛。'
           : '批次已取消，可以重新选择商品创建。';
   } catch (e) {
     error.value = errorMessage(e);
@@ -94,8 +95,9 @@ onBeforeUnmount(() => controller?.abort());
       <RouterLink class="btn primary" to="/products">选择亚马逊商品</RouterLink>
     </div>
   </div>
-  <p class="notice notice-space">
-    当前阶段：生成、核验并确认待上架批次。平台执行接口尚未接入，确认批次不会刊登商品。
+  <p v-if="!route.params.id" class="notice notice-space">
+    打开批次后填写刊登资料，按“校验上架资料 → 提交沃尔玛 →
+    查看处理结果”完成上架。正式提交仅限管理员。
   </p>
   <p v-if="message" role="status" class="notice notice-space">{{ message }}</p>
   <div v-if="error" role="alert" class="error-box">
@@ -103,10 +105,12 @@ onBeforeUnmount(() => controller?.abort());
   </div>
   <div v-if="loading" class="loading">正在加载批次…</div>
   <section v-else-if="batch" class="section">
-    <div class="section-head">
+    <div class="prelisting-detail-meta">
       <div>
-        <h2>{{ labels[batch.status] }}</h2>
-        <p>批次 {{ batch.id }} · {{ new Date(batch.created_at).toLocaleString('zh-CN') }}</p>
+        <p>
+          {{ batch.status === 'cancelled' ? '已取消 · ' : '' }}批次 {{ batch.id }} ·
+          {{ new Date(batch.created_at).toLocaleString('zh-CN') }}
+        </p>
       </div>
       <RouterLink class="btn small" to="/prelisting">返回批次列表</RouterLink>
     </div>
@@ -122,21 +126,18 @@ onBeforeUnmount(() => controller?.abort());
           升级 SKU
         </button>
       </p>
-      <PrelistingPreview :preview="batch.preview" />
+      <WalmartListingEditor
+        v-if="batch.status !== 'cancelled' && !legacySkuBatch && !needsMixedSku"
+        :key="batch.id"
+        :bid="batch.id"
+      />
+      <details class="listing-original-preview">
+        <summary>查看创建批次时的来源预览</summary>
+        <PrelistingPreview :preview="batch.preview" />
+      </details>
       <div v-if="canEdit && batch.status !== 'cancelled'" class="plan-footer">
-        <button class="btn" :disabled="busy" @click="act('cancel')">取消批次</button
-        ><button
-          v-if="batch.status === 'draft' && !legacySkuBatch && !needsMixedSku"
-          class="btn primary"
-          :disabled="busy || batch.preview.ready_count !== batch.preview.total"
-          @click="act('confirm')"
-        >
-          确认批次（待执行）
-        </button>
+        <button class="btn" :disabled="busy" @click="act('cancel')">取消批次</button>
       </div>
-      <p v-if="batch.preview.ready_count !== batch.preview.total" class="subtitle">
-        待复核商品也已保存到此批次。补齐来源数据后，取消本批次并重新创建，以更新预览。
-      </p>
     </div>
   </section>
   <section v-else-if="data" class="section">
@@ -149,7 +150,7 @@ onBeforeUnmount(() => controller?.abort());
             <th>倍率</th>
             <th>商品 / SKU 行</th>
             <th>预检查通过</th>
-            <th>状态</th>
+            <th>本地准备状态</th>
             <th></th>
           </tr>
         </thead>

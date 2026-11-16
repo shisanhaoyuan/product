@@ -461,6 +461,9 @@ def prelisting_routes(catalog):
         with catalog.connect() as db:
             write_lock(db)
             current=batch(db,bid)
+            if data.action in ('cancel','upgrade_skus') and db.execute(
+                "SELECT 1 FROM walmart_listing_attempts WHERE batch_id=? AND state<>'rejected'", (bid,)).fetchone():
+                raise HTTPException(409, '该批次已有沃尔玛提交记录，不能取消或重新分配 SKU；请在上架资料中修正失败项')
             if data.action == 'upgrade_skus':
                 if upgrade_draft_skus(db, current):
                     event(db, bid, request, 'upgrade_skus', datetime.now(timezone.utc).isoformat())

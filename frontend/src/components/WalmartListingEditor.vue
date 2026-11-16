@@ -1,0 +1,1132 @@
+<script setup lang="ts">
+import { computed, nextTick, onMounted, ref, watch, onBeforeUnmount } from 'vue';
+import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router';
+import {
+  publishingApi,
+  type ListingDocument,
+  type ListingSpec,
+  type ProductType,
+  type ShipNode,
+  type ListingRow,
+  type JsonSchema,
+  type Issue,
+  type Attempt,
+} from '../api/publishing';
+import { catalogApi as api } from '../api/client';
+import { useAuth } from '../composables/useAuth';
+import { errorMessage, plain, money } from '../utils/display';
+import ListingSchemaField from './ListingSchemaField.vue';
+import ProductImage from './ProductImage.vue';
+import AppIcon from './AppIcon.vue';
+const props = defineProps<{ bid: string }>();
+const { auth } = useAuth();
+const canEdit = computed(
+  () => !auth.enabled || ['admin', 'editor'].includes(auth.user?.role || ''),
+);
+const canSubmit = computed(() => !auth.enabled || auth.user?.role === 'admin');
+const doc = ref<ListingDocument | null>(null),
+  busy = ref(false),
+  saving = ref(false),
+  error = ref(''),
+  message = ref('');
+const saved = ref(''),
+  activeSku = ref(''),
+  tab = ref('basic'),
+  statusFilter = ref('all');
+const taxonomy = ref<ProductType[]>([]),
+  nodes = ref<ShipNode[]>([]),
+  typeQuery = ref('');
+const specs = ref<Record<string, ListingSpec>>({});
+const selected = ref<string[]>([]),
+  confirmDialog = ref<HTMLDialogElement>(),
+  confirmation = ref('');
+const optionalQuery = ref('');
+const showAllOptional = ref(false);
+const zoomDialog = ref<HTMLDialogElement>();
+const zoomUrl = ref('');
+const optionalMatches = (key: string) =>
+  `${key} ${doc.value?.labels[key] || ''} ${visibleProperties.value[key]?.title || ''}`
+    .toLowerCase()
+    .includes(optionalQuery.value.toLowerCase());
+function showOptional(key: string, section: 'visible' | 'orderable') {
+  return (
+    optionalMatches(key) &&
+    (showAllOptional.value || !!optionalQuery.value || current.value?.[section][key] !== undefined)
+  );
+}
+const photos = computed(() =>
+  [
+    current.value?.visible.mainImageUrl,
+    ...((current.value?.visible.productSecondaryImageURL as string[]) || []),
+  ].filter((url): url is string => typeof url === 'string' && !!url),
+);
+function setPhotos(urls: string[]) {
+  update('visible', 'mainImageUrl', urls[0]);
+  update('visible', 'productSecondaryImageURL', urls.slice(1));
+}
+function enlarge(url: string) {
+  zoomUrl.value = url;
+  zoomDialog.value?.showModal();
+}
+const unsupported = computed(() =>
+  !currentSpec.value || !current.value
+    ? []
+    : Object.keys(current.value.visible).filter((key) => !visibleProperties.value[key]),
+);
+const submitKey = ref(''),
+  reconcileIds = ref<Record<string, string>>({});
+const root = ref<HTMLElement>();
+let saveTimer: ReturnType<typeof setTimeout> | undefined, saveFlight: Promise<void> | undefined;
+let live = true;
+const serialized = () =>
+  doc.value ? JSON.stringify({ version: doc.value.version, rows: doc.value.rows }) : '';
+const dirty = computed(() => !!doc.value && serialized() !== saved.value);
+const current = computed(() => doc.value?.rows.find((r) => r.platform_sku === activeSku.value));
+const currentSpec = computed(() =>
+  current.value ? specs.value[current.value.product_type] : undefined,
+);
+const source = computed(() =>
+  doc.value?.basis.items.find((i) => i.listing_id === current.value?.listing_id),
+);
+const sourceVariant = computed(() =>
+  source.value?.variants.find((v) => v.platform_sku === activeSku.value),
+);
+const result = computed(() => doc.value?.results[activeSku.value]);
+const locked = computed(
+  () =>
+    !canEdit.value ||
+    (!!result.value && !['failed', 'rejected', 'unpublished'].includes(result.value.status)),
+);
+const issues = computed(() => doc.value?.validation.rows?.[activeSku.value]?.errors || []);
+const basic = ['productName', 'brand', 'condition', 'condition_notes'];
+const copyKeys = [
+  'shortDescription',
+  'longDescription',
+  'keyFeatures',
+  'mainImageUrl',
+  'productSecondaryImageURL',
+];
+const hiddenOrderable = ['sku', 'productIdentifiers', 'inventory', 'SkuUpdate', 'ProductIdUpdate'];
+const visibleProperties = computed(() => currentSpec.value?.sections.visible?.properties || {});
+const required = computed(() => currentSpec.value?.sections.visible?.required || []);
+const mandatoryKeys = computed(() =>
+  Object.keys(visibleProperties.value).filter(
+    (k) => required.value.includes(k) && !basic.includes(k) && !copyKeys.includes(k),
+  ),
+);
+const optionalKeys = computed(() =>
+  Object.keys(visibleProperties.value).filter(
+    (k) => !required.value.includes(k) && !basic.includes(k) && !copyKeys.includes(k),
+  ),
+);
+const orderableKeys = computed(() =>
+  Object.keys(currentSpec.value?.sections.orderable.properties || {}).filter(
+    (k) =>
+      !hiddenOrderable.includes(k) &&
+      (currentSpec.value?.sections.orderable.required?.includes(k) ||
+        ['price', 'msrp'].includes(k)),
+  ),
+);
+const optionalOrderableKeys = computed(() =>
+  Object.keys(currentSpec.value?.sections.orderable.properties || {}).filter(
+    (k) => !hiddenOrderable.includes(k) && !orderableKeys.value.includes(k),
+  ),
+);
+const typeOptions = computed(() =>
+  taxonomy.value.filter((t) =>
+    `${t.category} ${t.group} ${t.name}`.toLowerCase().includes(typeQuery.value.toLowerCase()),
+  ),
+);
+const eligible = computed(
+  () =>
+    doc.value?.rows.filter((r) => {
+      const s = doc.value?.results[r.platform_sku]?.status;
+      return !s || ['failed', 'rejected', 'unpublished'].includes(s);
+    }) || [],
+);
+const validSkus = computed(() =>
+  eligible.value
+    .filter((r) => doc.value?.validation.rows?.[r.platform_sku]?.valid)
+    .map((r) => r.platform_sku),
+);
+const selectedValid = computed(() => selected.value.filter((s) => validSkus.value.includes(s)));
+const rowsToShow = computed(() =>
+  (doc.value?.rows || []).filter((r) => {
+    if (statusFilter.value === 'issues')
+      return doc.value?.validation.rows?.[r.platform_sku]?.valid === false;
+    if (statusFilter.value === 'failed')
+      return ['failed', 'rejected', 'unpublished', 'stock_pending'].includes(
+        doc.value?.results[r.platform_sku]?.status || '',
+      );
+    return true;
+  }),
+);
+const statusLabels: Record<string, string> = {
+  processing: '处理中',
+  unknown: '结果待确认',
+  failed: '失败 · 可修正',
+  rejected: '请求被拒绝',
+  ingested: '处理成功 · 待发布',
+  published: '已发布',
+  unpublished: '未发布',
+  stock_pending: '库存待核验',
+};
+const completed = computed(
+  () => Object.values(doc.value?.results || {}).filter((r) => r.status === 'published').length,
+);
+function install(value: ListingDocument) {
+  specs.value = { ...specs.value, ...value.specs };
+  saved.value = JSON.stringify({ version: value.version, rows: value.rows });
+  doc.value = value;
+  if (!activeSku.value || !value.rows.some((r) => r.platform_sku === activeSku.value))
+    activeSku.value = value.rows[0]?.platform_sku || '';
+}
+async function run(work: () => Promise<void>) {
+  if (busy.value) return;
+  busy.value = true;
+  error.value = '';
+  message.value = '';
+  try {
+    await work();
+  } catch (e) {
+    error.value = errorMessage(e);
+  } finally {
+    busy.value = false;
+  }
+}
+async function load() {
+  const value = await publishingApi.read(props.bid);
+  if (live && value) install(value);
+}
+async function prepare() {
+  await run(async () => {
+    install(await publishingApi.prepare(props.bid));
+    await loadMetadata();
+  });
+}
+async function loadMetadata() {
+  const values = await Promise.allSettled([
+    publishingApi.taxonomy(props.bid),
+    publishingApi.nodes(props.bid),
+  ]);
+  if (!live) return;
+  const [types, warehouses] = values;
+  if (types.status === 'fulfilled') taxonomy.value = types.value.items;
+  if (warehouses.status === 'fulfilled') nodes.value = warehouses.value.items;
+  const errors = values.filter((v): v is PromiseRejectedResult => v.status === 'rejected');
+  if (errors.length) error.value = errors.map((e) => errorMessage(e.reason)).join('；');
+}
+async function save() {
+  if (root.value?.querySelector('[data-invalid-json="true"]'))
+    throw new Error('有属性结构格式错误，请先修正标红字段');
+  clearTimeout(saveTimer);
+  if (saveFlight) await saveFlight;
+  if (!dirty.value || !doc.value || !canEdit.value) return;
+  saving.value = true;
+  const input = structuredClone(
+    doc.value ? JSON.parse(JSON.stringify(doc.value)) : null,
+  ) as ListingDocument;
+  const before = JSON.stringify({ version: input.version, rows: input.rows });
+  saveFlight = (async () => {
+    try {
+      const value = await publishingApi.save(props.bid, input);
+      if (!live || !doc.value) return;
+      if (serialized() === before) install(value);
+      else {
+        const localRows = doc.value.rows,
+          localVersion = doc.value.version;
+        install(value);
+        doc.value.rows = localRows;
+        doc.value.version = localVersion;
+      }
+      message.value = '资料已保存';
+    } finally {
+      saving.value = false;
+      saveFlight = undefined;
+    }
+  })();
+  await saveFlight;
+  if (dirty.value) await save();
+}
+function queueSave() {
+  clearTimeout(saveTimer);
+  if (dirty.value && !busy.value && canEdit.value)
+    saveTimer = setTimeout(() => {
+      save().catch((e) => {
+        error.value = errorMessage(e);
+      });
+    }, 1000);
+}
+watch(() => serialized(), queueSave);
+function fieldIssues(key: string, section = 'Visible') {
+  return issues.value
+    .filter(
+      (i) =>
+        i.path.toLowerCase().includes(`.${key}`.toLowerCase()) &&
+        (section !== 'Orderable' || i.path.includes('Orderable')),
+    )
+    .map((i) => i.message);
+}
+function update(section: 'visible' | 'orderable', key: string, value: unknown) {
+  if (!current.value) return;
+  if (value === undefined || value === '') delete current.value[section][key];
+  else current.value[section][key] = value;
+}
+function fallbackSchema(key: string): JsonSchema {
+  return (
+    visibleProperties.value[key] || {
+      type: ['keyFeatures', 'productSecondaryImageURL'].includes(key) ? 'array' : 'string',
+      items: { type: 'string' },
+    }
+  );
+}
+async function getSpec() {
+  if (!current.value?.product_type) return;
+  const pt = current.value.product_type;
+  const value = await publishingApi.spec(props.bid, JSON.parse(JSON.stringify(current.value)));
+  if (!live) return;
+  specs.value[pt] = value;
+}
+async function changeType() {
+  await run(async () => {
+    await save();
+    await getSpec();
+  });
+}
+watch(activeSku, async () => {
+  tab.value = 'basic';
+  typeQuery.value = '';
+  if (current.value?.product_type && !specs.value[current.value.product_type]) await run(getSpec);
+});
+async function validate() {
+  await run(async () => {
+    await save();
+    if (!doc.value) return;
+    await loadMetadata();
+    const types = [...new Set(doc.value.rows.map((r) => r.product_type).filter(Boolean))];
+    // Server caches specs across SKUs. Do not burst a 3/minute API with duplicate PT requests.
+    for (const type of types) {
+      const row = doc.value.rows.find((r) => r.product_type === type)!;
+      specs.value[type] = await publishingApi.spec(props.bid, JSON.parse(JSON.stringify(row)));
+    }
+    install(await publishingApi.validate(props.bid, doc.value.revision));
+    selected.value = validSkus.value;
+    if (doc.value.validation.valid_count === doc.value.rows.length) {
+      if (statusFilter.value === 'issues') statusFilter.value = 'all';
+      message.value = '上架资料校验通过，请确认店铺及选中商品后提交';
+    } else {
+      statusFilter.value = 'issues';
+      const first = rowsToShow.value[0];
+      if (first) activeSku.value = first.platform_sku;
+      message.value = `已校验，${doc.value.rows.length - (doc.value.validation.valid_count || 0)} 个 SKU 需要补齐资料`;
+    }
+  });
+}
+async function refreshSource() {
+  await run(async () => {
+    await save();
+    if (doc.value) install(await publishingApi.refreshSource(props.bid, doc.value.revision));
+    message.value = '已读取商品库最新来源，并重新计算售价；文案和属性保留';
+  });
+}
+async function openSubmit() {
+  await run(async () => {
+    await save();
+    if (!doc.value?.validation.id || dirty.value || !selectedValid.value.length)
+      throw new Error('请先校验资料并选择校验通过的商品');
+    confirmation.value = '';
+    submitKey.value = crypto.randomUUID();
+    confirmDialog.value?.showModal();
+  });
+}
+async function submit() {
+  await run(async () => {
+    if (!doc.value || confirmation.value !== doc.value.store.name) return;
+    await publishingApi.submit(props.bid, doc.value, selectedValid.value, submitKey.value);
+    confirmDialog.value?.close();
+    await load();
+    tab.value = 'results';
+    message.value = '已记录提交请求，请查看沃尔玛逐项处理结果';
+  });
+}
+async function refreshResults(a?: Attempt) {
+  await run(async () => {
+    if (!doc.value) return;
+    const targets = a ? [a] : doc.value.attempts.filter((x) => x.feed_id);
+    const errors: string[] = [];
+    for (const attempt of targets) {
+      try {
+        await publishingApi.refresh(props.bid, attempt.id);
+      } catch (e) {
+        errors.push(errorMessage(e));
+      }
+    }
+    await load();
+    tab.value = 'results';
+    if (errors.length) throw new Error(errors.join('；'));
+    message.value = targets.length ? '处理结果已更新' : '还没有可查询的沃尔玛批次编号';
+  });
+}
+async function reconcile(a: Attempt) {
+  await run(async () => {
+    await publishingApi.reconcile(props.bid, a.id, reconcileIds.value[a.id] || '');
+    await load();
+    message.value = '已关联并查询原沃尔玛批次';
+  });
+}
+async function jump(issue: Issue) {
+  const segments = issue.path.split('.');
+  if (
+    segments.some((k) => optionalOrderableKeys.value.includes(k) || optionalKeys.value.includes(k))
+  ) {
+    tab.value = 'optional';
+    optionalQuery.value = '';
+  } else if (
+    issue.path === 'product_type' ||
+    issue.path === 'identification' ||
+    issue.path === 'fulfillment_center_id' ||
+    issue.path.toLowerCase().includes('orderable') ||
+    segments.some((k) => basic.includes(k))
+  )
+    tab.value = 'basic';
+  else if (copyKeys.some((k) => issue.path.includes(k))) tab.value = 'content';
+  else tab.value = 'required';
+  await nextTick();
+  const normalizedPath = issue.path
+    .toLowerCase()
+    .replace(/^mpitem\.\d+\.visible\.[^.]+\./, 'visible.')
+    .replace(/^mpitem\.\d+\.orderable\./, 'orderable.');
+  const suffix = normalizedPath.split('.').slice(-2).join('.');
+  const last = issue.path.toLowerCase().split('.').at(-1);
+  const match = [...(root.value?.querySelectorAll<HTMLElement>('[data-listing-path]') || [])].find(
+    (el) =>
+      el.dataset.listingPath?.toLowerCase().endsWith(suffix) ||
+      normalizedPath.startsWith(el.dataset.listingPath?.toLowerCase() + '.') ||
+      el.dataset.listingPath === issue.path ||
+      (!!last && el.dataset.listingPath?.toLowerCase().endsWith('.' + last)),
+  );
+  (match || root.value)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  match?.querySelector<HTMLElement>('input,select,textarea,[contenteditable="true"]')?.focus();
+}
+async function upload(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const files = [...(input.files || [])];
+  await run(async () => {
+    const target = current.value;
+    if (!target) return;
+    for (const file of files) {
+      const { url } = await api.uploadImage(target.listing_id, undefined, file);
+      if (!target.visible.mainImageUrl) target.visible.mainImageUrl = url;
+      else
+        target.visible.productSecondaryImageURL = [
+          ...((target.visible.productSecondaryImageURL as string[]) || []),
+          url,
+        ];
+    }
+    await save();
+  });
+  input.value = '';
+}
+onMounted(() => {
+  void run(async () => {
+    await load();
+    if (doc.value && canEdit.value) {
+      await loadMetadata();
+      if (current.value?.product_type) await getSpec();
+    }
+  });
+});
+async function saveBeforeNavigation() {
+  try {
+    await save();
+    return true;
+  } catch (e) {
+    error.value = errorMessage(e);
+    return false;
+  }
+}
+onBeforeRouteLeave(saveBeforeNavigation);
+onBeforeRouteUpdate(saveBeforeNavigation);
+onBeforeUnmount(() => {
+  live = false;
+  clearTimeout(saveTimer);
+});
+</script>
+
+<template>
+  <div ref="root" class="walmart-listing" @focusout="queueSave">
+    <header class="listing-module-header">
+      <div>
+        <p class="eyebrow">WALMART US</p>
+        <h2>商品刊登资料</h2>
+        <p>逐项填写，校验后提交到本批次指定店铺。</p>
+      </div>
+      <span v-if="doc" class="listing-save-state">{{
+        saving ? '正在保存…' : dirty ? '有未保存修改' : '资料已保存'
+      }}</span>
+    </header>
+    <p v-if="error" class="error-box" role="alert">
+      {{ error }} <button v-if="dirty" class="btn small" @click="run(save)">重试保存</button>
+    </p>
+    <p v-if="message" class="notice notice-space" role="status">{{ message }}</p>
+    <div v-if="!doc" class="listing-start">
+      <h3>补齐沃尔玛要求的信息，再正式上架</h3>
+      <p>自动带入本批次商品、价格和库存；类目、商品编码及必填属性可在这里继续填写。</p>
+      <button v-if="canEdit" class="btn primary" :disabled="busy" @click="prepare">
+        填写上架资料
+      </button>
+    </div>
+    <template v-else>
+      <div class="listing-context-bar">
+        <div>
+          <span>目标店铺</span><strong>{{ doc.store.name }}</strong>
+        </div>
+        <div>
+          <span>目标品牌</span><strong>{{ doc.brand }}</strong>
+        </div>
+        <div>
+          <span>资料校验</span
+          ><strong>{{
+            dirty
+              ? '修改后需重新校验'
+              : `${doc.validation.valid_count ?? 0} / ${doc.rows.length} SKU`
+          }}</strong>
+        </div>
+        <div>
+          <span>已发布</span><strong>{{ completed }} / {{ doc.rows.length }}</strong>
+        </div>
+        <button class="btn small" :disabled="busy || saving || !canEdit" @click="refreshSource">
+          刷新来源价格库存
+        </button>
+      </div>
+      <div class="listing-workspace">
+        <aside class="listing-sku-sidebar">
+          <div class="listing-sku-heading">
+            <strong>商品 / 子 SKU</strong><span>{{ doc.rows.length }}</span>
+          </div>
+          <select v-model="statusFilter" aria-label="筛选批次商品">
+            <option value="all">全部商品</option>
+            <option value="issues">资料待补齐</option>
+            <option value="failed">处理异常</option>
+          </select>
+          <button
+            v-for="row in rowsToShow"
+            :key="row.platform_sku"
+            class="listing-sku-card"
+            :class="{ active: row.platform_sku === activeSku }"
+            :disabled="busy"
+            @click="activeSku = row.platform_sku"
+          >
+            <ProductImage
+              :src="String(row.visible.mainImageUrl || '')"
+              image-class="listing-sku-image"
+            />
+            <span
+              ><strong>{{ row.source_sku }}</strong
+              ><small>{{ row.platform_sku }}</small
+              ><span class="listing-sku-title">{{
+                plain(String(row.visible.productName || '未填写标题'))
+              }}</span
+              ><small
+                :class="{
+                  'seller-risk-label':
+                    ['failed', 'unpublished', 'rejected'].includes(
+                      doc.results[row.platform_sku]?.status || '',
+                    ) || doc.validation.rows?.[row.platform_sku]?.valid === false,
+                }"
+                >{{
+                  doc.results[row.platform_sku]
+                    ? statusLabels[doc.results[row.platform_sku].status] || '待确认'
+                    : doc.validation.rows?.[row.platform_sku]?.valid === false
+                      ? '资料待补齐'
+                      : doc.validation.rows?.[row.platform_sku]?.valid
+                        ? '校验通过'
+                        : '未校验'
+                }}</small
+              ></span
+            >
+          </button>
+          <p v-if="!rowsToShow.length" class="muted">没有符合条件的商品</p>
+        </aside>
+        <main v-if="current" class="listing-form-main">
+          <div class="listing-product-heading">
+            <div>
+              <span class="muted"
+                >{{ source?.source === 'GigaB2B' ? '大建云仓' : '亚马逊' }} ·
+                {{ current.source_sku }}</span
+              >
+              <h3>{{ plain(String(current.visible.productName || '请填写商品标题')) }}</h3>
+              <p>
+                店铺 SKU <strong>{{ current.platform_sku }}</strong>
+              </p>
+            </div>
+            <div class="listing-price-overview">
+              <strong>{{ money(String(current.orderable.price ?? '')) }}</strong
+              ><span>目标库存 {{ sourceVariant?.stock ?? '待核验' }}</span>
+            </div>
+          </div>
+          <div v-if="issues.length && !dirty" class="listing-issue-list">
+            <strong>此 SKU 有 {{ issues.length }} 项需要处理</strong
+            ><button v-for="(issue, index) in issues.slice(0, 3)" :key="index" @click="jump(issue)">
+              {{ issue.message }} <span>定位 →</span>
+            </button>
+            <details v-if="issues.length > 3">
+              <summary>展开其余 {{ issues.length - 3 }} 项</summary>
+              <button v-for="(issue, index) in issues.slice(3)" :key="index" @click="jump(issue)">
+                {{ issue.message }} <span>定位 →</span>
+              </button>
+            </details>
+          </div>
+          <p v-if="locked && result" class="notice notice-space">
+            {{ result.message }}。当前状态不允许修改或重复提交。
+          </p>
+          <div v-if="unsupported.length" class="notice notice-space">
+            <p>有 {{ unsupported.length }} 项旧类目属性不在当前规格中，请核对后移除。</p>
+            <details>
+              <summary>查看旧属性</summary>
+              <pre>{{ Object.fromEntries(unsupported.map((k) => [k, current!.visible[k]])) }}</pre>
+            </details>
+            <button
+              v-if="!locked"
+              class="btn small"
+              @click="unsupported.forEach((k) => update('visible', k, undefined))"
+            >
+              移除这些旧类目属性
+            </button>
+          </div>
+          <nav class="listing-tabs" aria-label="刊登资料分组">
+            <button
+              v-for="[key, label] in [
+                ['basic', '基本信息'],
+                ['content', '图片与文案'],
+                ['required', '必填属性'],
+                ['optional', '选填属性'],
+                ['results', '处理结果'],
+              ]"
+              :key="key"
+              :class="{ active: tab === key }"
+              @click="tab = key"
+            >
+              {{ label }}
+              <span v-if="key === 'required' && mandatoryKeys.length">{{
+                mandatoryKeys.length
+              }}</span>
+            </button>
+          </nav>
+          <section v-if="tab === 'basic'" class="listing-form-section">
+            <div class="listing-field" data-listing-path="product_type">
+              <label class="listing-field-label"
+                ><span><i class="listing-required">*</i>沃尔玛商品类型</span
+                ><small>Product Type</small></label
+              >
+              <div class="listing-field-control">
+                <input
+                  v-model="typeQuery"
+                  placeholder="搜索类目或商品类型"
+                  :disabled="locked || busy"
+                  aria-label="搜索沃尔玛商品类型"
+                />
+                <div class="listing-inline-controls">
+                  <select
+                    v-model="current.product_type"
+                    :disabled="locked || busy"
+                    aria-label="沃尔玛商品类型"
+                    @change="changeType"
+                  >
+                    <option value="">请选择真实商品类型</option>
+                    <option
+                      v-if="
+                        current.product_type &&
+                        !typeOptions.some((t) => t.name === current!.product_type)
+                      "
+                      :value="current.product_type"
+                    >
+                      {{ current.product_type }}
+                    </option>
+                    <option v-for="type in typeOptions" :key="type.name" :value="type.name">
+                      {{ type.category }} / {{ type.group }} / {{ type.name }}
+                    </option></select
+                  ><button
+                    class="btn small"
+                    :disabled="busy"
+                    @click="
+                      run(async () => {
+                        await loadMetadata();
+                        await getSpec();
+                      })
+                    "
+                  >
+                    获取字段
+                  </button>
+                </div>
+                <small class="muted">按所选类型加载官方必填项，来源类目仅供参考。</small>
+              </div>
+            </div>
+            <div class="listing-field" data-listing-path="fulfillment_center_id">
+              <label class="listing-field-label"
+                ><span><i class="listing-required">*</i>沃尔玛发货仓</span
+                ><small>Fulfillment Center</small></label
+              >
+              <div class="listing-field-control">
+                <select
+                  v-model="current.fulfillment_center_id"
+                  :disabled="locked || busy"
+                  aria-label="沃尔玛发货仓"
+                >
+                  <option value="">请选择目标店铺启用的发货仓</option>
+                  <option v-for="node in nodes" :key="node.id" :value="node.id">
+                    {{ node.name }} · {{ node.id }}
+                  </option></select
+                ><small class="muted">此处为沃尔玛店铺发货仓，与供应商分仓不同。</small>
+              </div>
+            </div>
+            <div class="listing-field" data-listing-path="identification">
+              <label class="listing-field-label"
+                ><span><i class="listing-required">*</i>商品编码 / 豁免</span
+                ><small>GTIN / UPC</small></label
+              >
+              <div class="listing-field-control">
+                <div class="listing-inline-controls">
+                  <select
+                    v-model="current.identification.mode"
+                    :disabled="locked"
+                    aria-label="商品编码方式"
+                  >
+                    <option value="identifier">填写商品真实编码</option>
+                    <option value="exemption">使用已获批的 GTIN 豁免</option></select
+                  ><select
+                    v-if="current.identification.mode === 'identifier'"
+                    v-model="current.identification.type"
+                    :disabled="locked"
+                    aria-label="商品编码类型"
+                  >
+                    <option>UPC</option>
+                    <option>GTIN</option>
+                    <option>EAN</option>
+                    <option>ISBN</option>
+                  </select>
+                </div>
+                <input
+                  v-if="current.identification.mode === 'identifier'"
+                  v-model="current.identification.value"
+                  :disabled="locked"
+                  placeholder="真实编码，保留前导零"
+                  aria-label="商品编码"
+                /><template v-else
+                  ><input
+                    v-model="current.identification.submission_id"
+                    :disabled="locked"
+                    placeholder="沃尔玛已批准的豁免申请编号"
+                    aria-label="豁免申请编号"
+                  /><small class="muted"
+                    >校验时会查询此店铺、品牌和商品类型是否已获批，不能仅填写“已豁免”。</small
+                  ></template
+                >
+              </div>
+            </div>
+            <ListingSchemaField
+              v-for="key in basic.filter(
+                (k) => visibleProperties[k] || ['productName', 'brand'].includes(k),
+              )"
+              :key="key"
+              :name="key"
+              :schema="fallbackSchema(key)"
+              :labels="doc.labels"
+              :model-value="current.visible[key]"
+              :disabled="locked || key === 'brand'"
+              :required="required.includes(key) || key === 'productName' || key === 'brand'"
+              :path="'visible.' + key"
+              :issues="dirty ? [] : fieldIssues(key)"
+              @update:model-value="update('visible', key, $event)"
+            />
+            <div class="listing-subheading">
+              <h4>价格与履约</h4>
+              <p>
+                倍率 ×{{ doc.basis.multiplier }} · 已核验计价基准 {{ money(sourceVariant?.base) }} ·
+                目标库存 {{ sourceVariant?.stock ?? '未核验' }}
+              </p>
+            </div>
+            <template v-if="currentSpec"
+              ><ListingSchemaField
+                v-for="key in orderableKeys"
+                :key="key"
+                :name="key"
+                :schema="currentSpec.sections.orderable.properties![key]"
+                :labels="doc.labels"
+                :model-value="current.orderable[key]"
+                :disabled="locked"
+                :required="currentSpec.sections.orderable.required?.includes(key)"
+                :path="'orderable.' + key"
+                :issues="dirty ? [] : fieldIssues(key, 'Orderable')"
+                @update:model-value="update('orderable', key, $event)"
+            /></template>
+            <p v-else class="notice">先选择商品类型，加载该类目的价格、运输重量和原产国等要求。</p>
+            <details class="listing-raw">
+              <summary>来源价格及库存依据</summary>
+              <pre>{{ sourceVariant }}</pre>
+            </details>
+          </section>
+          <section v-else-if="tab === 'content'" class="listing-form-section">
+            <div class="listing-subheading">
+              <h4>商品图片</h4>
+              <p>第一张为主图，可点击放大。请使用真实商品图片。</p>
+              <label v-if="!locked" class="btn small"
+                >本地添加图片<input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  hidden
+                  :disabled="busy"
+                  @change="upload"
+              /></label>
+            </div>
+            <div class="listing-photo-gallery">
+              <figure v-for="(url, i) in photos" :key="url + i" class="listing-photo-card">
+                <button
+                  class="listing-photo-zoom"
+                  :aria-label="'放大图片 ' + (i + 1)"
+                  @click="enlarge(url)"
+                >
+                  <ProductImage :src="url" image-class="listing-product-image" />
+                </button>
+                <figcaption>
+                  <span>{{ i === 0 ? '主图' : '附图 ' + i }}</span>
+                  <template v-if="!locked">
+                    <button
+                      v-if="i > 0"
+                      class="btn small"
+                      @click="setPhotos([url, ...photos.filter((_, j) => j !== i)])"
+                    >
+                      设主图
+                    </button>
+                    <button
+                      class="icon-btn"
+                      :aria-label="'删除图片 ' + (i + 1)"
+                      @click="setPhotos(photos.filter((_, j) => j !== i))"
+                    >
+                      <AppIcon name="X" />
+                    </button>
+                  </template>
+                </figcaption>
+              </figure>
+            </div>
+            <ListingSchemaField
+              v-for="key in [
+                'mainImageUrl',
+                'productSecondaryImageURL',
+                'shortDescription',
+                'longDescription',
+                'keyFeatures',
+              ].filter(
+                (k) =>
+                  visibleProperties[k] ||
+                  ['mainImageUrl', 'shortDescription', 'keyFeatures'].includes(k),
+              )"
+              :key="key"
+              :name="key"
+              :schema="fallbackSchema(key)"
+              :labels="doc.labels"
+              :model-value="current.visible[key]"
+              :disabled="locked"
+              :required="required.includes(key)"
+              :path="'visible.' + key"
+              :issues="dirty ? [] : fieldIssues(key)"
+              @update:model-value="update('visible', key, $event)"
+            />
+          </section>
+          <section
+            v-else-if="tab === 'required' || tab === 'optional'"
+            class="listing-form-section"
+          >
+            <p v-if="!currentSpec" class="notice">
+              请先在“基本信息”中选择沃尔玛商品类型并获取字段。
+            </p>
+            <template v-else
+              ><div class="listing-subheading">
+                <h4>{{ tab === 'required' ? '该类目必填属性' : '该类目选填属性' }}</h4>
+                <p>单位、数值及选项均以沃尔玛当前规格为准。</p>
+              </div>
+              <div v-if="tab === 'optional'" class="listing-inline-controls">
+                <input
+                  v-model="optionalQuery"
+                  class="listing-optional-search"
+                  placeholder="搜索属性名称，添加需要的信息"
+                  aria-label="搜索选填属性"
+                />
+                <label class="listing-toggle"
+                  ><input v-model="showAllOptional" type="checkbox" />显示全部选填项</label
+                >
+              </div>
+              <p v-if="tab === 'optional' && !optionalQuery && !showAllOptional" class="muted">
+                当前显示已填写项；搜索名称或勾选“显示全部”可添加更多属性。
+              </p>
+              <ListingSchemaField
+                v-for="key in tab === 'required'
+                  ? mandatoryKeys
+                  : optionalKeys.filter((k) => showOptional(k, 'visible'))"
+                :key="key"
+                :name="key"
+                :schema="visibleProperties[key]"
+                :labels="doc.labels"
+                :model-value="current.visible[key]"
+                :disabled="locked"
+                :required="required.includes(key)"
+                :path="'visible.' + key"
+                :issues="dirty ? [] : fieldIssues(key)"
+                @update:model-value="update('visible', key, $event)" />
+              <template v-if="tab === 'optional'"
+                ><div class="listing-subheading"><h4>选填履约信息</h4></div>
+                <ListingSchemaField
+                  v-for="key in optionalOrderableKeys.filter((k) => showOptional(k, 'orderable'))"
+                  :key="key"
+                  :name="key"
+                  :schema="currentSpec.sections.orderable.properties![key]"
+                  :labels="doc.labels"
+                  :model-value="current.orderable[key]"
+                  :disabled="locked"
+                  :path="'orderable.' + key"
+                  :issues="dirty ? [] : fieldIssues(key, 'Orderable')"
+                  @update:model-value="update('orderable', key, $event)"
+              /></template>
+              <template v-for="(schema, key) in currentSpec.sections" :key="key"
+                ><ListingSchemaField
+                  v-if="!['visible', 'orderable'].includes(String(key))"
+                  :name="String(key)"
+                  :schema="schema"
+                  :labels="doc.labels"
+                  :model-value="current.extra[key]"
+                  :disabled="locked"
+                  :path="'extra.' + key"
+                  @update:model-value="current!.extra[key] = $event" /></template
+            ></template>
+          </section>
+          <section v-else class="listing-form-section listing-results">
+            <div class="listing-subheading">
+              <h4>沃尔玛处理结果</h4>
+              <p>收到批次编号代表已接收；以逐项处理和发布状态为准。</p>
+              <button v-if="canSubmit" class="btn small" :disabled="busy" @click="refreshResults()">
+                刷新处理结果
+              </button>
+            </div>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>来源 SKU / 店铺 SKU</th>
+                  <th>状态</th>
+                  <th>中文原因</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in doc.rows" :key="row.platform_sku">
+                  <td>
+                    {{ row.source_sku }}<br /><strong>{{ row.platform_sku }}</strong>
+                  </td>
+                  <td
+                    :class="{
+                      'seller-risk-label': [
+                        'failed',
+                        'unpublished',
+                        'rejected',
+                        'stock_pending',
+                      ].includes(doc.results[row.platform_sku]?.status || ''),
+                    }"
+                  >
+                    {{ statusLabels[doc.results[row.platform_sku]?.status] || '尚未提交' }}
+                  </td>
+                  <td>
+                    {{ doc.results[row.platform_sku]?.message || '填写资料并校验后可提交' }}
+                    <p
+                      v-for="(e, i) in doc.results[row.platform_sku]?.errors"
+                      :key="i"
+                      class="seller-risk-label"
+                    >
+                      {{ e.message }}
+                    </p>
+                    <details v-if="doc.results[row.platform_sku]?.errors.length">
+                      <summary>原始原因</summary>
+                      <pre>{{ doc.results[row.platform_sku].errors }}</pre>
+                    </details>
+                    <button
+                      v-if="
+                        ['failed', 'rejected', 'unpublished'].includes(
+                          doc.results[row.platform_sku]?.status || '',
+                        )
+                      "
+                      class="btn small"
+                      @click="
+                        activeSku = row.platform_sku;
+                        tab = 'basic';
+                        statusFilter = 'all';
+                      "
+                    >
+                      修改此商品后重试
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <article v-for="a in doc.attempts" :key="a.id" class="listing-attempt">
+              <div>
+                <strong>{{ a.feed_id ? '沃尔玛批次 ' + a.feed_id : '待确认提交 ' + a.id }}</strong>
+                <p>
+                  {{ new Date(a.created_at).toLocaleString('zh-CN') }} · {{ a.skus.length }} 个 SKU
+                  · 店铺 {{ doc.store.name }} · Partner {{ a.partner_id }}
+                </p>
+                <p>{{ a.message }}</p>
+              </div>
+              <button
+                v-if="a.feed_id && canSubmit"
+                class="btn small"
+                :disabled="busy"
+                @click="refreshResults(a)"
+              >
+                查询此批次
+              </button>
+              <div
+                v-if="!a.feed_id && ['sending', 'unknown'].includes(a.state)"
+                class="listing-reconcile"
+              >
+                <p class="seller-risk-label">
+                  结果未知，不能直接重提。请在沃尔玛卖家中心核对本次 SKU 清单，并关联原批次编号。
+                </p>
+                <input
+                  v-model="reconcileIds[a.id]"
+                  placeholder="原沃尔玛 Feed ID"
+                  :aria-label="'关联批次 ' + a.id"
+                /><button
+                  v-if="canSubmit"
+                  class="btn small"
+                  :disabled="busy || !reconcileIds[a.id]"
+                  @click="reconcile(a)"
+                >
+                  核验并关联原批次
+                </button>
+              </div>
+            </article>
+            <p v-if="!doc.attempts.length" class="muted">尚未向沃尔玛提交任何商品。</p>
+          </section>
+          <details class="listing-raw">
+            <summary>查看本 SKU 完整资料 JSON</summary>
+            <pre>{{ current }}</pre>
+          </details>
+        </main>
+      </div>
+      <footer class="listing-action-bar">
+        <div class="listing-selection">
+          <label
+            ><input
+              type="checkbox"
+              :checked="validSkus.length > 0 && selectedValid.length === validSkus.length"
+              :disabled="dirty || !validSkus.length"
+              @change="selected = ($event.target as HTMLInputElement).checked ? [...validSkus] : []"
+            />选择校验通过且可提交的 {{ validSkus.length }} 个 SKU</label
+          >
+          <details v-if="validSkus.length">
+            <summary>已选 {{ selectedValid.length }} 个 · 调整选择</summary>
+            <label
+              v-for="row in eligible.filter((r) => validSkus.includes(r.platform_sku))"
+              :key="row.platform_sku"
+              ><input v-model="selected" type="checkbox" :value="row.platform_sku" />{{
+                row.source_sku
+              }}
+              · {{ row.platform_sku }}</label
+            >
+          </details>
+        </div>
+        <div class="actions">
+          <button
+            v-if="canEdit"
+            class="btn"
+            :disabled="busy || saving || !dirty"
+            @click="run(save)"
+          >
+            保存资料</button
+          ><button v-if="canEdit" class="btn" :disabled="busy || saving" @click="validate">
+            1. 校验上架资料</button
+          ><button
+            v-if="canSubmit"
+            class="btn primary"
+            :disabled="busy || saving || dirty || !selectedValid.length || !doc.validation.id"
+            @click="openSubmit"
+          >
+            2. 提交沃尔玛</button
+          ><button
+            class="btn"
+            :disabled="busy"
+            @click="canSubmit ? refreshResults() : (tab = 'results')"
+          >
+            3. 查看处理结果
+          </button>
+        </div>
+      </footer>
+      <dialog
+        ref="zoomDialog"
+        class="listing-image-dialog"
+        @click="$event.target === zoomDialog && zoomDialog?.close()"
+      >
+        <button class="icon-btn" aria-label="关闭大图" @click="zoomDialog?.close()">
+          <AppIcon name="X" />
+        </button>
+        <ProductImage :src="zoomUrl" image-class="listing-full-image" />
+      </dialog>
+      <dialog
+        ref="confirmDialog"
+        class="listing-confirm-dialog"
+        @cancel="busy ? $event.preventDefault() : undefined"
+      >
+        <div class="listing-confirm-header">
+          <h3>确认正式提交沃尔玛</h3>
+          <button
+            class="icon-btn"
+            aria-label="关闭"
+            :disabled="busy"
+            @click="confirmDialog?.close()"
+          >
+            <AppIcon name="X" />
+          </button>
+        </div>
+        <p>
+          以下商品将提交至 <strong>{{ doc.store.name }}</strong
+          >，Partner ID <strong>{{ doc.validation.partner_id }}</strong
+          >。
+        </p>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>店铺 SKU</th>
+              <th>商品</th>
+              <th>售价</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="row in doc.rows.filter((r) => selectedValid.includes(r.platform_sku))"
+              :key="row.platform_sku"
+            >
+              <td>{{ row.platform_sku }}</td>
+              <td>{{ plain(String(row.visible.productName || '')) }}</td>
+              <td>{{ money(String(row.orderable.price || '')) }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <label class="listing-confirm-label"
+          >输入目标店铺名 <strong>{{ doc.store.name }}</strong> 以确认<input
+            v-model="confirmation"
+            :placeholder="doc.store.name"
+            :disabled="busy"
+        /></label>
+        <p class="subtitle">提交后请查询逐项结果。处理中的商品不能再次提交。</p>
+        <div class="actions">
+          <button class="btn" :disabled="busy" @click="confirmDialog?.close()">返回检查</button
+          ><button
+            class="btn primary"
+            :disabled="busy || confirmation !== doc.store.name"
+            @click="submit"
+          >
+            {{ busy ? '正在提交…' : `正式提交 ${selectedValid.length} 个 SKU` }}
+          </button>
+        </div>
+      </dialog>
+    </template>
+  </div>
+</template>

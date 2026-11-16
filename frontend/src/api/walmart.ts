@@ -30,7 +30,7 @@ export interface WalmartStore {
 export interface WalmartConnections {
   vault: { ready: boolean; key_id: string; message: string };
   stores: WalmartStore[];
-  execution_enabled: false;
+  execution_enabled: boolean;
 }
 export interface WalmartVerification {
   verification_id: string;
