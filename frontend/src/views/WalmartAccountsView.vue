@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import StoreManagementNav from '../components/StoreManagementNav.vue';
 import { computed, onMounted, onBeforeUnmount, ref } from 'vue';
 import { walmartApi, walmartScopeLabels, walmartAccessLabels } from '../api/walmart';
 import type { WalmartConnections, WalmartStore, WalmartVerification } from '../api/walmart';
@@ -172,12 +173,12 @@ onBeforeUnmount(() => {
 <template>
   <div class="page-heading">
     <div>
-      <p class="eyebrow">WALMART / 店铺授权</p>
-      <h1>沃尔玛店铺绑定</h1>
+      <p class="eyebrow">STORES / 店铺管理</p>
+      <h1>店铺管理</h1>
       <p class="subtitle">各店铺独立授权，验证实际账号后确认绑定。</p>
     </div>
-    <RouterLink class="btn" to="/listing-stores"><AppIcon name="Store" />管理系统店铺</RouterLink>
   </div>
+  <StoreManagementNav />
   <div class="wm-summary">
     <div>
       <span>系统店铺</span><strong>{{ data?.stores.length ?? '—' }}</strong>

@@ -2492,7 +2492,7 @@ input[type='checkbox'] {
     align-items: flex-start;
   }
 }
-@media (min-width: 801px) and (max-width: 1250px) {
+@media (min-width: 801px) and (max-width: 1450px) {
   .header-inner {
     flex-wrap: wrap;
   }

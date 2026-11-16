@@ -5,6 +5,7 @@ import { prelistingApi } from '../api/prelisting';
 import type { ListingStore } from '../api/types';
 import { errorMessage } from '../utils/display';
 import AppIcon from '../components/AppIcon.vue';
+import StoreManagementNav from '../components/StoreManagementNav.vue';
 const { auth } = useAuth();
 const canEdit = computed(
   () => !auth.enabled || ['admin', 'editor'].includes(auth.user?.role || ''),
@@ -68,18 +69,11 @@ onMounted(load);
 <template>
   <div class="page-heading">
     <div>
-      <p class="eyebrow">STORES / 目标店铺</p>
-      <h1>上架店铺</h1>
-    </div>
-    <div class="store-page-actions">
-      <RouterLink
-        v-if="!auth.enabled || auth.user?.role === 'admin'"
-        class="btn primary"
-        to="/walmart-accounts"
-        >沃尔玛店铺绑定</RouterLink
-      ><RouterLink class="btn" to="/prelisting">返回预上架</RouterLink>
+      <p class="eyebrow">STORES / 店铺管理</p>
+      <h1>店铺管理</h1>
     </div>
   </div>
+  <StoreManagementNav />
   <p class="notice notice-space">
     已录入截图可见店铺及商品库已有店铺，未推测缺失名称。店铺名称用于创建批次，不代表已连接平台账号。
   </p>

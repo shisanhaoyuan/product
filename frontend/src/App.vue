@@ -22,6 +22,7 @@ const navigation = [
   { path: '/products', name: '亚马逊商品库', icon: 'LayoutGrid' },
   { path: '/giga-products', name: '大建云仓', icon: 'Package' },
   { path: '/prelisting', name: '预上架', icon: 'Upload' },
+  { path: '/listing-stores', name: '店铺管理', icon: 'Store' },
   { path: '/blacklist', name: '卖家黑名单', icon: 'ShieldCheck' },
   { path: '/review', name: '待复核', icon: 'CircleDashed' },
   { path: '/integrations', name: '数据接入', icon: 'Cable' },
@@ -35,19 +36,17 @@ const current = computed(() =>
     : route.path.startsWith('/prelisting/')
       ? '预上架批次'
       : route.path === '/walmart-accounts'
-        ? '沃尔玛店铺绑定'
+        ? '店铺管理 · 沃尔玛绑定'
         : route.path === '/listing-stores'
-          ? '上架店铺'
+          ? '店铺管理 · 店铺资料'
           : route.path === '/giga-patrol'
             ? '云仓价格与库存巡查'
             : navigation.find((item) => item.path === route.path)?.name || '商品库',
 );
 function active(path: string) {
-  if (path === '/prelisting')
-    return (
-      route.path.startsWith('/prelisting') ||
-      ['/listing-stores', '/walmart-accounts'].includes(route.path)
-    );
+  if (path === '/prelisting') return route.path.startsWith('/prelisting');
+  if (path === '/listing-stores')
+    return ['/listing-stores', '/walmart-accounts'].includes(route.path);
   if (path === '/giga-products') return route.path.startsWith('/giga-');
   if (path === '/review')
     return (
