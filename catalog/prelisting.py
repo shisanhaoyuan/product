@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from .blacklist import active_entries, matches, seller_key
 from .database import INTEGRITY_ERRORS, write_lock, read_snapshot, insert_id, is_postgres
 from . import platform_sku
+from .product_search import normalize_identifiers
 
 # Only names visible in the user's screenshots; marketplace aliases are explicit.
 SCREENSHOT_STORES = [
@@ -103,6 +104,8 @@ class Filters(StrictInput):
     source: Literal['', 'Amazon', 'GigaB2B'] = ''
     deduplicate: bool = False
     q: str = Field(default='', max_length=300)
+    identifiers: str = Field(default='', max_length=6000)
+    inventory_status: Literal['', 'out_of_stock'] = ''
     store: str = Field(default='', max_length=100)
     brand: str = Field(default='', max_length=100)
     status: Literal['', 'complete', 'review', 'saved', 'unconfirmed', 'reopened', 'snapshot'] = ''
@@ -111,6 +114,8 @@ class Filters(StrictInput):
     seller_status: Literal['', 'blocked', 'unblocked'] = ''
     listing_count_min: int | None = Field(default=None, ge=1, le=2147483647)
     listing_count_max: int | None = Field(default=None, ge=1, le=2147483647)
+
+    _identifiers = field_validator('identifiers')(normalize_identifiers)
 
     @model_validator(mode='after')
     def listing_count_range(self):

@@ -14,6 +14,7 @@ import ListingCountFilter from '../components/ListingCountFilter.vue';
 import ProductImage from '../components/ProductImage.vue';
 import StatusBadge from '../components/StatusBadge.vue';
 import PrelistingComposer from '../components/PrelistingComposer.vue';
+import { parseBatchIdentifiers, productSearch } from '../utils/batchSearch';
 import { useAuth } from '../composables/useAuth';
 const { auth } = useAuth();
 const canEdit = computed(
@@ -38,11 +39,15 @@ const loading = ref(true),
   error = ref(''),
   search = ref('');
 const view = ref(localStorage.getItem('catalog-view') === 'table' ? 'table' : 'grid');
+const batchSearchCount = computed(
+  () => parseBatchIdentifiers(filters.value.get('identifiers') || '').identifiers.length,
+);
 let controller: AbortController | undefined, searchTimer: ReturnType<typeof setTimeout> | undefined;
 const filters = computed(() => {
   const params = new URLSearchParams();
   for (const key of [
     'q',
+    'identifiers',
     'store',
     'brand',
     'status',
@@ -246,6 +251,44 @@ function changeFilter(key: string, value: string) {
   delete query.page;
   return router.push({ path: libraryPath.value, query });
 }
+async function submitSearch() {
+  clearTimeout(searchTimer);
+  const value = productSearch(search.value);
+  if (value.error) {
+    controller?.abort();
+    clearSelection();
+    data.value = undefined;
+    loading.value = false;
+    error.value = value.error;
+    return;
+  }
+  const query = Object.fromEntries(filters.value);
+  delete query.q;
+  delete query.identifiers;
+  if (value.q) query.q = value.q;
+  if (value.identifiers) query.identifiers = value.identifiers;
+  delete query.page;
+  const destination = { path: libraryPath.value, query };
+  if (router.resolve(destination).fullPath === route.fullPath) {
+    if (error.value) await load();
+    return;
+  }
+  await router.push(destination);
+}
+function pasteSearch(event: ClipboardEvent) {
+  const text = event.clipboardData?.getData('text') || '';
+  if (/[\r\n\t]/u.test(text)) {
+    event.preventDefault();
+    const input = event.target as HTMLInputElement;
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? start;
+    search.value =
+      input.value.slice(0, start) +
+      text.trim().replace(/[\r\n\t]+/gu, ', ') +
+      input.value.slice(end);
+    queueSearch();
+  }
+}
 function changeListingCount(value: { minimum: string; maximum: string }) {
   clearTimeout(searchTimer);
   const query = Object.fromEntries(filters.value);
@@ -261,8 +304,11 @@ function changeListingCount(value: { minimum: string; maximum: string }) {
 }
 function searchInput(event: Event) {
   search.value = (event.target as HTMLInputElement).value;
+  queueSearch();
+}
+function queueSearch() {
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => changeFilter('q', search.value.trim()), 450);
+  searchTimer = setTimeout(submitSearch, 450);
 }
 function changeView(value: string) {
   view.value = value;
@@ -280,7 +326,14 @@ async function load() {
   const request = new AbortController();
   controller = request;
   clearTimeout(searchTimer);
-  search.value = filters.value.get('q') || '';
+  search.value =
+    filters.value
+      .get('identifiers')
+      ?.split(/[\s,，;；、]+/u)
+      .filter(Boolean)
+      .join(', ') ||
+    filters.value.get('q') ||
+    '';
   loading.value = true;
   data.value = undefined;
   error.value = '';
@@ -371,7 +424,7 @@ onBeforeUnmount(() => {
         </button>
       </div>
     </div>
-    <form class="filter-bar" id="filters" @submit.prevent="changeFilter('q', search.trim())">
+    <form class="filter-bar" id="filters" @submit.prevent="submitSearch">
       <div class="search-wrap">
         <span><AppIcon name="Search" /></span
         ><input
@@ -380,10 +433,14 @@ onBeforeUnmount(() => {
           name="q"
           :value="search"
           :placeholder="
-            isGiga ? '搜索供应商 SKU、商品名称、卖家…' : '搜索 ASIN、SKU、商品名称、卖家…'
+            isGiga
+              ? '搜索 SKU、商品名称、卖家…支持批量粘贴'
+              : '搜索 ASIN、SKU、商品名称、卖家…支持批量粘贴'
           "
           aria-label="搜索商品"
+          title="SKU / ASIN 可用逗号、空格分隔，也可直接粘贴多行；按回车立即搜索"
           @input="searchInput"
+          @paste="pasteSearch"
         />
       </div>
       <FilterSelect
@@ -450,6 +507,9 @@ onBeforeUnmount(() => {
         <AppIcon name="RotateCcw" />
       </button>
     </form>
+    <p v-if="batchSearchCount" class="batch-search-hint" role="status">
+      已按 {{ batchSearchCount }} 个 SKU / ASIN 精确搜索 · 自动去重，命中子变体时显示所属商品
+    </p>
     <div v-if="canEdit" class="batch-toolbar">
       <div class="actions">
         <label class="btn small">
@@ -649,3 +709,10 @@ onBeforeUnmount(() => {
     </div>
   </div>
 </template>
+<style scoped>
+.batch-search-hint {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0 0 16px;
+}
+</style>
