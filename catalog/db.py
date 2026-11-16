@@ -31,6 +31,8 @@ class Catalog:
                 initialize_patrol(db)
                 from .prelisting import initialize as initialize_prelisting
                 initialize_prelisting(db)
+                from .walmart_accounts import initialize as initialize_walmart
+                initialize_walmart(db)
                 if not db.execute('SELECT 1 FROM migrations WHERE version=7').fetchone():
                     from .projection import rebuild
                     rebuild(db)
@@ -86,6 +88,8 @@ class Catalog:
             initialize_editing(db)
             from .prelisting import initialize as initialize_prelisting
             initialize_prelisting(db)
+            from .walmart_accounts import initialize as initialize_walmart
+            initialize_walmart(db)
             from .images import initialize as initialize_images
             initialize_images(db)
             from .source_capture import initialize as initialize_source_capture

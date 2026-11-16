@@ -50,6 +50,10 @@ def create_app(database=None):
     app.include_router(giga_routes(catalog))
     from .giga_patrol import patrol_routes
     app.include_router(patrol_routes(catalog))
+    from .walmart_client import WalmartVerifier
+    from .walmart_accounts import walmart_routes
+    app.state.walmart_verifier=WalmartVerifier()
+    app.include_router(walmart_routes(catalog))
 
     @app.middleware('http')
     async def guard(request:Request, call_next):
@@ -68,7 +72,7 @@ def create_app(database=None):
             request.state.user=user
             if user['must_change_password'] and path not in {'/api/auth/password','/api/auth/logout'}:
                 return Response('首次登录请先修改密码',status_code=403)
-            if path.startswith('/api/admin/') and user['role'] != 'admin':
+            if path.startswith(('/api/admin/', '/api/walmart/')) and user['role'] != 'admin':
                 return Response('需要管理员权限',status_code=403)
             if writing and (path == '/api/imports' or path.startswith(('/api/seller-blacklist', '/api/prelisting', '/api/listing-stores', '/api/products/', '/api/integrations/'))) and user['role'] not in {'admin','editor'}:
                 return Response('只读成员不能修改商品库数据',status_code=403)
@@ -101,7 +105,7 @@ def create_app(database=None):
     def health():
         with catalog.connect() as db:
             db.execute('SELECT 1').fetchone()
-        return {'status':'ok','schema_version':14,
+        return {'status':'ok','schema_version':15,
                 'database':'postgresql' if catalog.postgres else 'sqlite',
                 'images':storage.backend if storage else 'sqlite'}
 

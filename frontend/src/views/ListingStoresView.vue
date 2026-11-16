@@ -71,7 +71,14 @@ onMounted(load);
       <p class="eyebrow">STORES / 目标店铺</p>
       <h1>上架店铺</h1>
     </div>
-    <RouterLink class="btn" to="/prelisting">返回预上架</RouterLink>
+    <div class="store-page-actions">
+      <RouterLink
+        v-if="!auth.enabled || auth.user?.role === 'admin'"
+        class="btn primary"
+        to="/walmart-accounts"
+        >沃尔玛店铺绑定</RouterLink
+      ><RouterLink class="btn" to="/prelisting">返回预上架</RouterLink>
+    </div>
   </div>
   <p class="notice notice-space">
     已录入截图可见店铺及商品库已有店铺，未推测缺失名称。店铺名称用于创建批次，不代表已连接平台账号。
@@ -161,3 +168,11 @@ onMounted(load);
     </div>
   </section>
 </template>
+
+<style scoped>
+.store-page-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+</style>

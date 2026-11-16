@@ -169,3 +169,24 @@ def test_migration_missing_referenced_image_rolls_back(pg,tmp_path):
     with pytest.raises(ValueError,match='缺失的本地图片'):
         migrate_sqlite(source.path,pg,FileStorage(str(tmp_path/'images')))
     assert pg.stats()['listings']==0
+
+
+def test_walmart_ciphertext_migration_and_original_master_key(pg, tmp_path, monkeypatch):
+    from catalog.credential_vault import initialize_key, decrypt
+    from test_walmart_accounts import Remote, bind, preview, INPUT, CLIENT, SECRET
+    key = tmp_path/'master.key'
+    initialize_key(key)
+    monkeypatch.setenv('CATALOG_CREDENTIAL_KEY_FILE',str(key))
+    source = tmp_path/'walmart-source.db'; app = create_app(source); client = TestClient(app)
+    Remote().install(app)
+    store = client.get('/api/listing-stores').json()[0]['id']
+    bind(client,store)
+    preview(client,store)  # An unconfirmed, owner-scoped encrypted draft must also survive migration.
+    report = migrate_sqlite(source,pg,FileStorage(str(tmp_path/'migrated-images')))
+    assert report['tables']['walmart_accounts']==1
+    assert report['tables']['walmart_binding_previews']==1
+    with pg.connect() as db:
+        row=db.execute('SELECT * FROM walmart_accounts').fetchone()
+        assert decrypt(store,row['encrypted_credentials'])==INPUT
+        assert CLIENT not in str(dict(row)) and SECRET not in str(dict(row))
+    assert migrate_sqlite(source,pg,FileStorage(str(tmp_path/'migrated-images')))['already_migrated']

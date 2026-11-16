@@ -34,15 +34,20 @@ const current = computed(() =>
       : '亚马逊商品详情'
     : route.path.startsWith('/prelisting/')
       ? '预上架批次'
-      : route.path === '/listing-stores'
-        ? '上架店铺'
-        : route.path === '/giga-patrol'
-          ? '云仓价格与库存巡查'
-          : navigation.find((item) => item.path === route.path)?.name || '商品库',
+      : route.path === '/walmart-accounts'
+        ? '沃尔玛店铺绑定'
+        : route.path === '/listing-stores'
+          ? '上架店铺'
+          : route.path === '/giga-patrol'
+            ? '云仓价格与库存巡查'
+            : navigation.find((item) => item.path === route.path)?.name || '商品库',
 );
 function active(path: string) {
   if (path === '/prelisting')
-    return route.path.startsWith('/prelisting') || route.path === '/listing-stores';
+    return (
+      route.path.startsWith('/prelisting') ||
+      ['/listing-stores', '/walmart-accounts'].includes(route.path)
+    );
   if (path === '/giga-products') return route.path.startsWith('/giga-');
   if (path === '/review')
     return (

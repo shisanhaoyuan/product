@@ -16,6 +16,7 @@ export const router = createRouter({
     { path: '/product/:id', component: () => import('./views/ProductDetailView.vue') },
     { path: '/prelisting', component: () => import('./views/PrelistingView.vue') },
     { path: '/prelisting/:id', component: () => import('./views/PrelistingView.vue') },
+    { path: '/walmart-accounts', component: () => import('./views/WalmartAccountsView.vue') },
     { path: '/listing-stores', component: () => import('./views/ListingStoresView.vue') },
     { path: '/blacklist', component: () => import('./views/BlacklistView.vue') },
     { path: '/imports', component: () => import('./views/ImportsView.vue') },
@@ -38,6 +39,7 @@ router.beforeEach(async (to) => {
   if (!auth.user) return to.path === '/login' ? true : '/login';
   if (auth.user.must_change_password && to.path !== '/account') return '/account';
   if (to.path === '/login') return '/products';
-  if (to.path === '/users' && auth.user.role !== 'admin') return '/products';
+  if (['/users', '/walmart-accounts'].includes(to.path) && auth.user.role !== 'admin')
+    return '/products';
   return true;
 });

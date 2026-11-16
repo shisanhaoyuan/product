@@ -90,6 +90,12 @@ onBeforeUnmount(() => controller?.abort());
       <h1>{{ route.params.id ? '批次详情' : '预上架批次' }}</h1>
     </div>
     <div class="actions">
+      <RouterLink
+        v-if="!auth.enabled || auth.user?.role === 'admin'"
+        class="btn"
+        to="/walmart-accounts"
+        >沃尔玛店铺绑定</RouterLink
+      >
       <RouterLink class="btn" to="/listing-stores">店铺管理</RouterLink
       ><RouterLink class="btn primary" to="/products">选择商品</RouterLink>
     </div>
