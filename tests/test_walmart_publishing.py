@@ -182,6 +182,37 @@ def test_document_isolation_price_stock_identity_reopen_and_idempotent_save(publ
     assert c.patch(base,json={k:bad[k] for k in ('revision','version','rows')}).status_code==422
 
 
+def test_ean_default_preserves_existing_source_identifiers():
+    from catalog.walmart_publishing import Identification, default_rows
+    assert Identification().type == 'EAN'
+    def row(code='', kind=''):
+        preview = {'brand': 'Test', 'items': [{'listing_id': 'item', 'variants': [
+            {'platform_sku': 'store-sku', 'sku': 'source-sku',
+             'content': {'ean': code, 'product_id_type': kind}}]}]}
+        return default_rows(preview)[0]['identification']
+    assert row('', 'GTIN')['type'] == 'EAN'
+    assert row()['value'] == ''
+    for code, kind in [('012345678905', 'UPC'), ('9780306406157', 'EAN'), ('00012345678905', 'GTIN')]:
+        assert row(code, kind)['type'] == kind
+        assert row(code, kind)['value'] == code
+
+
+def test_document_category_hint_available_to_existing_documents(publishing):
+    c, catalog, _, _, _, base, _ = publishing
+    doc = c.get(base).json()
+    assert all('category' in item for item in doc['basis']['items'])
+    with catalog.connect() as db:
+        stored = db.execute('SELECT batch_id,basis_json FROM walmart_listing_documents').fetchone()
+        basis = json.loads(stored['basis_json'])
+        for item in basis['items']:
+            item.pop('category', None)
+        db.execute('UPDATE walmart_listing_documents SET basis_json=? WHERE batch_id=?',
+                   (encoded(basis), stored['batch_id']))
+    reopened = c.get(base).json()
+    assert reopened['rows'] == doc['rows']
+    assert [i['category'] for i in reopened['basis']['items']] == [i['category'] for i in doc['basis']['items']]
+
+
 def test_schema_required_nested_conditional_enum_and_unsafe_images(publishing):
     c,_,_,_,_,base,_=publishing
     doc=ready(publishing)

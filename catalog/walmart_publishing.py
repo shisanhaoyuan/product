@@ -26,6 +26,7 @@ from .credential_vault import decrypt, VaultError
 from .database import write_lock, is_postgres
 from .object_storage import StorageError
 from .prelisting import PlanInput, build_preview, encoded, fingerprint
+from .projection import category
 from .walmart_accounts import account, now, store
 from .walmart_client import WalmartError
 from .walmart_publishing_client import SubmissionUnknown
@@ -83,7 +84,7 @@ class Input(BaseModel):
 
 class Identification(Input):
     mode: Literal['identifier', 'exemption'] = 'identifier'
-    type: Literal['GTIN', 'UPC', 'EAN', 'ISBN'] = 'UPC'
+    type: Literal['GTIN', 'UPC', 'EAN', 'ISBN'] = 'EAN'
     value: str = Field(default='', max_length=14)
     submission_id: str = Field(default='', max_length=150)
 
@@ -219,8 +220,15 @@ def public_document(db, bid):
             schema=cache_value(db,account,'spec',row['version'],pt)
             if schema:
                 cached_specs[pt]=dict(sections=sections(schema,pt),digest=fingerprint(schema),labels=LABELS)
+    basis = json.loads(row['basis_json'])
+    # Older documents lack this hint. Resolve only their own source listing;
+    # the browser still checks against the current store's actual taxonomy.
+    for item in basis['items']:
+        if 'category' not in item:
+            source = db.execute('SELECT data_json FROM current_listings WHERE id=?', (item['listing_id'],)).fetchone()
+            item['category'] = category(json.loads(source[0])) if source else ''
     return dict(revision=row['revision'], version=row['version'], rows=json.loads(row['rows_json']),
-                basis=json.loads(row['basis_json']), validation=validation, labels=LABELS,
+                basis=basis, validation=validation, labels=LABELS,
                 store=p['store'], brand=p['brand'], specs=cached_specs, updated_at=row['updated_at'], results=latest_results(db, bid),
                 attempts=[public_attempt(r) for r in db.execute(
                     'SELECT * FROM walmart_listing_attempts WHERE batch_id=? ORDER BY created_at DESC,id DESC', (bid,))])
@@ -234,6 +242,7 @@ def fresh_basis(catalog, db, record):
         raise HTTPException(409, '来源 SKU、平台 SKU 或变体对应关系已改变，请核查后重新创建批次')
     for item in prepared['items']:
         source=json.loads(db.execute('SELECT data_json FROM current_listings WHERE id=?',(item['listing_id'],)).fetchone()[0])
+        item['category'] = category(source)
         for v in item['variants']:
             if not v.get('content') and not source.get('variants') and v['sku']==source['sku']:
                 v['content']={k:source.get(k) for k in ('copy','images','ean','product_id_type','shipping_weight','seller','source_url')}
@@ -248,9 +257,10 @@ def default_rows(preview):
             copy_data = c.get('copy') or {}
             images = c.get('images') or []
             code = str(c.get('ean') or '')
-            code_type = 'UPC' if len(code) == 12 else 'EAN' if len(code) == 13 else c.get('product_id_type') or 'GTIN'
+            code_type = ('UPC' if len(code) == 12 else 'EAN' if len(code) == 13
+                         else c.get('product_id_type') or 'GTIN') if code else 'EAN'
             if code_type not in ('UPC','GTIN','EAN','ISBN'):
-                code_type = 'GTIN'
+                code_type = 'GTIN' if code else 'EAN'
             orderable = {}
             if v.get('price') is not None:
                 orderable['price'] = float(v['price'])

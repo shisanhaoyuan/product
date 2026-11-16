@@ -270,6 +270,7 @@ export interface PrelistingPreview {
   preview_hash: string;
   execution_enabled: boolean;
   items: {
+    category?: string;
     source?: string;
     listing_id: string;
     asin: string;

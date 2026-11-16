@@ -15,6 +15,7 @@ import {
 import { catalogApi as api } from '../api/client';
 import { useAuth } from '../composables/useAuth';
 import { errorMessage, plain, money } from '../utils/display';
+import { applyListingDefaults } from '../utils/listingDefaults';
 import ListingSchemaField from './ListingSchemaField.vue';
 import ProductImage from './ProductImage.vue';
 import AppIcon from './AppIcon.vue';
@@ -202,6 +203,7 @@ async function prepare() {
   await run(async () => {
     install(await publishingApi.prepare(props.bid));
     await loadMetadata();
+    if (current.value?.product_type) await getSpec();
   });
 }
 async function loadMetadata() {
@@ -213,6 +215,17 @@ async function loadMetadata() {
   const [types, warehouses] = values;
   if (types.status === 'fulfilled') taxonomy.value = types.value.items;
   if (warehouses.status === 'fulfilled') nodes.value = warehouses.value.items;
+  if (
+    canEdit.value &&
+    doc.value &&
+    applyListingDefaults(
+      doc.value,
+      types.status === 'fulfilled' ? types.value.items : [],
+      warehouses.status === 'fulfilled' ? warehouses.value.items : [],
+    )
+  ) {
+    await save();
+  }
   const errors = values.filter((v): v is PromiseRejectedResult => v.status === 'rejected');
   if (errors.length) error.value = errors.map((e) => errorMessage(e.reason)).join('；');
 }
@@ -659,7 +672,9 @@ onBeforeUnmount(() => {
                     获取字段
                   </button>
                 </div>
-                <small class="muted">按所选类型加载官方必填项，来源类目仅供参考。</small>
+                <small class="muted"
+                  >来源类目与官方商品类型一致时自动选择；无法匹配时请手动选择。</small
+                >
               </div>
             </div>
             <div class="listing-field" data-listing-path="fulfillment_center_id">
