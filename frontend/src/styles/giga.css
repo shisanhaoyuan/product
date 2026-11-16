@@ -112,6 +112,50 @@
   margin-left: 10px;
   font-weight: 400;
 }
+.giga-packaging h4 {
+  margin: 0;
+  font-size: 16px;
+  overflow-wrap: anywhere;
+}
+.giga-package-card,
+.giga-package-parent {
+  display: grid;
+  gap: 16px;
+}
+.giga-package-card {
+  padding: 20px;
+  background: #f7fafc;
+  border: 1px solid #dce6ed;
+  border-radius: 12px;
+}
+.giga-package-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.giga-package-card h4 span {
+  color: #224a66;
+  margin-left: 8px;
+}
+.giga-package-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr));
+  gap: 16px;
+}
+.giga-package-summary > div {
+  display: grid;
+  gap: 4px;
+}
+.giga-package-summary span {
+  color: #627481;
+  font-size: 14px;
+}
+.giga-package-summary strong {
+  font-size: 19px;
+  overflow-wrap: anywhere;
+}
 .giga-warehouses {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));

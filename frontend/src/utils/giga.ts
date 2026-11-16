@@ -46,6 +46,74 @@ export function warehouseRange(min: unknown, max: unknown): string {
 }
 export const warehouseEmpty = (min: unknown, max: unknown) =>
   quantity(max) === 0 && (quantity(min) === 0 || min == null);
+
+const packagingKeys = [
+  'length',
+  'width',
+  'height',
+  'weight',
+  'lengthUnit',
+  'weightUnit',
+  'lengthCm',
+  'widthCm',
+  'heightCm',
+  'weightKg',
+];
+const packagingValues = [
+  'length',
+  'width',
+  'height',
+  'weight',
+  'lengthCm',
+  'widthCm',
+  'heightCm',
+  'weightKg',
+];
+const provided = (value: unknown) => value != null && String(value).trim() !== '';
+
+// Combo package dimensions belong to each component SKU, never to the parent.
+// The official detail API defines lengthUnit/weightUnit at product level.
+export function packaging(detail: Record<string, unknown>) {
+  const combo = array(detail.comboInfo).map((row) => ({
+    sku: typeof row.sku === 'string' ? row.sku.trim() : '',
+    quantity: quantity(row.qty),
+    fields: {
+      ...Object.fromEntries(packagingKeys.map((key) => [key, row[key]])),
+      lengthUnit: provided(row.lengthUnit) ? row.lengthUnit : detail.lengthUnit,
+      weightUnit: provided(row.weightUnit) ? row.weightUnit : detail.weightUnit,
+    },
+    extra: Object.fromEntries(
+      Object.entries(row).filter(([key]) => !['sku', 'qty', ...packagingKeys].includes(key)),
+    ),
+  }));
+  const parent = Object.fromEntries(packagingKeys.map((key) => [key, detail[key]]));
+  return {
+    combo,
+    parent,
+    hasParent: packagingValues.some((key) => provided(detail[key])),
+    isCombo: detail.comboFlag === true || combo.length > 0,
+  };
+}
+
+export function packageDimensions(fields: Record<string, unknown>): string {
+  const metric =
+    !['length', 'width', 'height'].some((key) => provided(fields[key])) &&
+    ['lengthCm', 'widthCm', 'heightCm'].some((key) => provided(fields[key]));
+  const keys = metric ? ['lengthCm', 'widthCm', 'heightCm'] : ['length', 'width', 'height'];
+  if (!keys.some((key) => provided(fields[key]))) return '未提供';
+  const unit = metric
+    ? 'cm'
+    : provided(fields.lengthUnit)
+      ? String(fields.lengthUnit)
+      : '单位未提供';
+  return `${keys.map((key) => (provided(fields[key]) ? level(fields[key]) : '—')).join(' × ')} ${unit}`;
+}
+
+export function packageWeight(fields: Record<string, unknown>): string {
+  if (provided(fields.weight))
+    return `${level(fields.weight)} ${provided(fields.weightUnit) ? fields.weightUnit : '单位未提供'}`;
+  return provided(fields.weightKg) ? `${level(fields.weightKg)} kg` : '未提供';
+}
 export const labels: Record<string, string> = {
   'Main Color': '主要颜色',
   'Main Material': '主要材质',

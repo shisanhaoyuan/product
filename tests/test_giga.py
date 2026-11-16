@@ -51,6 +51,28 @@ def test_signature_known_vector():
     assert sign('123456789', '123456789', '/api/v1/test', '1700000000000', '1234567890') == 'NDc3ZGFmZmVmNmE4ZjgyNGI3YTI4ZTA5M2RmOTkyMDQwYWZlOGMzOTFkYWJlMmU5NTBhNWFkNjM2ZGY2MzM0MQ=='
 
 
+def test_combo_packaging_survives_sync_reopen_without_rewriting_product(tmp_path, settings):
+    path = tmp_path / 'packages.db'
+    catalog = Catalog(path)
+    fake = FakeClient(('COMBO',))
+    fake.detail[0].update(comboFlag=True, length=None, width=None, height=None, weight=None,
+                          lengthUnit='in', weightUnit='lb', assembledWeight='56',
+                          comboInfo=[
+                              dict(sku='PART-A', qty=1, length='30.7', width='22.8', height='9', weight='27'),
+                              dict(sku='PART-B', qty=2, length='35.8', width='30.3', height='7.4', weight='48'),
+                          ])
+    source = copy.deepcopy(fake.detail[0])
+    sync_page(catalog, settings, 1, client=fake)
+    item_id = catalog.find()['items'][0]['id']
+    before = catalog.get(item_id)
+    assert before['source_facts']['giga']['detail'] == source
+    assert before['variants'] == []
+    assert before['price'] == '40' and before['stock'] == '0'
+    assert sync_page(catalog, settings, 1, client=fake)['unchanged'] == 1
+    assert Catalog(path).get(item_id) == before
+    assert fake.detail[0] == source
+
+
 def test_sync_identity_idempotence_prices_stock_and_manual_edits(tmp_path, settings):
     app = create_app(tmp_path/'giga.db')
     catalog = app.state.catalog

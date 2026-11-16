@@ -4,6 +4,7 @@ import type { GigaSummary } from '../api/types';
 import { money, priceRange, text } from '../utils/display';
 import { object, array, level, highRisk, warehouseRange, warehouseEmpty } from '../utils/giga';
 import GigaFields from './GigaFields.vue';
+import GigaPackaging from './GigaPackaging.vue';
 const props = defineProps<{ facts: Record<string, unknown>; summary?: GigaSummary | null }>();
 const giga = computed(() => object(props.facts.giga));
 const detail = computed(() => object(giga.value.detail));
@@ -53,7 +54,7 @@ const definitions = [
     ],
   },
   {
-    title: '尺寸与重量',
+    title: '组装尺寸与产品重量',
     keys: [
       'assembledLength',
       'assembledWidth',
@@ -61,22 +62,12 @@ const definitions = [
       'assembledWeight',
       'assembledLengthUnit',
       'assembledWeightUnit',
-      'length',
-      'width',
-      'height',
-      'lengthUnit',
-      'weight',
-      'weightUnit',
-      'lengthCm',
-      'widthCm',
-      'heightCm',
-      'weightKg',
     ],
   },
   { title: '产品介绍与规格', keys: ['description', 'characteristics', 'attributes', 'customList'] },
   {
     title: '品牌、组合与关联商品',
-    keys: ['brandInfo', 'comboInfo', 'associateProductList', 'associateProductInfo'],
+    keys: ['brandInfo', 'associateProductList', 'associateProductInfo'],
   },
   {
     title: '图片、视频与文件',
@@ -101,7 +92,21 @@ const definitions = [
   },
 ];
 const groups = computed(() => {
-  const used = new Set(['sellerInfo', 'returnRate']);
+  const used = new Set([
+    'sellerInfo',
+    'returnRate',
+    'comboInfo',
+    'length',
+    'width',
+    'height',
+    'lengthUnit',
+    'weight',
+    'weightUnit',
+    'lengthCm',
+    'widthCm',
+    'heightCm',
+    'weightKg',
+  ]);
   const groups = definitions.map((group) => {
     group.keys.forEach((key) => used.add(key));
     return {
@@ -238,10 +243,17 @@ const other = computed(() =>
       <p class="giga-help">自有、共享、锁定和在途数量分别展示，不计入 Seller 可售总量。</p>
       <GigaFields :value="otherStock" />
     </section>
-    <section v-for="group in groups" :key="group.title" class="giga-panel">
-      <h3>{{ group.title }}</h3>
-      <GigaFields :value="group.value" />
-    </section>
+    <template v-for="group in groups" :key="group.title">
+      <section class="giga-panel">
+        <h3>{{ group.title }}</h3>
+        <GigaFields :value="group.value" />
+      </section>
+      <GigaPackaging v-if="group.title === '组装尺寸与产品重量'" :detail="detail" />
+    </template>
+    <GigaPackaging
+      v-if="!groups.some((group) => group.title === '组装尺寸与产品重量')"
+      :detail="detail"
+    />
     <section class="giga-panel">
       <h3>完整价格明细</h3>
       <p class="giga-help">
