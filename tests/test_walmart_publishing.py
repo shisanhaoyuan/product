@@ -211,6 +211,30 @@ def test_document_category_hint_available_to_existing_documents(publishing):
     reopened = c.get(base).json()
     assert reopened['rows'] == doc['rows']
     assert [i['category'] for i in reopened['basis']['items']] == [i['category'] for i in doc['basis']['items']]
+    assert all('category_hints' in item for item in reopened['basis']['items'])
+
+
+def test_category_hints_preserve_actual_source_labels_and_old_document_backfill(publishing):
+    from catalog.walmart_publishing import source_category_hints
+    source = {'source': 'GigaB2B', 'fields': {'GIGA category': 'Furniture > Sofas'},
+              'source_facts': {'giga': {'detail': {'category': 'Sofas', 'categoryPath': 'Furniture > Sofas',
+                                                   'categoryCode': 10015}}}}
+    assert source_category_hints(source) == ['Furniture > Sofas', 'Sofas']
+    assert source_category_hints({'fields': {'dc_productType': 'Chairs'}}) == ['Chairs']
+    assert source_category_hints({}) == []
+    c, catalog, _, _, _, base, _ = publishing
+    doc = c.get(base).json()
+    with catalog.connect() as db:
+        stored = db.execute('SELECT batch_id,basis_json FROM walmart_listing_documents').fetchone()
+        basis = json.loads(stored['basis_json'])
+        for item in basis['items']:
+            item.pop('category_hints', None)
+        db.execute('UPDATE walmart_listing_documents SET basis_json=? WHERE batch_id=?',
+                   (encoded(basis), stored['batch_id']))
+    reopened = c.get(base).json()
+    assert reopened['rows'] == doc['rows']
+    assert all('category_hints' in item for item in reopened['basis']['items'])
+    assert c.get(base).json() == reopened
 
 
 def test_schema_required_nested_conditional_enum_and_unsafe_images(publishing):

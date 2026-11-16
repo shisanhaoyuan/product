@@ -206,6 +206,16 @@ def public_attempt(row):
         'results': json.loads(row['results_json']), 'skus': [r['platform_sku'] for r in json.loads(row['rows_json'])]}
 
 
+def source_category_hints(source):
+    """Carry actual source labels, never treat a supplier category code as Walmart's."""
+    fields = source.get('fields') or {}
+    detail = ((source.get('source_facts') or {}).get('giga') or {}).get('detail') or {}
+    values = [category(source), fields.get('dc_productType')]
+    if source.get('source') == 'GigaB2B':
+        values.extend([detail.get('category'), detail.get('categoryPath')])
+    return list(dict.fromkeys(v.strip() for v in values if isinstance(v, str) and v.strip()))
+
+
 def public_document(db, bid):
     row = db.execute('SELECT * FROM walmart_listing_documents WHERE batch_id=?', (bid,)).fetchone()
     if not row:
@@ -224,9 +234,11 @@ def public_document(db, bid):
     # Older documents lack this hint. Resolve only their own source listing;
     # the browser still checks against the current store's actual taxonomy.
     for item in basis['items']:
-        if 'category' not in item:
+        if 'category' not in item or 'category_hints' not in item:
             source = db.execute('SELECT data_json FROM current_listings WHERE id=?', (item['listing_id'],)).fetchone()
-            item['category'] = category(json.loads(source[0])) if source else ''
+            data = json.loads(source[0]) if source else {}
+            item.setdefault('category', category(data))
+            item['category_hints'] = source_category_hints(data)
     return dict(revision=row['revision'], version=row['version'], rows=json.loads(row['rows_json']),
                 basis=basis, validation=validation, labels=LABELS,
                 store=p['store'], brand=p['brand'], specs=cached_specs, updated_at=row['updated_at'], results=latest_results(db, bid),
@@ -243,6 +255,7 @@ def fresh_basis(catalog, db, record):
     for item in prepared['items']:
         source=json.loads(db.execute('SELECT data_json FROM current_listings WHERE id=?',(item['listing_id'],)).fetchone()[0])
         item['category'] = category(source)
+        item['category_hints'] = source_category_hints(source)
         for v in item['variants']:
             if not v.get('content') and not source.get('variants') and v['sku']==source['sku']:
                 v['content']={k:source.get(k) for k in ('copy','images','ean','product_id_type','shipping_weight','seller','source_url')}

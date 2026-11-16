@@ -339,6 +339,8 @@ async function refreshSource() {
   await run(async () => {
     await save();
     if (doc.value) install(await publishingApi.refreshSource(props.bid, doc.value.revision));
+    await loadMetadata();
+    if (current.value?.product_type) await getSpec();
     message.value = '已读取商品库最新来源，并重新计算售价；文案和属性保留';
   });
 }
@@ -672,8 +674,9 @@ onBeforeUnmount(() => {
                     获取字段
                   </button>
                 </div>
+                <small v-if="source?.category" class="muted">来源类目：{{ source.category }}</small>
                 <small class="muted"
-                  >来源类目与官方商品类型一致时自动选择；无法匹配时请手动选择。</small
+                  >根据来源类目及同义名称匹配当前店铺的实际商品类型；无法唯一匹配时请手动选择。</small
                 >
               </div>
             </div>

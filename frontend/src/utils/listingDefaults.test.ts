@@ -51,6 +51,37 @@ describe('listing metadata defaults', () => {
     const doc = document();
     expect(applyListingDefaults(doc, [], [...nodes, { ...nodes[0]!, id: 'other' }])).toBe(false);
   });
+  it('uses returned category names and explicit sofa equivalents only from actual options', () => {
+    const sofas = [{ ...types[0]!, name: 'Sofas & Couches' }];
+    for (const category of ['Sofas', 'Furniture > Sectional Sofas', '沙发', 'Sofas and Couches'])
+      expect(matchProductType(category, sofas)).toBe('Sofas & Couches');
+    expect(matchProductType('Furniture', sofas, ['Sofas'])).toBe('Sofas & Couches');
+    expect(matchProductType('Furniture', sofas)).toBe('');
+    expect(matchProductType('Sofas', types)).toBe('');
+    for (const category of ['Sofa Covers', 'Sofa Beds', 'Outdoor Sofas', 'Sofa Tables'])
+      expect(matchProductType(category, sofas)).toBe('');
+    expect(matchProductType('Sofas', [...sofas, { ...sofas[0]!, name: 'Sofas' }])).toBe('');
+    expect(matchProductType('Chairs', [...types, ...sofas], ['Sofas'])).toBe('');
+  });
+  it('fills every matching SKU, keeps unrelated fields and choices, and skips submitted rows', () => {
+    const doc = document();
+    doc.basis.items[0]!.category = 'Furniture';
+    doc.basis.items[0]!.category_hints = ['Sofas'];
+    doc.rows[1]!.identification = {
+      mode: 'identifier',
+      type: 'UPC',
+      value: '012345678905',
+      submission_id: '',
+    };
+    const before = doc.rows.map((r) => JSON.stringify([r.visible, r.orderable, r.identification]));
+    const options = [...types, { ...types[0]!, name: 'Sofas & Couches' }];
+    expect(applyListingDefaults(doc, options, nodes)).toBe(true);
+    expect(doc.rows.map((r) => r.product_type)).toEqual(['Sofas & Couches', 'Desks']);
+    expect(doc.rows.map((r) => JSON.stringify([r.visible, r.orderable, r.identification]))).toEqual(
+      before,
+    );
+    expect(applyListingDefaults(doc, options, nodes)).toBe(false);
+  });
   it('preserves manual selections, identifiers, exemptions and submitted rows', () => {
     const doc = document();
     doc.rows[0]!.product_type = 'Manual';

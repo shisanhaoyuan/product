@@ -271,6 +271,7 @@ export interface PrelistingPreview {
   execution_enabled: boolean;
   items: {
     category?: string;
+    category_hints?: string[];
     source?: string;
     listing_id: string;
     asin: string;
