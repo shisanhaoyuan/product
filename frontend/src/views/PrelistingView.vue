@@ -29,9 +29,8 @@ const stores = ref<ListingStore[]>([]),
   selected = ref<string[]>([]);
 const bulkDialog = ref<HTMLDialogElement>();
 const bulkMode = ref<'delete' | 'restore'>('delete');
-const selectable = computed(
-  () => data.value?.items.filter((row) => row.status === 'cancelled').map((row) => row.id) || [],
-);
+const bulkIds = ref<string[]>([]);
+const selectable = computed(() => data.value?.items.map((row) => row.id) || []);
 const allSelected = computed(
   () => !!selectable.value.length && selectable.value.every((id) => selected.value.includes(id)),
 );
@@ -45,16 +44,17 @@ function togglePage() {
   selected.value = allSelected.value ? [] : [...selectable.value];
 }
 function confirmBulk() {
-  if (!selected.value.length) return;
+  if (busy.value || !selected.value.length) return;
+  bulkIds.value = [...selected.value];
   bulkMode.value = trash.value ? 'restore' : 'delete';
   bulkDialog.value?.showModal();
 }
 async function bulkAction() {
-  if (busy.value || !selected.value.length) return;
+  if (busy.value || !bulkIds.value.length) return;
   busy.value = true;
   error.value = '';
   try {
-    const result = await prelistingApi.bulkAction([...selected.value], bulkMode.value);
+    const result = await prelistingApi.bulkAction([...bulkIds.value], bulkMode.value);
     bulkDialog.value?.close();
     await load();
     message.value =
@@ -261,13 +261,13 @@ onBeforeUnmount(() => {
           type="checkbox"
           :checked="allSelected"
           :indeterminate="partlySelected"
-          :disabled="busy || !selectable.length"
+          :disabled="!selectable.length"
           @change="togglePage"
-        />全选本页已取消记录</label
+        />全选本页记录</label
       >
       <span class="muted"
         >已选 {{ selected.length }} 条{{
-          trash ? ' · 恢复后仍为已取消' : ' · 仅已取消记录可删除'
+          trash ? ' · 恢复后仍为已取消' : ' · 所有状态均可勾选；删除前需取消批次'
         }}</span
       >
       <button class="btn small" :disabled="busy || !selected.length" @click="confirmBulk">
@@ -295,7 +295,6 @@ onBeforeUnmount(() => {
                 type="checkbox"
                 :aria-label="`选择批次 ${row.id}`"
                 :checked="selected.includes(row.id)"
-                :disabled="busy || row.status !== 'cancelled'"
                 @change="toggle(row.id)"
               />
             </td>
@@ -342,8 +341,8 @@ onBeforeUnmount(() => {
     <p>
       {{
         bulkMode === 'delete'
-          ? `将所选 ${selected.length} 条记录移到回收站，从批次列表隐藏。商品资料和已分配编码会保留。`
-          : `恢复所选 ${selected.length} 条记录的列表显示；不会恢复上架任务。`
+          ? `将所选 ${bulkIds.length} 条记录移到回收站。仅已取消且符合删除条件的批次可删除；若包含不符合条件的记录，本次不会删除任何记录。商品资料和已分配编码会保留。`
+          : `恢复所选 ${bulkIds.length} 条记录的列表显示；不会恢复上架任务。`
       }}
     </p>
     <div class="actions">
