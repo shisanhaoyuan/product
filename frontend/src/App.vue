@@ -22,6 +22,7 @@ const navigation = [
   { path: '/products', name: '亚马逊商品库', icon: 'LayoutGrid' },
   { path: '/giga-products', name: '大建云仓', icon: 'Package' },
   { path: '/prelisting', name: '预上架', icon: 'Upload' },
+  { path: '/walmart-review', name: '审核进度', icon: 'ScanLine' },
   { path: '/listing-stores', name: '店铺管理', icon: 'Store' },
   { path: '/blacklist', name: '卖家黑名单', icon: 'ShieldCheck' },
   { path: '/review', name: '待复核', icon: 'CircleDashed' },

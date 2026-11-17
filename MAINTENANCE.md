@@ -112,3 +112,9 @@ python validation/frontend_state_check.py
 迁移20新增 `prelisting_batch_trash`，采用独立表保存软删除时间与操作者，不改批次原状态；SQLite/PostgreSQL 迁移清单包含该表。批量操作持写锁，先验证整组批次均已取消、无未拒绝的平台提交、无排队或运行的生成任务，再统一写入；任一项不符合则整组不改。恢复仅恢复列表可见性，不重新生成、提交或释放 SKU/EAN。备份恢复需保留回收站和原审计表。
 
 `listing_store_preparation.data_json.default_brand` 保存店铺默认品牌，按店铺和当前实际 Partner ID 匹配。旧客户端省略字段保留原值，明确空字符串清除默认值；修订号冲突拒绝保存。前端选店铺后带入默认品牌，临时覆盖仅影响新批次，已创建批次仍使用其快照品牌。
+
+## 沃尔玛审核进度维护
+
+`walmart_review.py` 按提交 rows_json 展开 SKU，窗口排序选每店铺／Partner／SKU 的最新结果，筛选和分页在数据库完成；SQLite 与 PostgreSQL 分别使用原生 JSON 函数。只投影公开结果，不暴露提交 payload 或凭证。预上架列表复用该投影：已提交隐藏、失败返回、部分提交保留未提交工作，不更改批次状态或 SKU/EAN。无新表，无迁移版本变化。
+
+审核页 GET 只读本地库；管理员 POST 查询复用原 Feed/Partner/SKU 校验及轮询租约，强制 `sync_inventory=False`。批量查询同一 attempt 只执行一次，不调用自动修复、Feed POST 或库存 PUT。平台查询失败原结果保持，前端15秒只读取本地记录。测试在独立库模拟接口，涵盖失败返回／重试移出、部分提交、多店隔离、历史记录及只读查询。

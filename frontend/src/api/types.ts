@@ -307,6 +307,8 @@ export interface BatchPage {
     deleted_at?: string | null;
     id: string;
     status: PrelistingBatch['status'];
+    review_failed_count: number;
+    unsubmitted_count: number;
     created_at: string;
     store: string;
     brand: string;

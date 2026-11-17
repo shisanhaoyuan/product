@@ -173,13 +173,14 @@ onBeforeUnmount(() => {
       <h1>{{ route.params.id ? '批次详情' : '预上架批次' }}</h1>
     </div>
     <div class="actions">
+      <RouterLink class="btn" to="/walmart-review">沃尔玛审核进度</RouterLink>
       <RouterLink class="btn" to="/giga-products">选择云仓商品</RouterLink>
       <RouterLink class="btn primary" to="/products">选择亚马逊商品</RouterLink>
     </div>
   </div>
   <p v-if="!route.params.id" class="notice notice-space">
     打开批次后填写刊登资料，按“校验上架资料 → 提交沃尔玛 →
-    查看处理结果”完成上架。正式提交仅限管理员。
+    查看处理结果”完成上架。提交后移至审核进度，失败时返回并标记“审核失败”。正式提交仅限管理员。
   </p>
   <div v-if="!route.params.id" class="batch-filters">
     <FilterSelect
@@ -190,6 +191,7 @@ onBeforeUnmount(() => {
         { value: 'draft', label: '上架准备中' },
         { value: 'confirmed', label: '已确认' },
         { value: 'cancelled', label: '已取消' },
+        { value: 'review_failed', label: '审核失败' },
       ]"
     />
     <FilterSelect
@@ -302,7 +304,12 @@ onBeforeUnmount(() => {
             <td>× {{ row.multiplier }}</td>
             <td>{{ row.total }} / {{ row.variant_count }}</td>
             <td>{{ row.ready_count }} / {{ row.total }}</td>
-            <td>{{ labels[row.status] }}</td>
+            <td>
+              <strong v-if="row.review_failed_count" style="color: #b84a49"
+                >审核失败 · {{ row.review_failed_count }} 个 SKU</strong
+              ><span v-else>{{ labels[row.status] }}</span
+              ><small v-if="row.unsubmitted_count"> · {{ row.unsubmitted_count }} 个尚未提交</small>
+            </td>
             <td>
               <RouterLink class="detail-link" :to="'/prelisting/' + row.id">检查批次 ↗</RouterLink>
             </td>

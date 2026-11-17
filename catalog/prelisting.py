@@ -478,7 +478,7 @@ def prelisting_routes(catalog):
 
     @router.get('/api/prelisting/batches')
     def batches(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
-                status:Literal['','draft','confirmed','cancelled']='',store_id:int=Query(0,ge=0),
+                status:Literal['','draft','confirmed','cancelled','review_failed']='',store_id:int=Query(0,ge=0),
                 q:str=Query('',max_length=200),trash:bool=False):
         with catalog.connect() as db:
             read_snapshot(db)
@@ -486,19 +486,32 @@ def prelisting_routes(catalog):
             brand_expr="CAST(b.preview_json AS jsonb)->>'brand'" if catalog.postgres else "json_extract(b.preview_json,'$.brand')"
             name_expr="CAST(b.preview_json AS jsonb)->'store'->>'name'" if catalog.postgres else "json_extract(b.preview_json,'$.store.name')"
             where=['t.batch_id IS NOT NULL' if trash else 't.batch_id IS NULL'];args=[]
-            if status:where.append('b.status=?');args.append(status)
+            from .walmart_review import queue_sql
+            prefix=queue_sql(catalog.postgres)
+            failed="(SELECT count(*) FROM ranked r WHERE r.batch_id=b.id AND r.position=1 AND r.status IN ('failed','rejected','unpublished'))"
+            if catalog.postgres:
+                doc_rows="jsonb_array_elements(CAST(d.rows_json AS jsonb)) AS v(value)"
+                sku="v.value->>'platform_sku'"
+            else:
+                doc_rows='json_each(d.rows_json) AS v'
+                sku="json_extract(v.value,'$.platform_sku')"
+            pending=f"(SELECT count(*) FROM walmart_listing_documents d CROSS JOIN {doc_rows} WHERE d.batch_id=b.id AND NOT EXISTS (SELECT 1 FROM expanded e WHERE e.batch_id=b.id AND e.platform_sku={sku}))"
+            if not trash:
+                where.append(f"(NOT EXISTS (SELECT 1 FROM walmart_listing_attempts a WHERE a.batch_id=b.id) OR {failed}>0 OR {pending}>0)")
+            if status=='review_failed':where.append(f'{failed}>0')
+            elif status:where.append('b.status=?');args.append(status)
             if store_id:where.append(f'{store_expr}=?');args.append(str(store_id))
             if q.strip():
                 where.append(f'(lower(b.id) LIKE ? OR lower({brand_expr}) LIKE ? OR lower({name_expr}) LIKE ?)')
                 args.extend(['%'+q.strip().lower()+'%']*3)
             relation=' FROM prelisting_batches b LEFT JOIN prelisting_batch_trash t ON b.id=t.batch_id WHERE '+' AND '.join(where)
-            total=db.execute('SELECT count(*)'+relation,args).fetchone()[0]
-            rows = db.execute('SELECT b.*,t.deleted_at'+relation+' ORDER BY b.created_at DESC,b.id LIMIT ? OFFSET ?', (*args,page_size,(page-1)*page_size)).fetchall()
+            total=db.execute(prefix+'SELECT count(*)'+relation,args).fetchone()[0]
+            rows = db.execute(prefix+f'SELECT b.*,t.deleted_at,{failed} AS review_failed_count,{pending} AS unsubmitted_count'+relation+' ORDER BY b.created_at DESC,b.id LIMIT ? OFFSET ?', (*args,page_size,(page-1)*page_size)).fetchall()
             items=[]
             for r in rows:
                 p=json.loads(r['preview_json'])
                 items.append(dict(id=r['id'],status=r['status'],created_at=r['created_at'],deleted_at=r['deleted_at'],store=p['store']['name'],
-                                  brand=p['brand'],multiplier=p['multiplier'],total=p['total'],ready_count=p['ready_count'],variant_count=p['variant_count']))
+                                  brand=p['brand'],multiplier=p['multiplier'],total=p['total'],ready_count=p['ready_count'],variant_count=p['variant_count'],review_failed_count=r['review_failed_count'],unsubmitted_count=r['unsubmitted_count']))
             return dict(items=items,total=total,page=page,page_size=page_size)
 
     @router.post('/api/prelisting/batches/bulk-action')

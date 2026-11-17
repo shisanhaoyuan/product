@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch, onBeforeUnmount } from 'vue';
-import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router';
+import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute } from 'vue-router';
 import {
   publishingApi,
   type ListingDocument,
@@ -23,6 +23,7 @@ import AppIcon from './AppIcon.vue';
 import ListingPreparationSettings from './ListingPreparationSettings.vue';
 import { preparationApi } from '../api/preparation';
 const props = defineProps<{ bid: string }>();
+const route = useRoute();
 const { auth } = useAuth();
 const canEdit = computed(
   () => !auth.enabled || ['admin', 'editor'].includes(auth.user?.role || ''),
@@ -588,6 +589,13 @@ onMounted(async () => {
   }, 1000);
   await run(async () => {
     await load();
+    if (
+      typeof route.query.sku === 'string' &&
+      doc.value?.rows.some((r) => r.platform_sku === route.query.sku)
+    ) {
+      activeSku.value = route.query.sku;
+      if (route.query.view === 'results') tab.value = 'results';
+    }
     await pollGeneration();
     if (doc.value && canEdit.value) {
       if (!generating.value) {

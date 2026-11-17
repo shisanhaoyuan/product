@@ -76,6 +76,8 @@ def create_app(database=None):
     from .walmart_publishing import publishing_routes, public_media_routes
     app.state.walmart_publisher=WalmartPublishingClient()
     app.include_router(publishing_routes(catalog))
+    from .walmart_review import review_routes
+    app.include_router(review_routes(catalog))
     app.include_router(public_media_routes(catalog,storage))
     from .listing_generation_jobs import generation_routes
     app.include_router(generation_routes(catalog,app.state.walmart_publisher))
