@@ -20,6 +20,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .listing_content import normalize as normalize_content
+from .product_store_history import histories
 from . import platform_sku
 from .listing_titles import branded_title, source_brands
 from .blacklist import active_entries, matches
@@ -241,7 +243,9 @@ def public_document(db, bid):
     basis = json.loads(row['basis_json'])
     # Older documents lack this hint. Resolve only their own source listing;
     # the browser still checks against the current store's actual taxonomy.
+    store_history=histories(db,[i['listing_id'] for i in basis['items']])
     for item in basis['items']:
+        item['store_history']=store_history[item['listing_id']]
         if 'category' not in item or 'category_hints' not in item:
             source = db.execute('SELECT data_json FROM current_listings WHERE id=?', (item['listing_id'],)).fetchone()
             data = json.loads(source[0]) if source else {}
@@ -309,6 +313,7 @@ def default_rows(preview):
                            mainImageUrl=images[0] if images else '')
             if len(images) > 1:
                 visible['productSecondaryImageURL'] = images[1:]
+            normalize_content(visible)
             result.append(dict(platform_sku=v['platform_sku'], listing_id=item['listing_id'],source_sku=v['sku'],
                 product_type='',fulfillment_center_id='', identification=dict(mode='identifier',type=code_type,value=code,submission_id=''),
                 visible=visible,orderable=orderable,extra={}))
@@ -456,7 +461,7 @@ def check_rows(db, doc, session, binding_row, skus=None):
                 errors.append(dict(path='visible.mainImageUrl',message=str(exc)))
         results[sku] = dict(valid=not errors,errors=errors)
     from .listing_prerequisites import resource_digest
-    return dict(title_policy='brand_prefix_v1',feedback_digest=fingerprint(latest_results(db,doc['batch_id'])),resources_digest=resource_digest(db,binding_row),id=uuid.uuid4().hex,revision=doc['revision'],at=int(time.time()),binding_revision=binding_row['revision'],
+    return dict(content_policy='images8_copy_sections_v1',title_policy='brand_prefix_v1',feedback_digest=fingerprint(latest_results(db,doc['batch_id'])),resources_digest=resource_digest(db,binding_row),id=uuid.uuid4().hex,revision=doc['revision'],at=int(time.time()),binding_revision=binding_row['revision'],
                 partner_id=binding_row['partner_id'],rows=results,schema_digests=schema_digests,payloads=payloads,
                 valid_count=sum(r['valid'] for r in results.values()))
 
@@ -468,11 +473,19 @@ def normalize_titles(db, rows, basis, latest):
             continue
         source=db.execute('SELECT data_json FROM current_listings WHERE id=?',(row['listing_id'],)).fetchone()
         brands=source_brands(json.loads(source[0])) if source else []
+        old_content=copy.deepcopy(row['visible'])
+        from .listing_templates import replace_brand
+        for field in ('shortDescription','longDescription','keyFeatures'):
+            if field in row['visible']:
+                row['visible'][field]=replace_brand(row['visible'][field],brands,basis['brand'])
+        normalize_content(row['visible'])
         previous=row['visible'].get('productName','')
         title=branded_title(previous,basis['brand'],brands)
         if title!=previous:
             row['visible']['productName']=title
-            changes.append(dict(platform_sku=row['platform_sku'],before=previous,after=title))
+        if row['visible']!=old_content:
+            changes.append(dict(platform_sku=row['platform_sku'],before=previous,after=title,
+                content_before=old_content,content_after=copy.deepcopy(row['visible'])))
     return changes
 
 
@@ -485,7 +498,7 @@ def normalize_document_titles(db, doc):
         db.execute('UPDATE walmart_listing_documents SET rows_json=?,revision=revision+1,validation_json=?,updated_at=? WHERE batch_id=?',
             (encoded(rows),'{}',now(),doc['batch_id']))
         db.execute('INSERT INTO walmart_listing_events VALUES(?,?,?,?,?,?)',
-            (uuid.uuid4().hex,doc['batch_id'],None,'title_brand_rule',now(),encoded({'rule':'target_brand_prefix','changes':changes})))
+            (uuid.uuid4().hex,doc['batch_id'],None,'title_brand_rule',now(),encoded({'rule':'target_brand_and_listing_content','changes':changes})))
     return document(db,doc['batch_id'])
 
 

@@ -282,7 +282,7 @@ def run_job(catalog, publisher, jid, ai):
                         visual,vision=image_evidence(catalog,updated,variant,ai,schema)
                         entry['vision']=vision
                         if visual:
-                            facts['visual_evidence']=visual
+                            facts['visual_evidence']=[v for v in visual if v.get('attribute')!='listingImageRole']
                     except ListingAIError as exc:
                         entry['vision']=dict(state='failed',message=str(exc),images=[])
                     updated,issues=fill_row(updated,schema,facts,ai,provenance)

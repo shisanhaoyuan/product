@@ -317,6 +317,8 @@ class Catalog:
                         JOIN products p ON p.id=l.product_id WHERE p.asin IN ({placeholders})
                         GROUP BY p.asin,l.store ORDER BY l.store""", asins):
                     coverage.setdefault(row['asin'], []).append(dict(store=row['store'],count=row['count']))
+            from .product_store_history import histories
+            store_history=histories(db,[r['id'] for r in rows])
             entries = active_entries(db)
             items=[]
             for r in rows:
@@ -331,7 +333,7 @@ class Catalog:
                     giga_summary=giga_summary(d.get('source_facts')) if d['source']=='GigaB2B' else None,
                     variant_count=len(d['variants']),prices=prices,currency=(d.get('source_facts',{}).get('currency') or '') if d['source']=='GigaB2B' else 'USD',issue_count=0 if review.get('valid') and review.get('complete') else len(d['issues']),category=r['category'],seller_blacklist=matches(d, entries),
                     listing_count=sum(s['count'] for s in coverage.get(d['asin'], [])) or 1,
-                    listing_stores=coverage.get(d['asin'], [dict(store=d['store'],count=1)])))
+                    store_history=store_history[r['id']],listing_stores=coverage.get(d['asin'], [dict(store=d['store'],count=1)])))
             return dict(items=items,total=total,page=page,page_size=page_size)
 
     def get(self, listing_id):
@@ -340,7 +342,8 @@ class Catalog:
             r=db.execute(f"SELECT data_json,{self.category_sql} AS category FROM current_listings WHERE id=?",(listing_id,)).fetchone()
             if not r:return None
             data = json.loads(r[0])
-            return data | dict(id=listing_id,category=r['category'],
+            from .product_store_history import histories
+            return data | dict(id=listing_id,category=r['category'],store_history=histories(db,[listing_id])[listing_id],
                 giga_summary=giga_summary(data.get('source_facts')) if data['source']=='GigaB2B' else None,
                 seller_blacklist=matches(json.loads(r[0]), active_entries(db)),history=[dict(h) for h in db.execute(
                 "SELECT id,observed_at,evidence_kind,digest FROM snapshots WHERE listing_id=? ORDER BY observed_at DESC",(listing_id,))])

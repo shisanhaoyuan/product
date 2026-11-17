@@ -262,9 +262,7 @@ def source_copy(key, schema, facts, brand):
     elif key == 'shortDescription':
         value = clean(original.get('description', ''))
         if not value:
-            features = list(dict.fromkeys(clean(v) for v in original.get('features', []) if isinstance(v,str)))
-            features = [v for v in features if v]
-            parts = ['Features:\n'+'\n'.join(f'{i}. {v}' for i,v in enumerate(features,1))] if features else []
+            parts = []  # Features already have their own field; never duplicate them here.
             attrs = facts.get('content.attributes') or facts.get('detail.attributes') or {}
             if isinstance(attrs,dict):
                 specifications = list(dict.fromkeys(clean(f'{k}: {v}') for k,v in attrs.items()
@@ -524,6 +522,15 @@ def fill_row(row, schema, facts, ai, provenance):
                     reason='user_authorized_rule: unavailable parameter default 22 inch；来源缺失且 AI 未能补齐的长度兜底，非实测值')
     # The explicit brand-prefix rule also covers titles filled by this pass.
     prepare_copy(row,facts,provenance)
+    from .listing_content import normalize, source_specifications
+    before_content=copy.deepcopy(row['visible'])
+    source_specifications(row['visible'],facts)
+    normalize(row['visible'])
+    for field in ('shortDescription','longDescription','keyFeatures','mainImageUrl','productSecondaryImageURL'):
+        if row['visible'].get(field)!=before_content.get(field):
+            provenance['visible.'+field]=dict(kind='user_rule',value=row['visible'].get(field),previous_value=before_content.get(field),
+                refs=[r for r in ('content.attributes','detail.attributes') if r in facts] if field=='shortDescription' else [],
+                reason='用户规则：同 SKU 已核验规格补充，描述与卖点逐句去重分区编号，刊登最多8张图')
     # A later conditional pass may have filled a previously missing field.
     problems = [p for p in problems if not p['path'] or
                 empty(row.get(p['path'].split('.')[0], {}).get(p['path'].split('.')[-1]))]

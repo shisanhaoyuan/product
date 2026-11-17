@@ -41,9 +41,11 @@ def test_real_sofa_schema_defaults_fallback_copy_and_untouched_business_fields()
     assert visible['smallPartsWarnings']==['0 - No warning applicable']
     assert visible['netContent']=={'productNetContentUnit':'Each','productNetContentMeasure':1}
     assert visible['assembledProductHeight']==visible['seat_depth']=={'measure':22,'unit':'in'}
-    assert 'Features:' in visible['shortDescription'] and 'Product Information:' in visible['shortDescription']
-    assert visible['shortDescription'].count(features[0])==1
-    assert audit['visible.shortDescription']['kind']=='source'
+    assert 'Main Color: Black' in visible['shortDescription'] and 'Main Material: Fabric' in visible['shortDescription']
+    assert all(feature not in visible['shortDescription'] for feature in visible['keyFeatures'])
+    assert features[0] not in visible['shortDescription']
+    assert audit['visible.shortDescription']['kind']=='user_rule'
+    assert 'previous_value' in audit['visible.shortDescription']
     assert audit['visible.assembledProductHeight']['kind']=='user_rule'
     assert audit['visible.frameMaterial']['previous_value']==['Old class frame material']
     assert 'frameMaterial' not in visible and 'recommendedLocations' not in visible
@@ -143,9 +145,10 @@ def test_missing_copy_is_sku_scoped_and_insufficient_facts_are_not_duplicated():
     facts={'content.copy':{'features':['Blue fabric chair.']}}
     one,_=fill_row(row,spec(),facts,Offline(),{})
     two,_=fill_row(other,spec(),{'content.copy':{'features':['Red wood chair.']}},Offline(),{})
-    assert 'Red' not in one['visible']['shortDescription']
-    assert 'Blue' not in two['visible']['shortDescription']
-    assert one['visible']['shortDescription'].count('Blue fabric chair.')==1
+    assert 'Red' not in one['visible'].get('shortDescription','')
+    assert 'Blue' not in two['visible'].get('shortDescription','')
+    assert not one['visible'].get('shortDescription')
+    assert one['visible']['keyFeatures']==['Blue fabric chair.']
     shape=spec();sections(shape,PT)['visible']['properties']['shortDescription']['minLength']=500
     incomplete,_=fill_row(row,shape,facts,Offline(),{})
     assert 'shortDescription' not in incomplete['visible']

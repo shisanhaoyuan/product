@@ -19,6 +19,9 @@ import { errorMessage, plain, money } from '../utils/display';
 import { applyListingDefaults } from '../utils/listingDefaults';
 import ListingSchemaField from './ListingSchemaField.vue';
 import ProductImage from './ProductImage.vue';
+import ListingProductDetails from './ListingProductDetails.vue';
+import ProductStoreHistory from './ProductStoreHistory.vue';
+const detailRow = ref<ListingRow>();
 import AppIcon from './AppIcon.vue';
 import ListingPreparationSettings from './ListingPreparationSettings.vue';
 import { preparationApi } from '../api/preparation';
@@ -67,7 +70,7 @@ const photos = computed(() =>
 );
 function setPhotos(urls: string[]) {
   update('visible', 'mainImageUrl', urls[0]);
-  update('visible', 'productSecondaryImageURL', urls.slice(1));
+  update('visible', 'productSecondaryImageURL', [...new Set(urls)].slice(1, 8));
 }
 function enlarge(url: string) {
   zoomUrl.value = url;
@@ -131,6 +134,7 @@ const validationCurrent = computed(
     !dirty.value &&
     doc.value.validation.revision === doc.value.revision,
 );
+const reusedTemplate = computed(() => doc.value?.basis.items.some((item) => item.reuse_template));
 const preparationLabels: Record<string, string> = {
   collecting: '补全来源',
   generating: '生成资料',
@@ -340,7 +344,7 @@ async function prepare() {
     }
   });
   await pollGeneration();
-  if (aiReady.value && !generation.value) await generate();
+  if (aiReady.value && !generation.value && !reusedTemplate.value) await generate();
 }
 async function loadMetadata() {
   const values = await Promise.allSettled([
@@ -418,6 +422,11 @@ function fieldIssues(key: string, section = 'Visible') {
 }
 function update(section: 'visible' | 'orderable', key: string, value: unknown) {
   if (!current.value) return;
+  if (section === 'visible' && key === 'productSecondaryImageURL' && Array.isArray(value)) {
+    value = [...new Set(value)]
+      .filter((u) => u !== current.value?.visible.mainImageUrl)
+      .slice(0, current.value.visible.mainImageUrl ? 7 : 8);
+  }
   if (value === undefined || value === '') delete current.value[section][key];
   else current.value[section][key] = value;
 }
@@ -567,6 +576,15 @@ async function upload(e: Event) {
   await run(async () => {
     const target = current.value;
     if (!target) return;
+    const count = [
+      target.visible.mainImageUrl,
+      ...((target.visible.productSecondaryImageURL as string[]) || []),
+    ].filter(Boolean).length;
+    if (files.length > 8 - count) {
+      throw new Error(
+        `刊登图片最多8张，当前还可添加${Math.max(0, 8 - count)}张，请减少选择或先删除图片。`,
+      );
+    }
     for (const file of files) {
       const { url } = await api.uploadImage(target.listing_id, undefined, file);
       if (!target.visible.mainImageUrl) target.visible.mainImageUrl = url;
@@ -593,6 +611,7 @@ onMounted(async () => {
     await pollGeneration();
     if (doc.value && canEdit.value) {
       if (!generating.value) {
+        install(await publishingApi.prepare(props.bid));
         if (
           doc.value.rows.some(
             (row) => row.identification.mode === 'identifier' && !row.identification.value.trim(),
@@ -610,7 +629,15 @@ onMounted(async () => {
     )
   )
     void pollResults();
-  if (live && doc.value && canEdit.value && aiReady.value && !generation.value) void generate();
+  if (
+    live &&
+    doc.value &&
+    canEdit.value &&
+    aiReady.value &&
+    !generation.value &&
+    !reusedTemplate.value
+  )
+    void generate();
 });
 async function saveBeforeNavigation() {
   try {
@@ -638,6 +665,9 @@ onBeforeUnmount(() => {
         <p class="eyebrow">WALMART US</p>
         <h2>商品刊登资料</h2>
         <p>系统自动整理同 SKU 来源资料；检查生成结果，校验后提交到本批次指定店铺。</p>
+        <p v-if="reusedTemplate" class="muted">
+          已复用历史模板并替换目标品牌；本批次资料独立保存，修改不会影响原店铺。请核对本店发货仓与编码后重新校验。
+        </p>
       </div>
       <span v-if="doc" class="listing-save-state">{{
         saving ? '正在保存…' : dirty ? '有未保存修改' : '资料已保存'
@@ -879,6 +909,11 @@ onBeforeUnmount(() => {
             <ProductImage
               :src="String(row.visible.mainImageUrl || '')"
               image-class="listing-sku-image"
+              role="button"
+              tabindex="0"
+              aria-label="查看商品信息详情"
+              @click.stop="detailRow = row"
+              @keydown.enter.stop.prevent="detailRow = row"
             />
             <span
               ><strong>{{ row.source_sku }}</strong
@@ -908,6 +943,7 @@ onBeforeUnmount(() => {
           <p v-if="!rowsToShow.length" class="muted">没有符合条件的商品</p>
         </aside>
         <main v-if="current" class="listing-form-main">
+          <ProductStoreHistory :entries="source?.store_history" />
           <div class="listing-product-heading">
             <div>
               <span class="muted"
@@ -1184,7 +1220,9 @@ onBeforeUnmount(() => {
             <div class="listing-subheading"><h3>图片与文案</h3></div>
             <div class="listing-subheading">
               <h4>商品图片</h4>
-              <p>第一张为主图，可点击放大。请使用真实商品图片。</p>
+              <p>
+                {{ photos.length }} / 8 张 · 第一张为主图，可点击放大。优先白底商品图、尺寸参数图。
+              </p>
               <label v-if="!locked" class="btn small"
                 >本地添加图片<input
                   type="file"
@@ -1569,6 +1607,12 @@ onBeforeUnmount(() => {
         </div>
       </dialog>
     </template>
+    <ListingProductDetails
+      v-if="detailRow"
+      :listing-id="detailRow.listing_id"
+      :row="detailRow"
+      @close="detailRow = undefined"
+    />
     <ListingPreparationSettings
       v-if="codePoolOpen"
       @imported="importedCodes += $event"

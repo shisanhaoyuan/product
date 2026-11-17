@@ -3,6 +3,9 @@ import type { PrelistingPreview } from '../api/types';
 import { money, plain } from '../utils/display';
 import StatusBadge from './StatusBadge.vue';
 import ProductImage from './ProductImage.vue';
+import ListingProductDetails from './ListingProductDetails.vue';
+import { ref } from 'vue';
+const detailId = ref('');
 import AttributeValue from './AttributeValue.vue';
 defineProps<{ preview: PrelistingPreview }>();
 </script>
@@ -39,8 +42,14 @@ defineProps<{ preview: PrelistingPreview }>();
     </summary>
     <div class="plan-item-body">
       <p class="subtitle">
-        来源店铺 {{ item.source_store }} · 模板 {{ item.template }} · 历史记录
-        {{ item.observed_at }} · 目标 MSRP {{ money(item.msrp) }}
+        来源店铺 {{ item.source_store }} · 模板 {{ item.template }} · 历史记录 {{ item.observed_at
+        }}<template v-if="!item.reuse_template"> · 建议 MSRP {{ money(item.msrp) }}</template>
+      </p>
+      <p v-if="item.reuse_template" class="notice">
+        复用 {{ item.reuse_template.store_name }} · {{ item.reuse_template.brand }} 的已填写模板
+        （{{ item.reuse_template.batch_id.slice(0, 8) }}，修订
+        {{ item.reuse_template.revision }}）。 品牌替换为 {{ preview.brand }}，MSRP
+        沿用模板，售价按本次倍率计算；资料将独立保存到新批次。
       </p>
       <p v-for="issue in item.errors" :key="issue" class="seller-risk-label">{{ issue }}</p>
       <p v-for="warning in item.warnings" :key="warning" class="subtitle">{{ warning }}</p>
@@ -117,6 +126,11 @@ defineProps<{ preview: PrelistingPreview }>();
           </p>
           <div class="variant-image-grid preview-variant-images">
             <ProductImage
+              role="button"
+              tabindex="0"
+              aria-label="查看商品信息详情"
+              @click="detailId = item.listing_id"
+              @keydown.enter="detailId = item.listing_id"
               v-for="(url, i) in v.content.images"
               :key="url + i"
               :src="url"
@@ -134,6 +148,11 @@ defineProps<{ preview: PrelistingPreview }>();
             lb
           </p>
           <ProductImage
+            role="button"
+            tabindex="0"
+            aria-label="查看商品信息详情"
+            @click="detailId = item.listing_id"
+            @keydown.enter="detailId = item.listing_id"
             v-if="v.content.swatch_image"
             :src="v.content.swatch_image"
             image-class="table-thumb"
@@ -155,4 +174,5 @@ defineProps<{ preview: PrelistingPreview }>();
       </details>
     </div>
   </details>
+  <ListingProductDetails v-if="detailId" :listing-id="detailId" @close="detailId = ''" />
 </template>

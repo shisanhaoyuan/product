@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ProductStoreHistory from './ProductStoreHistory.vue';
 import GigaQuickFacts from './GigaQuickFacts.vue';
 import type { ProductSummary } from '../api/types';
 import { priceRange, productStatus } from '../utils/display';
@@ -42,6 +43,7 @@ defineProps<{ product: ProductSummary }>();
       </p>
       <GigaQuickFacts v-if="product.source === 'GigaB2B'" :summary="product.giga_summary" />
       <ListingCoverage v-if="product.source !== 'GigaB2B'" :product="product" />
+      <ProductStoreHistory v-if="product.store_history?.length" :entries="product.store_history" />
       <div class="card-meta">
         <template v-if="product.source !== 'GigaB2B'"
           ><span class="meta-label">ASIN</span

@@ -2586,6 +2586,43 @@ input[type='checkbox'] {
 .composer-form input::placeholder {
   color: #9aa6b5;
 }
+.template-reuse {
+  margin-top: 24px;
+  padding: 18px;
+  border: 1px solid #dce4ed;
+  border-radius: 12px;
+  background: #f7f9fc;
+}
+.template-reuse h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+.template-reuse p {
+  font-size: 13px;
+  line-height: 1.7;
+}
+.template-reuse-item {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+.template-reuse-item > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 550;
+}
+.template-reuse-item select {
+  width: 100%;
+  min-width: 0;
+  height: 44px;
+  padding: 0 12px;
+  border: 1px solid #dce4ed;
+  border-radius: 9px;
+  background: #fff;
+  color: #334e6c;
+  font-size: 13px;
+}
 .composer-actions {
   display: flex;
   justify-content: space-between;

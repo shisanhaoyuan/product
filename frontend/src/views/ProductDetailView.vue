@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ProductStoreHistory from '../components/ProductStoreHistory.vue';
 import { computed, nextTick, onBeforeUnmount, provide, ref, watch } from 'vue';
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router';
 import { catalogApi } from '../api/client';
@@ -312,6 +313,7 @@ onBeforeUnmount(() => {
     {{ error }} <button class="btn small" @click="load">重试</button>
   </div>
   <template v-else-if="product">
+    <ProductStoreHistory :entries="product.store_history" />
     <div class="page-heading detail-heading">
       <div>
         <p class="eyebrow">PRODUCT / {{ product.asin }}</p>

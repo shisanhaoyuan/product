@@ -6,6 +6,7 @@ import type {
   PlanInput,
   PrelistingPreview as Preview,
   PrelistingSelection,
+  TemplateOptions,
 } from '../api/types';
 import { errorMessage } from '../utils/display';
 import PrelistingPreview from './PrelistingPreview.vue';
@@ -20,12 +21,17 @@ const stores = ref<ListingStore[]>([]),
 const busy = ref(false),
   error = ref(''),
   preview = ref<Preview>();
+const templates = ref<TemplateOptions['items']>([]);
+const selectedTemplates = ref<Record<string, string>>({});
+const templatesLoading = ref(false);
+let templateController: AbortController | undefined;
 let submitted: PlanInput | undefined;
 let requestKey = '';
 let controller: AbortController | undefined;
 const valid = computed(
   () =>
     !!storeId.value &&
+    !templatesLoading.value &&
     !!brand.value.trim() &&
     Number(multiplier.value) > 0 &&
     Number(multiplier.value) <= 100,
@@ -34,6 +40,7 @@ watch(
   storeId,
   (value) => {
     brand.value = stores.value.find((store) => String(store.id) === value)?.default_brand || '';
+    void loadTemplates();
   },
   { flush: 'sync' },
 );
@@ -46,6 +53,49 @@ watch(
   },
   { flush: 'sync' },
 );
+watch(
+  selectedTemplates,
+  () => {
+    if (!multiplier.value) {
+      const chosen = templates.value.flatMap((item) =>
+        item.options.filter(
+          (option) => option.batch_id === selectedTemplates.value[item.listing_id],
+        ),
+      );
+      if (chosen[0]) multiplier.value = chosen[0].multiplier;
+    }
+    preview.value = undefined;
+    submitted = undefined;
+    requestKey = '';
+  },
+  { deep: true },
+);
+async function loadTemplates() {
+  templateController?.abort();
+  templates.value = [];
+  selectedTemplates.value = {};
+  if (!storeId.value) return;
+  const current = new AbortController();
+  templateController = current;
+  templatesLoading.value = true;
+  error.value = '';
+  try {
+    const result = await prelistingApi.templates(
+      {
+        ...props.selection,
+        store_id: Number(storeId.value),
+        brand: brand.value || '待设置',
+        multiplier: '1',
+      },
+      current.signal,
+    );
+    if (!current.signal.aborted) templates.value = result.items;
+  } catch (e) {
+    if (!current.signal.aborted) error.value = errorMessage(e);
+  } finally {
+    if (!current.signal.aborted) templatesLoading.value = false;
+  }
+}
 onMounted(async () => {
   dialog.value?.showModal();
   try {
@@ -54,7 +104,10 @@ onMounted(async () => {
     error.value = errorMessage(e);
   }
 });
-onBeforeUnmount(() => controller?.abort());
+onBeforeUnmount(() => {
+  controller?.abort();
+  templateController?.abort();
+});
 async function calculate() {
   busy.value = true;
   error.value = '';
@@ -66,6 +119,9 @@ async function calculate() {
     store_id: Number(storeId.value),
     brand: brand.value.trim(),
     multiplier: multiplier.value,
+    template_batches: Object.fromEntries(
+      Object.entries(selectedTemplates.value).filter(([, value]) => !!value),
+    ),
   };
   try {
     preview.value = await prelistingApi.preview(input, controller.signal);
@@ -154,6 +210,35 @@ async function create() {
             :disabled="busy"
         /></label>
       </form>
+      <section v-if="storeId" class="template-reuse" aria-label="复用已填写模板">
+        <h3>复用已填写模板</h3>
+        <p class="muted">
+          保留类目、属性、图片和文案，自动替换本店品牌。倍率为空时沿用所选模板；售价按本次倍率计算，平台
+          SKU、编码与发货仓按目标店铺处理，提交前需重新校验。
+        </p>
+        <p v-if="templatesLoading" role="status">正在查找该商品的历史模板…</p>
+        <p v-else-if="!templates.some((item) => item.options.length)" class="muted">
+          所选商品暂无覆盖对应子 SKU 的已填写模板，可按原流程新建。
+        </p>
+        <label
+          v-for="item in templates.filter((item) => item.options.length)"
+          :key="item.listing_id"
+          class="template-reuse-item"
+        >
+          <span :title="item.title">{{ item.title }}</span>
+          <select
+            v-model="selectedTemplates[item.listing_id]"
+            :disabled="busy"
+            :aria-label="item.title + '的刊登模板'"
+          >
+            <option :value="undefined">不复用，重新填写</option>
+            <option v-for="option in item.options" :key="option.batch_id" :value="option.batch_id">
+              {{ option.store_name }} · {{ option.brand }} · {{ option.sku_count }} 个 SKU ·
+              {{ option.updated_at.slice(0, 10) }} · {{ option.batch_id.slice(0, 8) }}
+            </option>
+          </select>
+        </label>
+      </section>
       <div class="composer-actions">
         <p class="composer-hint">
           {{ source === 'GigaB2B' ? '来源普通单价＋物流费（含打包）' : '基准价格' }} × 本次倍率<br />

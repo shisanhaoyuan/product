@@ -135,6 +135,7 @@ class PlanInput(StrictInput):
     store_id: int = Field(gt=0)
     brand: str = Field(min_length=1, max_length=100)
     multiplier: Decimal = Field(gt=0, le=100, max_digits=8, decimal_places=4)
+    template_batches: dict[str, str] = Field(default_factory=dict, max_length=500)
 
     @field_validator('brand')
     @classmethod
@@ -145,6 +146,8 @@ class PlanInput(StrictInput):
 
     @model_validator(mode='after')
     def selection(self):
+        if any(not k or len(k)>100 or not v or len(v)>100 for k,v in self.template_batches.items()):
+            raise ValueError('请选择有效的商品模板')
         if (self.listing_ids is None) == (self.filters is None):
             raise ValueError('请选择商品 ID 列表或筛选条件之一')
         if self.listing_ids is not None and len(set(self.listing_ids)) != len(self.listing_ids):
@@ -230,14 +233,7 @@ def planned_price(row, check, multiplier, variant):
         return dict(base=None, landed=None, original=None, price=None, error=str(exc))
 
 
-def build_preview(catalog, db, data, exclude_batch=None):
-    from .listing_prerequisites import pool_lookup
-    has_pool = bool(db.execute('SELECT 1 FROM listing_real_identifiers LIMIT 1').fetchone())
-    store = db.execute('SELECT * FROM listing_stores WHERE id=? AND active=1', (data.store_id,)).fetchone()
-    if not store:
-        raise HTTPException(409, '目标店铺不存在或已停用')
-    if not store['sku_code']:
-        raise HTTPException(409, '请先在店铺管理中设置该店铺唯一的两位 SKU 编码')
+def selected_rows(catalog, db, data):
     if data.listing_ids is not None:
         placeholders = ','.join('?' for _ in data.listing_ids)
         rows = db.execute(f'SELECT * FROM current_listings AS listings WHERE id IN ({placeholders}) ORDER BY uploaded_at DESC,id', data.listing_ids).fetchall()
@@ -248,6 +244,23 @@ def build_preview(catalog, db, data, exclude_batch=None):
         rows = db.execute(f'SELECT * FROM ({query}) AS listings ORDER BY uploaded_at DESC,id LIMIT 501', args).fetchall()
     if not rows or len(rows) > 500:
         raise HTTPException(422, '每批请选择 1–500 个商品；请缩小筛选范围')
+    if data.variant_skus is not None:
+        for row in rows:
+            children=json.loads(row['data_json'])['variants']
+            if not set(data.variant_skus[row['id']]).issubset({v['sku'] for v in children}):
+                raise HTTPException(409, '所选子 SKU 不属于该商品或已不存在，请刷新后重新选择')
+    return rows
+
+
+def build_preview(catalog, db, data, exclude_batch=None):
+    from .listing_prerequisites import pool_lookup
+    has_pool = bool(db.execute('SELECT 1 FROM listing_real_identifiers LIMIT 1').fetchone())
+    store = db.execute('SELECT * FROM listing_stores WHERE id=? AND active=1', (data.store_id,)).fetchone()
+    if not store:
+        raise HTTPException(409, '目标店铺不存在或已停用')
+    if not store['sku_code']:
+        raise HTTPException(409, '请先在店铺管理中设置该店铺唯一的两位 SKU 编码')
+    rows = selected_rows(catalog, db, data)
     entries = active_entries(db)
     items, seen, seen_variants, conflict = [], set(), set(), False
     for row in rows:
@@ -314,6 +327,8 @@ def build_preview(catalog, db, data, exclude_batch=None):
                   price_rule=('giga_regular_landed_v1' if all(i['source'] == 'GigaB2B' for i in items)
                               else 'source_specific_v1' if any(i['source'] == 'GigaB2B' for i in items)
                               else 'verified_higher_basis_v1'), sku_rule=platform_sku.RULE)
+    from .listing_templates import annotate_preview
+    annotate_preview(db, data, result, exclude_batch)
     # Allocation occurs only on creation; its persisted value is verified separately on confirmation.
     result['preview_hash'] = preview_fingerprint(result)
     return result, rows
@@ -438,6 +453,13 @@ def prelisting_routes(catalog):
             read_snapshot(db)
             return build_preview(catalog, db, data)[0]
 
+    @router.post('/api/prelisting/templates')
+    def templates(data: PlanInput):
+        from .listing_templates import template_options
+        with catalog.connect() as db:
+            read_snapshot(db)
+            return template_options(db, selected_rows(catalog, db, data), data)
+
     @router.post('/api/prelisting/batches', status_code=201)
     def create(data: CreateInput, request: Request, background_tasks: BackgroundTasks):
         request_hash = fingerprint(data.model_dump(mode='json'))
@@ -466,14 +488,20 @@ def prelisting_routes(catalog):
             settings = dict(listing_ids=[r['id'] for r in rows], store_id=data.store_id, brand=data.brand, multiplier=str(data.multiplier))
             if data.variant_skus is not None:
                 settings['variant_skus'] = data.variant_skus
+            if data.template_batches:
+                settings['template_batches'] = data.template_batches
             db.execute('INSERT INTO prelisting_batches VALUES(?,?,?,?,?,?,?,?,?)',
                        (bid, str(data.request_key), request_hash, 'draft', now, now, actor(request), encoded(settings), encoded(result)))
             for row, item in zip(rows, result['items']):
                 db.execute('INSERT INTO prelisting_items VALUES(?,?,?,?)', (bid,row['id'],row['digest'],row['data_json']))
                 db.execute('INSERT INTO prelisting_claims VALUES(?,?,?,?)', (seller_key(item['source']),claim_identity(item),data.store_id,bid))
             event(db, bid, request, 'create', now)
+            if data.template_batches:
+                from .listing_templates import create_document
+                create_document(catalog, db, bid, data, actor(request))
             from .listing_generation_jobs import auto_start
-            background_tasks.add_task(auto_start,catalog,request.app.state.walmart_publisher,bid,actor(request))
+            if not data.template_batches:
+                background_tasks.add_task(auto_start,catalog,request.app.state.walmart_publisher,bid,actor(request))
             return batch(db, bid)
 
     @router.get('/api/prelisting/batches')

@@ -1,3 +1,12 @@
+export interface StoreHistory {
+  store_id: number;
+  store_name: string;
+  brand: string;
+  batch_id: string;
+  attempt_id: string;
+  counts: Record<string, number>;
+  updated_at: string;
+}
 export type EvidenceKind = 'persisted_readback' | 'editor_snapshot' | 'source_only';
 export type Fields = Record<string, unknown>;
 export interface SourceCapture {
@@ -80,6 +89,7 @@ export interface GigaSummary {
   risks: string[];
 }
 export interface ProductSummary extends EvidenceStatus {
+  store_history?: StoreHistory[];
   giga_summary?: GigaSummary | null;
   listing_count: number;
   listing_stores: { store: string; count: number }[];
@@ -105,6 +115,7 @@ export interface ProductSummary extends EvidenceStatus {
   issue_count: number;
 }
 export interface ProductDetail extends EvidenceStatus {
+  store_history?: StoreHistory[];
   giga_summary?: GigaSummary | null;
   seller_blacklist: SellerBlock[];
   category: string;
@@ -229,6 +240,22 @@ export interface PlanInput extends PrelistingSelection {
   store_id: number;
   brand: string;
   multiplier: string;
+  template_batches?: Record<string, string>;
+}
+export interface ReusableTemplate {
+  batch_id: string;
+  revision: number;
+  version: string;
+  store_name: string;
+  brand: string;
+  multiplier: string;
+  updated_at: string;
+  sku_count: number;
+  title: string;
+  digest: string;
+}
+export interface TemplateOptions {
+  items: { listing_id: string; title: string; options: ReusableTemplate[] }[];
 }
 export interface PricePlan {
   source_stock?: number | null;
@@ -285,6 +312,8 @@ export interface PrelistingPreview {
     title: string;
     source_store: string;
     template: string;
+    reuse_template?: ReusableTemplate;
+    store_history?: StoreHistory[];
     observed_at: string;
     status: 'ready' | 'review';
     errors: string[];

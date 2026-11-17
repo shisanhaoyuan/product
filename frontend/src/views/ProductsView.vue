@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ProductStoreHistory from '../components/ProductStoreHistory.vue';
 import GigaQuickFacts from '../components/GigaQuickFacts.vue';
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
@@ -626,6 +627,10 @@ onBeforeUnmount(() => {
               </td>
               <td>
                 {{ product.store }}<br /><span class="muted">{{ product.brand }}</span>
+                <ProductStoreHistory
+                  v-if="product.store_history?.length"
+                  :entries="product.store_history"
+                />
               </td>
               <td>
                 {{ product.source }}<br /><span class="muted">{{
