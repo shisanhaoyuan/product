@@ -163,7 +163,11 @@ def run_job(catalog, publisher, jid, ai):
                         provenance[path] = evidence
                 try:
                     facts = source_facts(sources[item['listing_id']],item,variant)
-                    pt, decision = choose_type(updated,item,facts,types,ai)
+                    try:
+                        pt, decision = choose_type(updated,item,facts,types,ai)
+                    except ListingAIError as exc:
+                        issues.append(dict(path='product_type',message=str(exc)))
+                        raise
                     updated['product_type'] = pt
                     if decision['kind'] != 'existing' or 'product_type' not in provenance:
                         provenance['product_type'] = decision | {'value':pt}
@@ -183,7 +187,8 @@ def run_job(catalog, publisher, jid, ai):
                 except (ListingAIError, ValueError) as exc:
                     # Only known safe exception strings. Provider bodies are never persisted.
                     message = str(exc) if isinstance(exc,ListingAIError) else '该商品生成失败，请重试或检查官方规格'
-                    issues.append(dict(path='product_type' if not updated['product_type'] else '',message=message))
+                    if not issues:
+                        issues.append(dict(path='product_type' if not updated['product_type'] else '',message=message))
                 # Preserve all identity/pricing values even if a future generator changes.
                 for key in ('platform_sku','listing_id','source_sku','identification'):
                     if updated[key] != original[key]:

@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from catalog.listing_ai_client import ListingAIClient, ListingAIError
-from catalog.listing_generation import choose_type, fill_row, required_keys, mapped_value, source_facts, validate_generated
+from catalog.listing_generation import choose_type, fill_row, required_keys, mapped_value, source_facts, validate_generated, fact_reference_exists
 from catalog.listing_generation_jobs import start_job, run_job
 from catalog.walmart_publishing import default_rows
 from catalog.walmart_listing_schema import DEFAULT_VERSION
@@ -86,6 +86,78 @@ def test_category_checks_scope_candidates_and_indoor_conflict():
     with pytest.raises(ListingAIError):choose_type(row,item,facts,bad,AI())
     with pytest.raises(ListingAIError):
         source_facts({'source':'GigaB2B','sku':'OTHER','source_facts':{}},item,{'sku':'W1'})
+
+
+@pytest.mark.parametrize('ref,valid',[
+    ('content.copy',True),('content.copy.title',True),('content.copy.features',True),
+    ('content.copy.features.0',True),('content.attributes.Use Case',True),
+    ('content.attributes.Name.With.Dot',True),('content.attributes',True),
+    ('detail.customList.0.value',True),('content.copy.empty',False),
+    ('content.copy.features.2',False),('content.copy.features.-1',False),
+    ('content.copy.fake',False),('content.copy.title.fake',False),
+    ('content.attributes.use case',False),('other_sku.title',False),
+    (None,False),([],False),('category',False),
+])
+def test_fact_reference_resolves_only_real_nonempty_paths(ref,valid):
+    facts={'content.copy':{'title':'Sectional Sofa','features':['Modular sofa'],'empty':'<p> </p>'},
+           'content.attributes':{'Use Case':'Primary Living Space','Name.With.Dot':'Actual value'},
+           'detail.customList':[{'value':False}],'category':''}
+    assert fact_reference_exists(facts,ref)==valid
+
+
+def test_sectional_sofa_nested_refs_correct_outdoor_type_without_identity_changes():
+    row=listing();row['product_type']='Outdoor Sofas'
+    before=copy.deepcopy(row)
+    item={'category':'Furniture>>Primary Living Space>>Sofas'}
+    facts={'category':item['category'],
+           'content.copy':{'title':'103 inch L Shaped Cloud Sectional Sofa','features':['Modular Sectional Sofa']},
+           'content.attributes':{'Use Case':'Primary Living Space'}}
+    types=[dict(name=pt,category='Furniture',group=group) for pt,group in [
+        ('Outdoor Sofas','Outdoor Seating Furniture'),('Sofas & Couches','Indoor Seating Furniture'),
+        ('Sectional Sofas','Indoor Seating Furniture')]]
+    class Nested(AI):
+        def query(self,purpose,payload):
+            return dict(source_sku='W1',product_type='Sectional Sofas',confidence=.99,
+                refs=['content.copy.title','content.copy.features','content.attributes.Use Case','category'],
+                reason='标题和卖点说明为室内 L 形组合沙发')
+    pt,audit=choose_type(row,item,facts,types,Nested())
+    assert pt=='Sectional Sofas' and audit['refs'][0]=='content.copy.title'
+    assert row==before
+    facts['content.copy']['title']=''
+    with pytest.raises(ListingAIError,match='依据引用不存在或内容为空'):
+        choose_type(row,item,facts,types,Nested())
+
+
+def test_required_attributes_accept_real_leaf_refs_and_reject_missing_leaf():
+    class Nested(AI):
+        def query(self,purpose,payload):
+            return dict(source_sku='W1',actions=[dict(field='visible.assembledProductHeight',
+                value={'measure':32.5,'unit':'in'},kind='source',confidence=.99,
+                refs=['content.attributes.Height'],reason='同 SKU 高度明确为32.5英寸')])
+    facts={'content.attributes':{'Height':'32.5 in'}}
+    audit={};row,issues=fill_row(listing(),spec(),facts,Nested(),audit)
+    assert row['visible']['assembledProductHeight']=={'measure':32.5,'unit':'in'}
+    assert audit['visible.assembledProductHeight']['kind']=='source'
+    row,issues=fill_row(listing(),spec(),{'content.attributes':{'Height':''}},Nested(),{})
+    assert 'assembledProductHeight' not in row['visible']
+    assert any('证据' in i['message'] for i in issues)
+
+
+def test_category_failure_points_to_type_even_with_existing_wrong_type(publishing,monkeypatch):
+    c,catalog,_,_,b,base,_=publishing
+    before=c.get(base).json()
+    for row in before['rows']:
+        row['product_type']='Outdoor Sofas'
+    assert c.patch(base,json={k:before[k] for k in ('revision','version','rows')}).status_code==200
+    def fail(*args):
+        raise ListingAIError('AI 类目依据引用不存在或内容为空，未采用结果')
+    monkeypatch.setattr('catalog.listing_generation_jobs.choose_type',fail)
+    ai=AI();job=start_job(catalog,c.app.state.walmart_publisher,b['id'],ai=ai,schedule=False)
+    run_job(catalog,c.app.state.walmart_publisher,job['id'],ai)
+    report=c.get(base+'/generation').json()['job']
+    assert report['state']=='complete'
+    assert all(r['issues'][0]['path']=='product_type' for r in report['report']['rows'].values())
+    assert c.get(base).json()['rows']==before['rows']
 
 
 def test_persistent_job_preserves_identity_prices_and_never_publishes(publishing):

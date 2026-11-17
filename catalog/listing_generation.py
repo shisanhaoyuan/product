@@ -10,7 +10,7 @@ from jsonschema import Draft7Validator
 from .listing_ai_client import ListingAIError
 from .walmart_listing_schema import plain, sections, feed_item, schema_errors, identifier_errors
 
-RULES_VERSION = 'listing-generation-v1'
+RULES_VERSION = 'listing-generation-v2'
 RULES = Path(__file__).with_name('listing_generation_rules.md').read_text()
 BLOCKED = re.compile(r'prop.?65|warranty|certif|nrtl|chemical|origin|warning|exempt|gtin|upc|ean|model|partnumber', re.I)
 PROTECTED = {'sku','productIdentifiers','inventory','price','msrp','SkuUpdate','ProductIdUpdate','fulfillmentCenterID'}
@@ -28,6 +28,36 @@ def empty(value):
 
 def norm(value):
     return re.sub(r'\s+', ' ', str(value).casefold().replace('&', ' and ')).strip()
+
+
+def fact_reference_exists(facts, ref):
+    """Resolve actual dotted fact paths, including dotted root keys and list indexes.
+
+    Facts deliberately have roots such as content.copy and detail.attributes.
+    A model may cite the precise leaf content.copy.title or an attribute whose
+    name contains spaces/dots; accept only a present, nonempty value from facts.
+    """
+    if not isinstance(ref,str) or not ref or len(ref)>500:
+        return False
+
+    def resolve(value, path):
+        if not path:
+            return not empty(value)
+        if isinstance(value,dict):
+            # Prefer the longest actual key. Do not invent a property by
+            # splitting an existing dotted name into unrelated short names.
+            for key in sorted((k for k in value if isinstance(k,str)),key=len,reverse=True):
+                if path==key:
+                    return not empty(value[key])
+                if path.startswith(key+'.'):
+                    return resolve(value[key],path[len(key)+1:])
+        elif isinstance(value,list):
+            index,_,rest=path.partition('.')
+            if index.isascii() and index.isdigit() and len(index)<10 and int(index)<len(value):
+                return resolve(value[int(index)],rest)
+        return False
+
+    return resolve(facts,ref)
 
 
 def required_keys(schema, value):
@@ -124,16 +154,24 @@ def choose_type(row, item, facts, types, ai):
     proposal = ai.query('product_type', dict(source_sku=row['source_sku'], facts=facts,
         candidates=candidates, existing=row['product_type'], rules=RULES,
         output_contract={'source_sku': row['source_sku'], 'product_type': 'exact candidate name or empty',
-                         'reason': '中文选择理由或冲突原因', 'refs': ['fact key'], 'confidence': 'number 0..1'}))
+                         'reason': '中文选择理由或冲突原因',
+                         'refs': ['existing fact key or nested dotted path, e.g. content.copy.title'],
+                         'confidence': 'number 0..1'}))
     pt = proposal.get('product_type', '')
     refs = proposal.get('refs', [])
     confidence = proposal.get('confidence')
-    if (proposal.get('source_sku') != row['source_sku'] or not pt or pt not in {t['name'] for t in candidates}
-            or type(confidence) not in (int,float) or not 0.75 < confidence <= 1
-            or not isinstance(refs, list) or not refs or any(r not in facts for r in refs)
-            or not isinstance(proposal.get('reason'), str) or not proposal['reason'].strip()
-            or living and 'outdoor' in norm(pt)):
-        raise ListingAIError('类目无法可靠匹配或与来源用途冲突，未强行选择商品类型')
+    if proposal.get('source_sku') != row['source_sku']:
+        raise ListingAIError('AI 返回的来源 SKU 与当前商品不一致，未采用类目')
+    if not isinstance(pt,str) or not pt or pt not in {t['name'] for t in candidates}:
+        raise ListingAIError('AI 未选择当前店铺的有效商品类型，请重新生成')
+    if type(confidence) not in (int,float) or not 0.75 < confidence <= 1:
+        raise ListingAIError('AI 类目判断的置信度不足或格式无效，未强行选择')
+    if not isinstance(refs,list) or not refs or any(not fact_reference_exists(facts,r) for r in refs):
+        raise ListingAIError('AI 类目依据引用不存在或内容为空，未采用结果')
+    if not isinstance(proposal.get('reason'),str) or not proposal['reason'].strip():
+        raise ListingAIError('AI 未提供类目选择理由，未采用结果')
+    if living and 'outdoor' in norm(pt):
+        raise ListingAIError('来源明确为室内用途，AI 却选择户外商品类型，未采用结果')
     return pt, dict(kind='ai_source', reason=proposal['reason'], refs=refs, confidence=confidence)
 
 
@@ -234,7 +272,8 @@ def fill_row(row, schema, facts, ai, provenance):
                 fields=missing, existing=row, rules=RULES,
                 output_contract={'source_sku':row['source_sku'], 'actions':[
                     {'field':'visible.field or orderable.field', 'value':'schema value','kind':'source or estimate',
-                     'refs':['fact key'], 'reason':'中文依据', 'confidence':'number 0..1'}],
+                     'refs':['existing fact key or nested dotted path, e.g. content.copy.features.0'],
+                     'reason':'中文依据', 'confidence':'number 0..1'}],
                      'missing':[{'field':'path','reason':'中文缺失原因'}]}))
             if proposal.get('source_sku') != row['source_sku'] or not isinstance(proposal.get('actions'), list):
                 raise ListingAIError('AI 返回的商品 SKU 或属性计划不匹配')
@@ -253,7 +292,7 @@ def fill_row(row, schema, facts, ai, provenance):
                 if (value is None or type(confidence) not in (int,float) or not 0 < confidence <= 1
                         or not isinstance(action.get('reason'), str) or not action['reason'].strip()
                         or kind not in ('source','estimate') or not isinstance(refs, list)
-                        or any(r not in facts for r in refs)
+                        or any(not fact_reference_exists(facts,r) for r in refs)
                         or kind == 'source' and (confidence <= .75 or not refs)
                         or kind == 'estimate' and BLOCKED.search(key)):
                     problems.append(dict(path=field, message='AI 属性值、证据或估算权限未通过校验'))
