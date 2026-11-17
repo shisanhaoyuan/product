@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import StoreManagementNav from '../components/StoreManagementNav.vue';
+import ListingPreparationSettings from '../components/ListingPreparationSettings.vue';
 import { computed, onMounted, onBeforeUnmount, ref } from 'vue';
 import { walmartApi, walmartScopeLabels, walmartAccessLabels } from '../api/walmart';
 import type { WalmartConnections, WalmartStore, WalmartVerification } from '../api/walmart';
@@ -20,6 +21,8 @@ const selected = ref<WalmartStore | null>(null),
   identityConfirmed = ref(false),
   expired = ref(false),
   unbindTarget = ref<WalmartStore | null>(null);
+const preparationStore = ref<WalmartStore | null>(null),
+  preparationOpen = ref(false);
 let expiryTimer: ReturnType<typeof setTimeout> | undefined;
 const stores = computed(() =>
   (data.value?.stores || []).filter((s) => {
@@ -179,6 +182,17 @@ onBeforeUnmount(() => {
     </div>
   </div>
   <StoreManagementNav />
+  <div class="wm-filters">
+    <button
+      class="btn"
+      @click="
+        preparationStore = null;
+        preparationOpen = true;
+      "
+    >
+      管理真实商品编码池</button
+    ><span class="muted">默认发货仓与已批准豁免可在各店铺卡片配置。</span>
+  </div>
   <div class="wm-summary">
     <div>
       <span>系统店铺</span><strong>{{ data?.stores.length ?? '—' }}</strong>
@@ -293,6 +307,17 @@ onBeforeUnmount(() => {
       <p v-else class="wm-empty">绑定该店铺的 API 密钥，核对沃尔玛账号名称和编号后保存。</p>
       <footer>
         <button
+          v-if="s.account?.bound"
+          class="btn"
+          :disabled="busy || !s.active"
+          @click="
+            preparationStore = s;
+            preparationOpen = true;
+          "
+        >
+          生成前提配置
+        </button>
+        <button
           class="btn primary"
           :disabled="busy || !s.active || !data?.vault.ready"
           @click="open(s)"
@@ -317,6 +342,11 @@ onBeforeUnmount(() => {
     </article>
     <p v-if="!stores.length" class="wm-empty">没有匹配店铺。可先到“管理系统店铺”添加。</p>
   </div>
+  <ListingPreparationSettings
+    v-if="preparationOpen"
+    :store="preparationStore"
+    @close="preparationOpen = false"
+  />
   <div v-if="selected" class="wm-overlay" @click.self="close">
     <section class="wm-dialog" role="dialog" aria-modal="true" aria-labelledby="wm-bind-title">
       <header>

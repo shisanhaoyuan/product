@@ -22,7 +22,7 @@ LABELS = {
     'productName': '商品标题', 'brand': '品牌', 'shortDescription': '商品描述',
     'keyFeatures': '商品卖点', 'mainImageUrl': '主图', 'productSecondaryImageURL': '附图',
     'ShippingWeight': '运输重量（磅）', 'price': '售价', 'msrp': '建议零售价',
-    'sku': '店铺 SKU', 'productIdentifiers': '商品编码', 'productIdType': '编码类型', 'productId': '商品编码',
+    'sku': '店铺 SKU', 'identification':'商品编码', 'productIdentifiers': '商品编码', 'productIdType': '编码类型', 'productId': '商品编码',
     'isProp65WarningRequired': '是否需要加州 65 号警告', 'has_written_warranty': '是否提供书面保修',
     'assembledProductLength': '组装后长度', 'assembledProductDepth': '组装后深度',
     'assembledProductHeight': '组装后高度', 'assembledProductWidth': '组装后宽度',

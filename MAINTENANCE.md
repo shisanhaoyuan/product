@@ -2,7 +2,7 @@
 
 ## 系统边界
 
-这是独立商品库。数字酋长上传项目只作为可选历史数据来源；服务无需导入或运行上传脚本。界面展示记录值，不计算价格倍率、不修改库存、不向 ERP 回写或刊登。
+这是独立商品库。数字酋长上传项目只作为可选历史数据来源；服务无需导入或运行上传脚本。历史商品展示与编辑独立运行，不向 ERP 回写。预上架由后端按批次参数计算价格；绑定店铺的 Walmart 正式上架必须由用户明确确认。AI 生成及后台结果查询不刊登、不写库存；显式库存同步沿用 SKU、店铺及来源保护。
 
 当前支持本机使用和服务器团队使用。Vue 3 + TypeScript 管理页面和交互；FastAPI 管理 API；生产 PostgreSQL 保存商品、模板、子变体、快照、账号及审计，服务器独立目录保存图片；SQLite 保留为本机和旧数据迁移模式。生产页面与 API 同源，开发时由 Vite 代理 API。无需同时引入 React 或另一套路由/状态框架。
 
@@ -79,7 +79,7 @@ python validation/frontend_state_check.py
 
 已实现可选团队登录及全库级角色权限，实施见 `deploy/宝塔部署说明.md`。服务器必须显式启用登录，完成 HTTPS、定时备份和恢复演练后再开放团队使用。数据库不进入静态目录或版本库；服务默认只监听本机。账号密码恢复用服务器 CLI；后台不可直接读取密码或会话 token。
 
-需要自动同步时增加独立适配器与任务记录，保留来源身份及幂等契约。出现多用户写入或更大并发后评估 PostgreSQL。尚未需要的任务队列、微服务和大型状态库不提前加入。
+需要自动同步时增加独立适配器与任务记录，保留来源身份及幂等契约。生产团队使用 PostgreSQL。尚未需要的任务队列、微服务和大型状态库不提前加入。
 
 ## PostgreSQL 与图片存储维护
 
@@ -88,3 +88,11 @@ python validation/frontend_state_check.py
 `object_storage.py` 提供 put/get 接口，filesystem 为当前生产方案；以后可添加其他后端，已有图片需单独迁移，不能只改环境变量。OSS 是可选依赖且本次未做云端验证。外链图片仍为外链。
 
 验证：`python -m pytest -q`；真实 PostgreSQL：`python -m pytest -q --postgres-dsn postgresql://127.0.0.1:55432/jiwu_test`。后者只能使用可销毁测试库，有建 schema、建数据库权限（恢复演练需要），pg_dump/pg_restore 在 PATH 中；测试创建临时 schema/数据库并清理。禁止用生产 DSN 跑测试。
+
+## AI 刊登资料闭环维护
+
+规则版本 v5，数据库迁移18。核心模块为 `listing_generation_jobs.py`（任务）、`listing_repair.py`（3轮受限修复）、`listing_prerequisites.py`（真实编码及店铺前提）、`listing_source_evidence.py`（同 SKU 补采）、`listing_vision.py`（受控图片与证据）和 `listing_result_worker.py`（只读轮询与修复草稿）。资料校验复用 `walmart_publishing.validate_document`，禁止另设“AI 完成就视为通过”的路径。
+
+校验有效期600秒，来源/资料/店铺/Schema/前提/平台反馈改变后失效。保留人工改动及改后恢复的锁定记录；AI 不改价格、库存、SKU、ASIN、编码、品牌、图片及法律证明字段。真实编码归属与唯一分配必须在事务锁内操作。后台任务不得调用提交接口或库存 PUT；原管理员失权后暂停。后台修复只排草稿，仍需用户确认提交。
+
+模型密钥只在私有配置保存。测试必须禁用真实 AI，并使用隔离数据库及模拟模型/来源/平台，不能使用生产凭证或 DSN。部署需备份数据库、图片和原加密主密钥，重启应用执行迁移，不覆盖生产数据。新开关与首版限制见 `docs/AI自动刊登闭环设计.md`、`docs/沃尔玛正式上架.md` 和 `deploy/jiwu.env.example`。

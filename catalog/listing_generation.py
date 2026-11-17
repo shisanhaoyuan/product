@@ -11,7 +11,7 @@ from .listing_ai_client import ListingAIError
 from .walmart_listing_schema import plain, sections, feed_item, schema_errors, identifier_errors, precise_validator
 from .listing_skill_defaults import has_default, skill_default, length_fallback
 
-RULES_VERSION = 'listing-generation-v3'
+RULES_VERSION = 'listing-generation-v5'
 RULES = Path(__file__).with_name('listing_generation_rules.md').read_text()
 BLOCKED = re.compile(r'prop.?65|warranty|certif|nrtl|chemical|origin|warning|exempt|gtin|upc|ean|model|partnumber', re.I)
 PROTECTED = {'sku','productIdentifiers','inventory','price','msrp','SkuUpdate','ProductIdUpdate','fulfillmentCenterID'}
@@ -30,6 +30,55 @@ def empty(value):
 
 def norm(value):
     return re.sub(r'\s+', ' ', str(value).casefold().replace('&', ' and ')).strip()
+
+
+def semantic_patch_error(path, value, facts, previous=None):
+    """Reject known invalid shortcuts even when they satisfy a schema enum."""
+    def values(data):
+        if isinstance(data, dict):
+            return ' '.join(values(v) for k,v in data.items() if k != 'visual_evidence')
+        if isinstance(data, list):
+            return ' '.join(values(v) for v in data)
+        return str(data) if data is not None else ''
+    text = values(facts)
+    text += ' ' + ' '.join(str(v.get('source_text','')) for v in facts.get('visual_evidence',[])
+                          if isinstance(v,dict) and v.get('kind')=='image_label')
+    if path.split('.')[-1].casefold() == 'bedsize':
+        if not re.search(r'\b(bed|mattress|sleep\w*)\b|床|睡眠',text,re.I):
+            return '没有床面、床垫或睡眠用途依据，不能选择离散床型'
+        if 'non-standard' in norm(value).replace(' ','-') and not re.search(
+                r'\bnon[ -]?standard\b|\bcustom[ -](?:size|mattress)\b|非标准|定制床',text,re.I):
+            return '缺少非标准床面或定制床垫依据，不能因尺寸未知选择 Non-Standard'
+    if (re.search(r'\bsleeper\b',str(previous),re.I) and
+            not re.search(r'\bsleeper\b',str(value),re.I) and re.search(r'\bsleeper\b',text,re.I)):
+        return '来源明确包含 Sleeper，不能删除睡眠款式以避开条件必填'
+    return ''
+
+
+def summarize_generation_issues(issues):
+    """One navigable issue per field, keeping every distinct raw reason as detail.
+
+    AI paths and official feed paths point at the same editable document. This
+    also projects historical reports without changing their persisted audit.
+    """
+    grouped = {}
+    for issue in issues:
+        path = issue.get('path', '')
+        path = re.sub(r'^MPItem\.\d+\.Visible\.[^.]+\.', 'visible.', path)
+        path = re.sub(r'^MPItem\.\d+\.Orderable\.', 'orderable.', path)
+        if path == 'identification' or path.startswith('orderable.productIdentifiers'):
+            path = 'identification'
+        key = path if path else ('', issue['message'])
+        entry = grouped.setdefault(key, dict(path=path, message=issue['message'], details=[]))
+        original = dict(path=issue.get('path', ''), message=issue['message'])
+        if original not in entry['details']:
+            entry['details'].append(original)
+        # Keep the latest specific explanation instead of a second generic
+        # "required"/"minLength" error for the same unresolved field.
+        generic = lambda text: any(v in text for v in ('缺少必填项', '内容不足', 'AI 属性值、证据'))
+        if generic(entry['message']) or not generic(issue['message']):
+            entry['message'] = issue['message']
+    return list(grouped.values())
 
 
 def fact_reference_exists(facts, ref):
@@ -296,6 +345,7 @@ def fill_row(row, schema, facts, ai, provenance):
                         refs=[],reason='当前商品类型不接受此旧字段，原值保留在审计中')
     prepare_copy(row,facts,provenance)
     problems = []
+    attempted = set()
     for turn in range(3):
         missing = {}
         for section in ('visible','orderable'):
@@ -330,8 +380,12 @@ def fill_row(row, schema, facts, ai, provenance):
                         problems.append(dict(path=field,message='缺少该字段的明确来源或证明，不能估算'))
                     else:
                         missing[field] = props[key]
+        # Later passes handle newly activated conditional fields. Do not ask the
+        # same model the same unresolved question three times in a single run.
+        missing = {path: definition for path,definition in missing.items() if path not in attempted}
         if not missing:
             break
+        attempted.update(missing)
         try:
             proposal = ai.query('required_attributes', dict(source_sku=row['source_sku'],
                 product_type=row['product_type'], brand=row['visible'].get('brand'), facts=facts,
@@ -360,13 +414,21 @@ def fill_row(row, schema, facts, ai, provenance):
                         or kind not in ('source','estimate') or not isinstance(refs, list)
                         or any(not fact_reference_exists(facts,r) for r in refs)
                         or kind == 'source' and (confidence <= .75 or not refs)
+                        or kind == 'source' and any(r.startswith('visual_evidence') for r in refs)
                         or kind == 'estimate' and BLOCKED.search(key)):
                     problems.append(dict(path=field, message='AI 属性值、证据或估算权限未通过校验'))
                     continue
                 accepted.append((section,key,value,action))
             for section,key,value,action in accepted:
+                error = semantic_patch_error(section+'.'+key,value,facts,row[section].get(key))
+                if error:
+                    problems.append(dict(path=section+'.'+key,message=error))
+                    continue
                 row[section][key] = value
-                provenance[section+'.'+key] = action
+                evidence = dict(action)
+                if action['kind']=='estimate' and any(r.startswith('visual_evidence') for r in action.get('refs',[])):
+                    evidence['kind']='visual_inference'
+                provenance[section+'.'+key] = evidence
             for issue in proposal.get('missing', []):
                 if isinstance(issue, dict) and issue.get('field') in missing and isinstance(issue.get('reason'), str):
                     problems.append(dict(path=issue['field'], message=issue['reason'][:400]))

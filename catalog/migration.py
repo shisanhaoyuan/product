@@ -16,7 +16,9 @@ TABLES = ('products','listings','variants','snapshots','imports','users','sessio
           'prelisting_items','prelisting_claims','prelisting_events','image_objects','source_captures','giga_patrol_runs','giga_patrol_items',
           'walmart_accounts','walmart_binding_previews','walmart_account_events',
           'walmart_listing_documents','walmart_listing_metadata','walmart_listing_attempts',
-          'walmart_listing_claims','walmart_listing_events','walmart_listing_polls','listing_generation_jobs')
+          'walmart_listing_claims','walmart_listing_events','walmart_listing_polls','listing_generation_jobs',
+          'listing_store_preparation','listing_real_identifiers','listing_preparation_rounds',
+          'listing_vision_cache','listing_result_tasks','listing_preparation_blockers','listing_image_evidence','listing_identifier_events')
 
 
 def migrate_sqlite(source, target, storage):

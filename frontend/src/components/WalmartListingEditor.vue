@@ -91,6 +91,61 @@ const generationRow = computed(() => generation.value?.report.rows[activeSku.val
 const generationStale = computed(
   () => !generating.value && generation.value && generation.value.revision !== doc.value?.revision,
 );
+const clock = ref(Date.now());
+let clockTimer: ReturnType<typeof setInterval> | undefined;
+const validationCurrent = computed(
+  () =>
+    !!doc.value?.validation.current &&
+    !dirty.value &&
+    doc.value.validation.revision === doc.value.revision &&
+    (doc.value.validation.at || 0) * 1000 > clock.value - 600000,
+);
+const preparationLabels: Record<string, string> = {
+  collecting: '补全来源',
+  generating: '生成资料',
+  validating: '实际店铺校验',
+  repairing: '定向修复',
+  ready: '可提交',
+  needs_prerequisite: '前提待补足',
+  needs_review: '异常待处理',
+  needs_validation: '需重新校验',
+  skipped: '已有提交 · 已跳过',
+};
+function preparationLabel(sku: string) {
+  const entry = generation.value?.report.rows[sku];
+  if (entry?.preparation_state === 'ready' && (!validationCurrent.value || generationStale.value))
+    return '需重新校验';
+  return preparationLabels[entry?.preparation_state || ''] || '等待处理';
+}
+const readyCount = computed(() =>
+  validationCurrent.value
+    ? Object.values(doc.value?.validation.rows || {}).filter((r) => r.valid).length
+    : 0,
+);
+let resultTimer: ReturnType<typeof setTimeout> | undefined;
+async function pollResults() {
+  clearTimeout(resultTimer);
+  if (!live) return;
+  try {
+    if (!dirty.value && !generating.value && !busy.value && !saving.value) {
+      await load();
+      if (doc.value?.attempts.some((a) => a.polling?.state === 'repair_pending'))
+        await pollGeneration();
+    }
+  } finally {
+    if (
+      live &&
+      doc.value?.attempts.some(
+        (a) => a.polling && ['pending', 'running', 'repair_pending'].includes(a.polling.state),
+      )
+    )
+      resultTimer = setTimeout(() => {
+        void pollResults().catch((e) => {
+          error.value = errorMessage(e);
+        });
+      }, 15000);
+  }
+}
 let generationTimer: ReturnType<typeof setTimeout> | undefined;
 
 async function pollGeneration() {
@@ -190,7 +245,7 @@ const eligible = computed(
     }) || [],
 );
 const validSkus = computed(() =>
-  eligible.value
+  (validationCurrent.value ? eligible.value : [])
     .filter((r) => doc.value?.validation.rows?.[r.platform_sku]?.valid)
     .map((r) => r.platform_sku),
 );
@@ -397,7 +452,7 @@ async function refreshSource() {
 async function openSubmit() {
   await run(async () => {
     await save();
-    if (!doc.value?.validation.id || dirty.value || !selectedValid.value.length)
+    if (!doc.value?.validation.id || !validationCurrent.value || !selectedValid.value.length)
       throw new Error('请先校验资料并选择校验通过的商品');
     confirmation.value = '';
     submitKey.value = crypto.randomUUID();
@@ -411,6 +466,7 @@ async function submit() {
     confirmDialog.value?.close();
     await load();
     tab.value = 'results';
+    void pollResults();
     message.value = '已记录提交请求，请查看沃尔玛逐项处理结果';
   });
 }
@@ -429,6 +485,7 @@ async function refreshResults(a?: Attempt) {
     await load();
     tab.value = 'results';
     if (errors.length) throw new Error(errors.join('；'));
+    void pollResults();
     message.value = targets.length ? '处理结果已更新' : '还没有可查询的沃尔玛批次编号';
   });
 }
@@ -492,6 +549,9 @@ async function upload(e: Event) {
   input.value = '';
 }
 onMounted(async () => {
+  clockTimer = setInterval(() => {
+    clock.value = Date.now();
+  }, 1000);
   await run(async () => {
     await load();
     await pollGeneration();
@@ -502,6 +562,12 @@ onMounted(async () => {
       }
     }
   });
+  if (
+    doc.value?.attempts.some(
+      (a) => a.polling && ['pending', 'running', 'repair_pending'].includes(a.polling.state),
+    )
+  )
+    void pollResults();
   if (live && doc.value && canEdit.value && aiReady.value && !generation.value) void generate();
 });
 async function saveBeforeNavigation() {
@@ -519,6 +585,8 @@ onBeforeUnmount(() => {
   live = false;
   clearTimeout(saveTimer);
   clearTimeout(generationTimer);
+  clearTimeout(resultTimer);
+  clearInterval(clockTimer);
 });
 </script>
 
@@ -602,14 +670,89 @@ onBeforeUnmount(() => {
             :disabled="busy || saving || generating"
             @click="generate"
           >
-            {{ generation ? '重新生成缺项' : '自动生成资料' }}
+            {{ generation ? '重新生成并校验' : '生成并校验' }}
           </button>
         </div>
+        <div class="preparation-summary">
+          <span
+            >可提交 <strong>{{ readyCount }}</strong></span
+          ><span
+            >前提待补足
+            <strong>{{
+              Object.values(generation?.report.rows || {}).filter(
+                (r) => r.preparation_state === 'needs_prerequisite',
+              ).length
+            }}</strong></span
+          ><span
+            >异常待处理
+            <strong>{{
+              Object.values(generation?.report.rows || {}).filter(
+                (r) => r.preparation_state === 'needs_review',
+              ).length
+            }}</strong></span
+          ><button class="btn small" @click="statusFilter = 'issues'">查看异常商品</button>
+        </div>
+        <p v-if="generationRow" class="notice">
+          当前 SKU：<strong>{{ preparationLabel(activeSku) }}</strong
+          ><span v-if="generationRow.rounds?.length">
+            · 已尝试 {{ generationRow.rounds.length }} / 3 轮定向修复</span
+          >
+        </p>
+        <p v-if="doc.validation.id && !validationCurrent" class="seller-risk-label">
+          上次校验已失效或超过 10 分钟，请重新校验后提交。
+        </p>
+        <p v-if="generationRow?.collection?.message" class="muted">
+          来源补全：{{ generationRow.collection.message }}
+          <RouterLink
+            v-if="generationRow.collection.listing_id"
+            :to="
+              (source?.source === 'GigaB2B' ? '/giga-product/' : '/product/') +
+              generationRow.collection.listing_id
+            "
+            >前往商品档案处理来源</RouterLink
+          >
+        </p>
+        <p
+          v-if="
+            generationRow?.vision && !['disabled', 'complete'].includes(generationRow.vision.state)
+          "
+          class="muted"
+        >
+          图片理解：{{ generationRow.vision.message || '未取得可用图片证据' }}
+        </p>
+        <p v-for="(warning, index) in generationRow?.vision?.warnings" :key="index" class="muted">
+          {{ warning }}
+        </p>
+        <details v-if="generationRow?.rounds?.length">
+          <summary>查看定向修复记录</summary>
+          <article v-for="(round, index) in generationRow.rounds" :key="index" class="notice">
+            <strong
+              >第 {{ index + 1 }} 轮 ·
+              {{
+                round.state === 'changed'
+                  ? '已保存修改'
+                  : round.state === 'no_progress'
+                    ? '无进展，停止重复请求'
+                    : '未能安全修复'
+              }}</strong
+            >
+            <p v-if="round.message">{{ round.message }}</p>
+            <p v-for="change in round.changes" :key="change.path">
+              {{ doc.labels[change.path.split('.').at(-1)!] || change.path }}：{{
+                JSON.stringify(change.before)
+              }}
+              → {{ JSON.stringify(change.after) }}
+            </p>
+          </article>
+        </details>
         <p v-if="generationRow?.estimated" class="notice">
           当前 SKU 有 {{ generationRow.estimated }} 项 AI 估算，具体依据见下方生成记录。
         </p>
         <p v-if="generationStale" class="muted">
           资料已修改，生成记录为修改前的结果。请重新校验；仍有缺项时可重新生成。
+        </p>
+        <p v-if="!generationStale && generationRow?.issues.length">
+          当前 SKU 还有 {{ generationRow.issues.length }} 项需要处理，同一字段的重复提示已合并。
         </p>
         <div
           v-if="!generationStale && generationRow?.issues.length"
@@ -626,6 +769,22 @@ onBeforeUnmount(() => {
             }}
           </button>
         </div>
+        <details
+          v-if="
+            !generationStale &&
+            generationRow?.issues.some((issue) => (issue.details?.length || 0) > 1)
+          "
+        >
+          <summary>查看原始校验详情</summary>
+          <dl class="listing-generation-fields">
+            <template v-for="(issue, index) in generationRow.issues" :key="index">
+              <dt>{{ doc.labels[issue.path.split('.').at(-1)!] || issue.path || '生成异常' }}</dt>
+              <dd v-for="(detail, detailIndex) in issue.details" :key="detailIndex">
+                {{ detail.message }}
+              </dd>
+            </template>
+          </dl>
+        </details>
         <details v-if="generationRow && Object.keys(generationRow.fields).length">
           <summary>查看当前 SKU 的生成依据</summary>
           <dl class="listing-generation-fields">
@@ -633,13 +792,17 @@ onBeforeUnmount(() => {
               ><dt>
                 {{ doc.labels[String(path).split('.').at(-1)!] || path }} ·
                 {{
-                  field.kind === 'estimate'
-                    ? 'AI 估算'
-                    : field.kind === 'user_rule'
-                      ? '用户规则'
-                      : field.kind === 'schema_cleanup'
-                        ? '旧类目字段已移除'
-                        : '来源映射'
+                  field.kind === 'visual_inference'
+                    ? '视觉推断'
+                    : field.kind === 'verified_prerequisite'
+                      ? '已核验前提'
+                      : field.kind === 'estimate'
+                        ? 'AI 估算'
+                        : field.kind === 'user_rule'
+                          ? '用户规则'
+                          : field.kind === 'schema_cleanup'
+                            ? '旧类目字段已移除'
+                            : '来源映射'
                 }}
               </dt>
               <dd>
@@ -1153,6 +1316,24 @@ onBeforeUnmount(() => {
                   · 店铺 {{ doc.store.name }} · Partner {{ a.partner_id }}
                 </p>
                 <p>{{ a.message }}</p>
+                <p v-if="a.polling">
+                  后台查询：{{
+                    a.polling.state === 'complete'
+                      ? '已结束'
+                      : a.polling.state === 'repair_pending'
+                        ? '正在生成修复草稿（不会自动重提）'
+                        : a.polling.state === 'paused'
+                          ? '已暂停，需管理员处理'
+                          : '持续查询原批次'
+                  }}
+                  · 已查询 {{ a.polling.tries }} 次<span v-if="a.polling.state === 'pending'">
+                    · 下次
+                    {{ new Date(a.polling.next_at * 1000).toLocaleTimeString('zh-CN') }}</span
+                  >
+                </p>
+                <p v-if="a.polling?.last_error" class="seller-risk-label">
+                  {{ a.polling.last_error }}
+                </p>
               </div>
               <button
                 v-if="a.feed_id && canSubmit"
@@ -1160,7 +1341,7 @@ onBeforeUnmount(() => {
                 :disabled="busy"
                 @click="refreshResults(a)"
               >
-                查询此批次
+                查询并同步库存
               </button>
               <div
                 v-if="!a.feed_id && ['sending', 'unknown'].includes(a.state)"
@@ -1317,3 +1498,25 @@ onBeforeUnmount(() => {
     </template>
   </div>
 </template>
+
+<style scoped>
+.preparation-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0;
+}
+.preparation-summary > span {
+  padding: 10px 14px;
+  background: #f1f6fa;
+  border: 1px solid #dde7ef;
+  border-radius: 10px;
+  color: #536b7e;
+}
+.preparation-summary strong {
+  margin-left: 10px;
+  font-size: 20px;
+  color: #2e516c;
+}
+</style>

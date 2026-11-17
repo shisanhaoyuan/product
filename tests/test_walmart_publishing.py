@@ -124,6 +124,8 @@ class PublisherRemote:
 @pytest.fixture
 def publishing(warehouse,vault):
     c,catalog,fake,settings=warehouse
+    fake.detail[1]['upc']='012345678912'
+    sync_page(catalog,settings,1,client=fake)
     b,_=create(c,plan(c))
     app=c.app
     binding_remote=Remote().install(app)
@@ -371,7 +373,9 @@ def test_submission_rejection_is_retryable_and_never_exposes_secrets(publishing)
     c,_,_,_,_,base,remote=publishing;doc=ready(publishing);remote.fail='400'
     a=send(publishing,doc);assert a['state']=='rejected' and 'HTTP 400' in a['message']
     assert all(s not in json.dumps(a) for s in (SECRET,CLIENT,TOKEN))
-    remote.fail='';second=send(publishing,doc);assert second['state']=='processing'
+    remote.fail=''
+    doc=c.post(base+'/validate',json={'revision':doc['revision']}).json()
+    second=send(publishing,doc);assert second['state']=='processing'
     assert len(remote.posts)==2
 
 
@@ -475,7 +479,7 @@ def test_old_attempt_cannot_write_inventory_after_new_retry_claims_sku(publishin
     c,_,_,_,_,base,remote=publishing
     doc=ready(publishing);first=send(publishing,doc)
     target=doc['rows'][0]['platform_sku']
-    remote.item_status[target]='DATA_ERROR'
+    remote.item_status[target]='SYSTEM_ERROR'  # A transport/system terminal failure needs no data patch.
     assert c.post(base+f"/attempts/{first['id']}/refresh").status_code==200
     current=c.get(base).json()
     checked=c.post(base+'/validate',json={'revision':current['revision']}).json()

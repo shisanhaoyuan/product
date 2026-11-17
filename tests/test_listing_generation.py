@@ -6,8 +6,8 @@ import httpx
 import pytest
 
 from catalog.listing_ai_client import ListingAIClient, ListingAIError
-from catalog.listing_generation import choose_type, fill_row, required_keys, mapped_value, source_facts, validate_generated, fact_reference_exists
-from catalog.listing_generation_jobs import start_job, run_job
+from catalog.listing_generation import choose_type, fill_row, required_keys, mapped_value, source_facts, validate_generated, fact_reference_exists, summarize_generation_issues
+from catalog.listing_generation_jobs import start_job, run_job, public_job
 from catalog.walmart_publishing import default_rows
 from catalog.walmart_listing_schema import DEFAULT_VERSION
 from test_walmart_publishing import publishing, spec, PT, ready
@@ -341,3 +341,75 @@ def test_skill_defaults_persisted_readback_cleanup_audit_and_repeat_noop(publish
     assert start_job(catalog,publisher,b['id'],ai=ai,schedule=False)['id']==job['id']
     assert c.get(base).json()['revision']==saved['revision']
     assert not remote.posts and not remote.stock
+
+
+def test_same_field_reports_are_grouped_without_losing_original_reasons_or_audit():
+    issues=[
+        dict(path='visible.bedSize',message='未提供睡眠区域尺寸'),
+        dict(path='visible.seat_back_cushion_style',message='来源未说明靠背软垫结构'),
+        dict(path='visible.bedSize',message='没有标准床型依据'),
+        dict(path='visible.seat_back_cushion_style',message='无法确定软垫固定方式'),
+        dict(path='identification',message='EAN 编码长度或格式错误，请填写真实编码并保留前导零'),
+        dict(path='MPItem.0.Orderable.productIdentifiers.productId',message='商品编码内容不足，至少需要 1 个字符'),
+        dict(path='MPItem.0.Visible.Sectional Sofas.bedSize',message='缺少必填项：床尺寸'),
+        dict(path='MPItem.0.Visible.Sectional Sofas.seat_back_cushion_style',message='缺少必填项：靠背软垫款式'),
+    ]
+    report={'rows':{'MY21TESTAB':{'state':'review','issues':issues,'fields':{}}}}
+    raw=json.dumps(report,ensure_ascii=False)
+    stored=dict(id='job',batch_id='b',state='complete',revision=1,message='',started_at=0,updated_at=0,report_json=raw)
+    result=public_job(stored)['report']['rows']['MY21TESTAB']
+    assert len(result['issues'])==3 and result['state']=='review'
+    grouped={v['path']:v for v in result['issues']}
+    assert grouped['visible.bedSize']['message']=='没有标准床型依据'
+    assert grouped['visible.seat_back_cushion_style']['message']=='无法确定软垫固定方式'
+    assert grouped['identification']['message'].startswith('EAN 编码长度或格式错误')
+    assert sum(len(v['details']) for v in result['issues'])==len(issues)
+    assert stored['report_json']==raw
+    assert json.loads(stored['report_json'])==report
+
+
+def test_issue_grouping_does_not_merge_different_fields_or_global_failures():
+    issues=[dict(path='',message='来源过期'),dict(path='',message='AI 失败'),
+        dict(path='visible.keyFeatures.0',message='第一条无效'),
+        dict(path='visible.keyFeatures.1',message='第二条无效'),
+        dict(path='orderable.ShippingWeight',message='重量缺失')]
+    assert len(summarize_generation_issues(issues))==5
+
+
+def test_unresolved_style_only_queried_once_not_arbitrarily_defaulted():
+    from catalog.walmart_listing_schema import sections
+    shape=spec();visible=sections(shape,PT)['visible']
+    for key,options in [('bedSize',['Queen','Non-Standard']),('seat_back_cushion_style',['Cushion Back','Loose Back'])]:
+        visible['properties'][key]={'type':'string','enum':options}
+        visible['required'].append(key)
+    class Missing(AI):
+        def query(self,purpose,payload):
+            result=super().query(purpose,payload)
+            result['missing']=[dict(field=field,reason='同 SKU 未提供此结构，无法合理估算')
+                               for field in payload['fields'] if field.startswith('visible.') and field!='visible.assembledProductHeight']
+            return result
+    ai=Missing();row,issues=fill_row(listing(),shape,{'content.copy':{'title':'Sofa'}},ai,{})
+    assert len(ai.calls)==1
+    assert 'bedSize' not in row['visible'] and 'seat_back_cushion_style' not in row['visible']
+    assert len([i for i in issues if i['path']=='visible.bedSize'])==1
+
+
+def test_later_pass_analyzes_new_conditional_fields_without_requerying_old_fields():
+    from catalog.walmart_listing_schema import sections
+    shape=spec();visible=sections(shape,PT)['visible']
+    visible['properties'].update(color={'type':'string','enum':['Black','White']},finish={'type':'string','enum':['Matte','Glossy']})
+    visible['required'].append('color')
+    visible['allOf'].append({'if':{'required':['color'],'properties':{'color':{'const':'Black'}}},
+                             'then':{'required':['finish']}})
+    class Conditional(AI):
+        def query(self,purpose,payload):
+            result=super().query(purpose,payload)
+            for field,value in [('visible.color','Black'),('visible.finish','Matte')]:
+                if field in payload['fields']:
+                    result['actions'].append(dict(field=field,value=value,kind='estimate',
+                        confidence=.6,refs=['content.copy.title'],reason='当前 SKU 上下文估算'))
+            return result
+    ai=Conditional();row,issues=fill_row(listing(),shape,{'content.copy':{'title':'Black chair'}},ai,{})
+    assert len(ai.calls)==2
+    assert list(ai.calls[1][1]['fields'])==['visible.finish']
+    assert row['visible']['finish']=='Matte' and not issues

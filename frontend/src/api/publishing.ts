@@ -39,6 +39,7 @@ export interface ListingRow {
 export interface Issue {
   path: string;
   message: string;
+  details?: { path: string; message: string }[];
 }
 export interface ListingResult {
   status: string;
@@ -59,6 +60,7 @@ export interface Attempt {
   updated_at: string;
   skus: string[];
   results: Record<string, ListingResult>;
+  polling?: { state: string; next_at: number; tries: number; last_error: string } | null;
 }
 export interface ListingDocument {
   requirements?: Record<string, { visible?: string[]; orderable?: string[] }>;
@@ -77,6 +79,7 @@ export interface ListingDocument {
     partner_id?: string;
     binding_revision?: number;
     valid_count?: number;
+    current?: boolean;
     rows?: Record<string, { valid: boolean; errors: Issue[] }>;
   };
   results: Record<string, ListingResult>;
@@ -108,10 +111,20 @@ export interface GenerationJob {
   report: {
     model?: string;
     total?: number;
+    validated_at?: number;
     rows: Record<
       string,
       {
         state: string;
+        preparation_state?: string;
+        collection?: { state: string; message?: string; listing_id?: string };
+        vision?: { state: string; message?: string; warnings?: string[]; images?: string[] };
+        rounds?: {
+          state: string;
+          message?: string;
+          changes?: { path: string; before: unknown; after: unknown }[];
+          rejected?: Issue[];
+        }[];
         issues: Issue[];
         estimated?: number;
         fields: Record<

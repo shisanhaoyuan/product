@@ -1,3 +1,5 @@
+import asyncio
+from contextlib import asynccontextmanager, suppress
 import csv
 import io
 import json
@@ -39,7 +41,19 @@ def create_app(database=None):
         if (origin_url.scheme != 'https' or not secure_cookie) and origin_url.hostname not in {'127.0.0.1','localhost'}:
             raise RuntimeError('服务器团队模式必须使用 HTTPS 和 Secure Cookie')
     auth=AuthStore(catalog) if auth_enabled else None
-    app=FastAPI(title='商品库 API',version='1.0.0',docs_url=None,redoc_url=None,description='独立商品库；可通过绑定店铺明确提交沃尔玛商品，不操作 ERP。')
+    @asynccontextmanager
+    async def lifespan(app):
+        from .listing_result_worker import serve
+        task=asyncio.create_task(serve(app)) if os.environ.get('CATALOG_LISTING_RESULT_WORKER','1')=='1' else None
+        try:
+            yield
+        finally:
+            if task:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+
+    app=FastAPI(lifespan=lifespan,title='商品库 API',version='1.0.0',docs_url=None,redoc_url=None,description='独立商品库；可通过绑定店铺明确提交沃尔玛商品，不操作 ERP。')
     app.state.catalog=catalog
     app.state.auth=auth
     app.include_router(auth_routes(auth,secure_cookie))
@@ -65,6 +79,8 @@ def create_app(database=None):
     app.include_router(public_media_routes(catalog,storage))
     from .listing_generation_jobs import generation_routes
     app.include_router(generation_routes(catalog,app.state.walmart_publisher))
+    from .listing_prerequisites import prerequisite_routes
+    app.include_router(prerequisite_routes(catalog))
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request, exc):
@@ -124,7 +140,7 @@ def create_app(database=None):
     def health():
         with catalog.connect() as db:
             db.execute('SELECT 1').fetchone()
-        return {'status':'ok','schema_version':17,
+        return {'status':'ok','schema_version':18,
                 'database':'postgresql' if catalog.postgres else 'sqlite',
                 'images':storage.backend if storage else 'sqlite'}
 

@@ -222,10 +222,12 @@ def public_document(db, bid):
         return None
     p = json.loads(db.execute('SELECT preview_json FROM prelisting_batches WHERE id=?', (bid,)).fetchone()[0])
     validation=json.loads(row['validation_json'])
-    validation={k:v for k,v in validation.items() if k not in ('payloads','schema_digests')}
     cached_specs={}
     requirements={}
     account=db.execute('SELECT * FROM walmart_accounts WHERE store_id=?',(p['store']['id'],)).fetchone()
+    from .listing_prerequisites import validation_current
+    validation['current']=validation_current(db,dict(row),account,validation)
+    validation={k:v for k,v in validation.items() if k not in ('payloads','schema_digests')}
     if account:
         for pt in {r['product_type'] for r in json.loads(row['rows_json']) if r['product_type']}:
             schema=cache_value(db,account,'spec',row['version'],pt)
@@ -245,11 +247,16 @@ def public_document(db, bid):
             data = json.loads(source[0]) if source else {}
             item.setdefault('category', category(data))
             item['category_hints'] = source_category_hints(data)
+    attempts=[]
+    for a in db.execute('SELECT * FROM walmart_listing_attempts WHERE batch_id=? ORDER BY created_at DESC,id DESC',(bid,)):
+        public=public_attempt(a)
+        task=db.execute('SELECT state,next_at,tries,last_error FROM listing_result_tasks WHERE attempt_id=?',(a['id'],)).fetchone()
+        public['polling']=dict(task) if task else None
+        attempts.append(public)
     return dict(revision=row['revision'], version=row['version'], rows=json.loads(row['rows_json']),
                 basis=basis, validation=validation, labels=LABELS,
                 store=p['store'], brand=p['brand'], specs=cached_specs, requirements=requirements, updated_at=row['updated_at'], results=latest_results(db, bid),
-                attempts=[public_attempt(r) for r in db.execute(
-                    'SELECT * FROM walmart_listing_attempts WHERE batch_id=? ORDER BY created_at DESC,id DESC', (bid,))])
+                attempts=attempts)
 
 
 def fresh_basis(catalog, db, record):
@@ -351,7 +358,44 @@ def source_issues(item, variant):
     return list(dict.fromkeys(errors))
 
 
-def check_rows(db, doc, session, binding_row):
+def approved_exemption(session, row, category_name, submission_id):
+    approval=session.exemptions(row['product_type'],str(row['visible'].get('brand','')),submission_id)
+    expected=dict(productType=row['product_type'],brand=row['visible'].get('brand',''),
+                  submissionId=submission_id,exemptionStatus='APPROVED',category=category_name)
+    return any(all(str(a.get(k,'')).strip().casefold()==str(v).strip().casefold() for k,v in expected.items())
+               for a in approval.get('gtinExemptions',[]) if isinstance(a,dict))
+
+
+def feedback_errors(db,doc,row,spec):
+    """Only exact field names from a definite DATA_ERROR can drive AI repair."""
+    attempts=db.execute('SELECT * FROM walmart_listing_attempts WHERE batch_id=? ORDER BY created_at DESC,id DESC',(doc['batch_id'],)).fetchall()
+    sku=row['platform_sku']
+    for a in attempts:
+        originals=[r for r in json.loads(a['rows_json']) if r['platform_sku']==sku]
+        if not originals:
+            continue
+        result=json.loads(a['results_json']).get(sku,{})
+        if result.get('status')!='failed' or result.get('ingestion_status')!='DATA_ERROR':
+            return []
+        original=originals[0];issues=[]
+        for error in result.get('errors',[]):
+            text=error.get('original','');matched=[]
+            for section,shape in sections(spec,row['product_type']).items():
+                if section not in ('visible','orderable'):
+                    continue
+                for key in shape.get('properties',{}):
+                    if re.search(r'(?<![a-zA-Z0-9_])'+re.escape(key)+r'(?![a-zA-Z0-9_])',text,re.I):
+                        matched.append((section,key))
+            for section,key in matched:
+                if original.get(section,{}).get(key)==row[section].get(key):
+                    issues.append(dict(path=section+'.'+key,message='平台处理反馈：'+error['message']+'；'+text[:400]))
+            if not matched and all(row[k]==original.get(k) for k in ('visible','orderable','product_type','identification','extra')):
+                issues.append(dict(path='',message='平台资料失败尚未修正：'+error['message']))
+        return issues
+    return []
+
+
+def check_rows(db, doc, session, binding_row, skus=None):
     basis = unchanged_sources(db, doc)
     by_sku = {v['platform_sku']: (i,v) for i in basis['items'] for v in i['variants']}
     results, payloads, schema_digests = {}, {}, {}
@@ -361,9 +405,14 @@ def check_rows(db, doc, session, binding_row):
     types = {t['name']:t for t in taxonomy}
     nodes=cache_value(db,binding_row,'nodes',age=3600) or []
     for row in json.loads(doc['rows_json']):
+        if skus is not None and row['platform_sku'] not in skus:
+            continue
         sku = row['platform_sku']; item, variant = by_sku[sku]
-        errors = [dict(path='',message=e) for e in source_issues(item,variant)]
+        from .listing_prerequisites import evidence_errors, identifier_ownership_errors
+        errors = evidence_errors(db,doc,row,item)
+        errors.extend(dict(path='',message=e) for e in source_issues(item,variant))
         errors.extend(dict(path='identification',message=e) for e in identifier_errors(row['identification']))
+        errors.extend(identifier_ownership_errors(db,doc,row,item))
         if row['fulfillment_center_id'] not in {n['id'] for n in nodes}:
             errors.append(dict(path='fulfillment_center_id',message='请选择该沃尔玛店铺实际启用的发货仓'))
         if row['visible'].get('brand')!=basis['brand']:
@@ -385,17 +434,16 @@ def check_rows(db, doc, session, binding_row):
         if schema is None:
             errors.append(dict(path='product_type',message='请加载该类目的最新官方规格'))
         else:
+            errors.extend(feedback_errors(db,doc,row,schema))
             schema_digests[pt] = fingerprint(schema)
             exempt = False
             if row['identification']['mode'] == 'exemption' and pt in types:
-                approval = session.exemptions(pt,str(row['visible'].get('brand','')),row['identification']['submission_id'])
-                exempt = any(all(str(a.get(k,'')).strip().casefold() == str(v).strip().casefold() for k,v in {
-                    'productType':pt,'brand':row['visible'].get('brand',''),'submissionId':row['identification']['submission_id'],
-                    'exemptionStatus':'APPROVED', 'category':types[pt]['category']}.items()) for a in approval.get('gtinExemptions',[]) if isinstance(a,dict))
+                exempt = approved_exemption(session,row,types[pt]['category'],row['identification']['submission_id'])
                 if not exempt:
                     errors.append(dict(path='identification',message='未查到该店铺、品牌及类目的已批准豁免，不能用申请中或其他店铺的豁免'))
             try:
-                entry, validation_schema = feed_item(row,schema,doc['version'],os.environ.get('CATALOG_PUBLIC_ORIGIN',''),exemption=exempt,
+                from .listing_vision import stable_feed_row
+                entry, validation_schema = feed_item(stable_feed_row(db,row),schema,doc['version'],os.environ.get('CATALOG_PUBLIC_ORIGIN',''),exemption=exempt,
                     stock=int(variant['stock']) if str(variant.get('stock')) in ('0','10') else None)
                 if 'msrp' in entry['Orderable']:
                     prices=[r['orderable'].get('price') for r in json.loads(doc['rows_json']) if r['listing_id']==row['listing_id']]
@@ -409,9 +457,27 @@ def check_rows(db, doc, session, binding_row):
             except (ValueError,VaultError) as exc:
                 errors.append(dict(path='visible.mainImageUrl',message=str(exc)))
         results[sku] = dict(valid=not errors,errors=errors)
-    return dict(id=uuid.uuid4().hex,revision=doc['revision'],at=int(time.time()),binding_revision=binding_row['revision'],
+    from .listing_prerequisites import resource_digest
+    return dict(feedback_digest=fingerprint(latest_results(db,doc['batch_id'])),resources_digest=resource_digest(db,binding_row),id=uuid.uuid4().hex,revision=doc['revision'],at=int(time.time()),binding_revision=binding_row['revision'],
                 partner_id=binding_row['partner_id'],rows=results,schema_digests=schema_digests,payloads=payloads,
                 valid_count=sum(r['valid'] for r in results.values()))
+
+
+def validate_document(catalog, bid, revision, remote, bound):
+    """Shared, read-only upstream validation with guarded persistence afterward."""
+    with catalog.connect() as db:
+        doc=document(db,bid);revision_check(doc,revision)
+        report=check_rows(db,doc,remote,bound)
+    with catalog.connect() as db:
+        write_lock(db);batch(db,bid);current=document(db,bid);revision_check(current,revision)
+        unchanged_sources(db,current)
+        _,live=binding(db,bound['store_id'],bound['partner_id'])
+        from .listing_prerequisites import resource_digest
+        if live['revision']!=bound['revision'] or resource_digest(db,live)!=report['resources_digest']:
+            raise HTTPException(409,'店铺绑定或生成前提变化，请重新校验')
+        db.execute('UPDATE walmart_listing_documents SET validation_json=?,updated_at=? WHERE batch_id=?',
+                   (encoded(report),now(),bid))
+    return report
 
 
 def attempt(db, bid, aid):
@@ -582,17 +648,8 @@ def publishing_routes(catalog):
         try:
             bound,session=context(request,bid)
             with session as remote:
-                with catalog.connect() as db:
-                    # No write lock during upstream exemption lookup; compare the snapshot before committing.
-                    doc=document(db,bid);revision_check(doc,data.revision)
-                    report=check_rows(db,doc,remote,bound)
+                report=validate_document(catalog,bid,data.revision,remote,bound)
             with catalog.connect() as db:
-                write_lock(db);batch(db,bid);current=document(db,bid);revision_check(current,data.revision)
-                unchanged_sources(db,current)
-                _,current_binding=binding(db,bound['store_id'])
-                if current_binding['revision']!=bound['revision']:
-                    raise HTTPException(409,'店铺绑定变化，请重新校验')
-                db.execute('UPDATE walmart_listing_documents SET validation_json=?,updated_at=? WHERE batch_id=?',(encoded(report),now(),bid))
                 event(db,bid,request,'validate',{'valid_count':report['valid_count'],'revision':data.revision})
                 return public_document(db,bid)
         except (WalmartError,VaultError) as exc:
@@ -623,9 +680,9 @@ def publishing_routes(catalog):
                         return public_attempt(prior)
                     basis=unchanged_sources(db,doc);_,current_binding=binding(db,bound['store_id'])
                     report=json.loads(doc['validation_json'])
-                    if (not report or report.get('id')!=data.validation_id or report.get('revision')!=doc['revision']
-                        or report.get('at',0)<time.time()-VALIDATION_AGE or report.get('binding_revision')!=current_binding['revision']
-                        or current_binding['revision']!=bound['revision'] or report.get('partner_id')!=bound['partner_id']):
+                    from .listing_prerequisites import validation_current
+                    if (report.get('id')!=data.validation_id or not validation_current(db,doc,current_binding,report)
+                        or current_binding['revision']!=bound['revision']):
                         raise HTTPException(409,'校验已过期、资料或店铺绑定发生变化，请重新校验')
                     if data.confirm_store_id!=bound['store_id'] or data.confirm_partner_id!=bound['partner_id']:
                         raise HTTPException(409,'确认店铺与批次绑定不一致，未提交')
@@ -680,6 +737,9 @@ def publishing_routes(catalog):
                     write_lock(db)
                     db.execute('UPDATE walmart_listing_attempts SET state=?,feed_id=?,results_json=?,message=?,updated_at=? WHERE id=?',
                         (state,feed_id,encoded(results),message,now(),aid))
+                    if feed_id:
+                        from .listing_result_worker import enqueue
+                        enqueue(db,aid,getattr(request.state,'user',{}).get('id'))
                     event(db,bid,request,'submit_'+state,{'attempt_id':aid,'feed_id':feed_id})
                     return public_attempt(attempt(db,bid,aid))
         except (WalmartError,VaultError) as exc:
@@ -715,6 +775,8 @@ def publishing_routes(catalog):
                 if duplicate:
                     raise HTTPException(409,'该沃尔玛批次编号已经关联其他提交')
                 db.execute("UPDATE walmart_listing_attempts SET state='processing',feed_id=?,message=?,updated_at=? WHERE id=?",(data.feed_id,'已关联原沃尔玛批次，请查询处理结果',now(),aid))
+                from .listing_result_worker import enqueue
+                enqueue(db,aid,getattr(request.state,'user',{}).get('id'))
                 event(db,bid,request,'reconcile',{'attempt_id':aid,'feed_id':data.feed_id})
             return refresh_attempt(catalog,bid,aid,request)
         except (WalmartError,VaultError) as exc:
@@ -756,7 +818,7 @@ def read_feed(remote, feed_id):
     return summary,details
 
 
-def refresh_attempt(catalog,bid,aid,request):
+def refresh_attempt(catalog,bid,aid,request,*,sync_inventory=True):
     token=uuid.uuid4().hex
     with catalog.connect() as db:
         write_lock(db);attempt(db,bid,aid)
@@ -766,7 +828,7 @@ def refresh_attempt(catalog,bid,aid,request):
         db.execute('''INSERT INTO walmart_listing_polls VALUES(?,?,?) ON CONFLICT(attempt_id)
             DO UPDATE SET token=excluded.token,started_at=excluded.started_at''',(aid,token,int(time.time())))
     try:
-        return _refresh_attempt(catalog,bid,aid,request,token)
+        return _refresh_attempt(catalog,bid,aid,request,token,sync_inventory=sync_inventory)
     finally:
         with catalog.connect() as db:
             write_lock(db)
@@ -802,14 +864,14 @@ def inventory_target(catalog,row):
     return int(stock)
 
 
-def _refresh_attempt(catalog,bid,aid,request,poll_token):
+def _refresh_attempt(catalog,bid,aid,request,poll_token,*,sync_inventory=True):
     with catalog.connect() as db:
         a=attempt(db,bid,aid)
         if not a['feed_id']:
             raise HTTPException(409,'没有沃尔玛批次编号，结果未知；请在卖家中心核对并关联原批次，不能直接重提')
         _,bound=binding(db,a['store_id'],a['partner_id'])
     try:
-        with request.app.state.walmart_publisher.session(decrypt(a['store_id'],bound['encrypted_credentials']),a['partner_id'],writing=True) as remote:
+        with request.app.state.walmart_publisher.session(decrypt(a['store_id'],bound['encrypted_credentials']),a['partner_id'],writing=sync_inventory) as remote:
             verify_feed_owner(remote,a['feed_id'],a['partner_id'])
             summary,details=read_feed(remote,a['feed_id'])
             submitted={r['platform_sku']:r for r in json.loads(a['rows_json'])}
@@ -835,7 +897,7 @@ def _refresh_attempt(catalog,bid,aid,request,poll_token):
                 status=detail.get('ingestionStatus')
                 errors=upstream_reason(detail.get('ingestionErrors',{}).get('ingestionError',[]))
                 if status in ('DATA_ERROR','SYSTEM_ERROR','TIMEOUT_ERROR'):
-                    results[sku]=dict(status='failed',message='商品处理失败，可以修改资料后重新校验、重试',errors=errors or feed_errors)
+                    results[sku]=dict(status='failed',ingestion_status=status,message='商品处理失败，可以修改资料后重新校验、重试',errors=errors or feed_errors)
                     continue
                 if status!='SUCCESS':
                     results[sku]=dict(status='processing',message='沃尔玛正在处理或进行合规审核，请稍后查询',errors=errors)
@@ -867,6 +929,8 @@ def _refresh_attempt(catalog,bid,aid,request,poll_token):
                             db.execute('UPDATE walmart_listing_polls SET started_at=? WHERE attempt_id=?',(int(time.time()),aid))
                         target=inventory_target(catalog,row)
                         if inventory.get('quantity',{}).get('amount')!=target:
+                            if not sync_inventory:
+                                raise WalmartError('资料已接收，库存尚未核验；请点击查询并同步库存')
                             remote.set_inventory(sku,target,node)
                             inventory=remote.inventory(sku,node)
                         if inventory.get('sku')!=sku or inventory.get('quantity',{}).get('amount')!=target:

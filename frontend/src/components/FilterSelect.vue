@@ -4,6 +4,7 @@ import AppIcon from './AppIcon.vue';
 
 const props = defineProps<{
   modelValue: string;
+  disabled?: boolean;
   label: string;
   options: { value: string; label: string }[];
 }>();
@@ -19,6 +20,7 @@ function close(restoreFocus = false) {
   if (restoreFocus) root.value.querySelector('summary')?.focus();
 }
 function choose(value: string) {
+  if (props.disabled) return;
   emit('update:modelValue', value);
   close(true);
 }
@@ -39,7 +41,11 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', outside));
     @focusout="leave"
     @keydown.esc.prevent.stop="close(true)"
   >
-    <summary :aria-label="`${label}：${current}`">
+    <summary
+      :aria-label="`${label}：${current}`"
+      :aria-disabled="disabled"
+      @click="disabled && $event.preventDefault()"
+    >
       <span>{{ current }}</span>
       <AppIcon name="ChevronRight" />
     </summary>
@@ -48,6 +54,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', outside));
         v-for="item in options"
         :key="item.value"
         type="button"
+        :disabled="disabled"
         :aria-pressed="modelValue === item.value"
         @click="choose(item.value)"
       >
