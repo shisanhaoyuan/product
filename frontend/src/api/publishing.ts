@@ -61,6 +61,7 @@ export interface Attempt {
   results: Record<string, ListingResult>;
 }
 export interface ListingDocument {
+  requirements?: Record<string, { visible?: string[]; orderable?: string[] }>;
   specs?: Record<string, ListingSpec>;
   revision: number;
   version: string;
@@ -98,6 +99,26 @@ export interface ListingSpec {
   digest: string;
   labels: Record<string, string>;
 }
+export interface GenerationJob {
+  id: string;
+  revision: number;
+  batch_id: string;
+  state: 'queued' | 'running' | 'complete' | 'failed' | 'interrupted';
+  message: string;
+  report: {
+    model?: string;
+    total?: number;
+    rows: Record<
+      string,
+      {
+        state: string;
+        issues: Issue[];
+        estimated?: number;
+        fields: Record<string, { kind: string; value?: unknown; reason?: string; refs?: string[] }>;
+      }
+    >;
+  };
+}
 const body = (method: string, data: unknown = {}) => ({
   method,
   headers: { 'Content-Type': 'application/json' },
@@ -105,6 +126,12 @@ const body = (method: string, data: unknown = {}) => ({
 });
 const path = (bid: string) => `/api/prelisting/batches/${encodeURIComponent(bid)}/walmart`;
 export const publishingApi = {
+  generation: (bid: string) =>
+    request<{
+      job: GenerationJob | null;
+      ai: { configured: boolean; model: string; host: string };
+    }>(path(bid) + '/generation'),
+  generate: (bid: string) => request<GenerationJob>(path(bid) + '/generation', body('POST')),
   read: (bid: string) => request<ListingDocument | null>(path(bid)),
   prepare: (bid: string) => request<ListingDocument>(path(bid) + '/prepare', body('POST')),
   save: (bid: string, doc: ListingDocument) =>

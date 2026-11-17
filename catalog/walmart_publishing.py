@@ -224,12 +224,18 @@ def public_document(db, bid):
     validation=json.loads(row['validation_json'])
     validation={k:v for k,v in validation.items() if k not in ('payloads','schema_digests')}
     cached_specs={}
+    requirements={}
     account=db.execute('SELECT * FROM walmart_accounts WHERE store_id=?',(p['store']['id'],)).fetchone()
     if account:
         for pt in {r['product_type'] for r in json.loads(row['rows_json']) if r['product_type']}:
             schema=cache_value(db,account,'spec',row['version'],pt)
             if schema:
                 cached_specs[pt]=dict(sections=sections(schema,pt),digest=fingerprint(schema),labels=LABELS)
+                from .listing_generation import required_keys
+                for entry in json.loads(row['rows_json']):
+                    if entry['product_type']==pt:
+                        requirements[entry['platform_sku']]={section:sorted(required_keys(shape,entry.get(section,{})))
+                            for section,shape in sections(schema,pt).items() if section in ('visible','orderable')}
     basis = json.loads(row['basis_json'])
     # Older documents lack this hint. Resolve only their own source listing;
     # the browser still checks against the current store's actual taxonomy.
@@ -241,7 +247,7 @@ def public_document(db, bid):
             item['category_hints'] = source_category_hints(data)
     return dict(revision=row['revision'], version=row['version'], rows=json.loads(row['rows_json']),
                 basis=basis, validation=validation, labels=LABELS,
-                store=p['store'], brand=p['brand'], specs=cached_specs, updated_at=row['updated_at'], results=latest_results(db, bid),
+                store=p['store'], brand=p['brand'], specs=cached_specs, requirements=requirements, updated_at=row['updated_at'], results=latest_results(db, bid),
                 attempts=[public_attempt(r) for r in db.execute(
                     'SELECT * FROM walmart_listing_attempts WHERE batch_id=? ORDER BY created_at DESC,id DESC', (bid,))])
 
@@ -310,6 +316,13 @@ def cache_put(db, account_row, kind, value, version='', pt=''):
         ON CONFLICT(store_id,partner_id,kind,version,product_type)
         DO UPDATE SET data_json=excluded.data_json,fetched_at=excluded.fetched_at''',
         (account_row['store_id'],account_row['partner_id'],kind,version,pt,encoded(value),int(time.time())))
+
+
+def normalize_nodes(raw):
+    if not isinstance(raw,list):
+        raise WalmartError('沃尔玛发货仓响应格式异常')
+    return [dict(id=str(n['shipNode']),name=n.get('shipNodeName') or str(n['shipNode']),type=n.get('nodeType',''))
+            for n in raw if isinstance(n,dict) and n.get('status')=='ACTIVE' and n.get('shipNode')]
 
 
 def unchanged_sources(db, doc):
@@ -554,10 +567,7 @@ def publishing_routes(catalog):
             if value is None:
                 with session as remote:
                     raw=remote.nodes()
-                if not isinstance(raw,list):
-                    raise WalmartError('沃尔玛发货仓响应格式异常')
-                value=[dict(id=str(n['shipNode']),name=n.get('shipNodeName') or str(n['shipNode']),type=n.get('nodeType',''))
-                    for n in raw if isinstance(n,dict) and n.get('status')=='ACTIVE' and n.get('shipNode')]
+                value=normalize_nodes(raw)
                 with catalog.connect() as db:
                     write_lock(db);_,current=binding(db,bound['store_id'])
                     if current['revision']!=bound['revision']:

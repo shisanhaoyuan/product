@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_FLOOR, ROUND_HALF_UP
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, BackgroundTasks
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .blacklist import active_entries, matches, seller_key
@@ -411,7 +411,7 @@ def prelisting_routes(catalog):
             return build_preview(catalog, db, data)[0]
 
     @router.post('/api/prelisting/batches', status_code=201)
-    def create(data: CreateInput, request: Request):
+    def create(data: CreateInput, request: Request, background_tasks: BackgroundTasks):
         request_hash = fingerprint(data.model_dump(mode='json'))
         with catalog.connect() as db:
             write_lock(db)
@@ -438,6 +438,8 @@ def prelisting_routes(catalog):
                 db.execute('INSERT INTO prelisting_items VALUES(?,?,?,?)', (bid,row['id'],row['digest'],row['data_json']))
                 db.execute('INSERT INTO prelisting_claims VALUES(?,?,?,?)', (seller_key(item['source']),claim_identity(item),data.store_id,bid))
             event(db, bid, request, 'create', now)
+            from .listing_generation_jobs import auto_start
+            background_tasks.add_task(auto_start,catalog,request.app.state.walmart_publisher,bid,actor(request))
             return batch(db, bid)
 
     @router.get('/api/prelisting/batches')

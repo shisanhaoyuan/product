@@ -225,6 +225,57 @@
 .listing-form-section {
   padding: 28px 30px;
   min-height: 340px;
+  scroll-margin-top: 100px;
+}
+.listing-form-section + .listing-form-section {
+  border-top: 1px solid #dfe7ed;
+}
+.listing-section-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  padding: 18px 30px;
+  background: #f5f8fb;
+  border-bottom: 1px solid #dfe7ed;
+}
+.listing-section-links a {
+  color: #375e7a;
+  text-decoration: none;
+  font-weight: 600;
+}
+.listing-generation {
+  padding: 20px 24px;
+  border: 1px solid #d6e2ec;
+  border-radius: 12px;
+  background: #f4f8fb;
+}
+.listing-generation .listing-subheading {
+  margin: 0;
+}
+.listing-generation-issues {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 14px 0;
+}
+.listing-generation-issues button {
+  color: #9d3540;
+  background: #fff;
+  text-align: left;
+  white-space: normal;
+}
+.listing-generation-fields {
+  display: grid;
+  gap: 8px;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.listing-generation-fields dt {
+  font-weight: 650;
+}
+.listing-generation-fields dd {
+  margin: 0 0 10px;
+  color: #627481;
 }
 .listing-field {
   display: grid;

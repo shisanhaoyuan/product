@@ -63,6 +63,8 @@ def create_app(database=None):
     app.state.walmart_publisher=WalmartPublishingClient()
     app.include_router(publishing_routes(catalog))
     app.include_router(public_media_routes(catalog,storage))
+    from .listing_generation_jobs import generation_routes
+    app.include_router(generation_routes(catalog,app.state.walmart_publisher))
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request, exc):
@@ -122,7 +124,7 @@ def create_app(database=None):
     def health():
         with catalog.connect() as db:
             db.execute('SELECT 1').fetchone()
-        return {'status':'ok','schema_version':16,
+        return {'status':'ok','schema_version':17,
                 'database':'postgresql' if catalog.postgres else 'sqlite',
                 'images':storage.backend if storage else 'sqlite'}
 

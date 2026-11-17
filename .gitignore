@@ -16,4 +16,5 @@ releases/
 *.pem
 *.key
 validation/*.png
+validation/*.jpg
 validation/*.json

@@ -36,6 +36,8 @@ class Catalog:
                 initialize_walmart(db)
                 from .walmart_publishing import initialize as initialize_publishing
                 initialize_publishing(db)
+                from .listing_generation_jobs import initialize as initialize_generation
+                initialize_generation(db)
                 if not db.execute('SELECT 1 FROM migrations WHERE version=7').fetchone():
                     from .projection import rebuild
                     rebuild(db)
@@ -95,6 +97,8 @@ class Catalog:
             initialize_walmart(db)
             from .walmart_publishing import initialize as initialize_publishing
             initialize_publishing(db)
+            from .listing_generation_jobs import initialize as initialize_generation
+            initialize_generation(db)
             from .images import initialize as initialize_images
             initialize_images(db)
             from .source_capture import initialize as initialize_source_capture

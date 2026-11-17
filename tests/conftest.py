@@ -4,6 +4,12 @@ from urllib.parse import quote
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def no_live_listing_ai(monkeypatch):
+    # The developer may have a real private .env.listing-ai; tests never use it.
+    monkeypatch.setenv('CATALOG_LISTING_AI_ENABLED', '0')
+
+
 def pytest_addoption(parser):
     parser.addoption('--postgres-dsn', default=None, help='Disposable PostgreSQL database for parity tests')
 

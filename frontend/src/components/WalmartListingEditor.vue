@@ -11,6 +11,7 @@ import {
   type JsonSchema,
   type Issue,
   type Attempt,
+  type GenerationJob,
 } from '../api/publishing';
 import { catalogApi as api } from '../api/client';
 import { useAuth } from '../composables/useAuth';
@@ -83,6 +84,38 @@ const serialized = () =>
   doc.value ? JSON.stringify({ version: doc.value.version, rows: doc.value.rows }) : '';
 const dirty = computed(() => !!doc.value && serialized() !== saved.value);
 const current = computed(() => doc.value?.rows.find((r) => r.platform_sku === activeSku.value));
+const generation = ref<GenerationJob | null>(null);
+const aiReady = ref(false);
+const generating = computed(() => ['queued', 'running'].includes(generation.value?.state || ''));
+const generationRow = computed(() => generation.value?.report.rows[activeSku.value]);
+const generationStale = computed(
+  () => !generating.value && generation.value && generation.value.revision !== doc.value?.revision,
+);
+let generationTimer: ReturnType<typeof setTimeout> | undefined;
+
+async function pollGeneration() {
+  clearTimeout(generationTimer);
+  const status = await publishingApi.generation(props.bid);
+  if (!live) return;
+  const wasRunning = generating.value;
+  generation.value = status.job;
+  aiReady.value = status.ai.configured;
+  if (!dirty.value && (generating.value || wasRunning)) await load();
+  if (wasRunning && !generating.value && canEdit.value) await loadMetadata();
+  if (generating.value)
+    generationTimer = setTimeout(() => {
+      pollGeneration().catch((e) => {
+        error.value = errorMessage(e);
+      });
+    }, 2500);
+}
+async function generate() {
+  await run(async () => {
+    await save();
+    generation.value = await publishingApi.generate(props.bid);
+    await pollGeneration();
+  });
+}
 const currentSpec = computed(() =>
   current.value ? specs.value[current.value.product_type] : undefined,
 );
@@ -95,6 +128,7 @@ const sourceVariant = computed(() =>
 const result = computed(() => doc.value?.results[activeSku.value]);
 const locked = computed(
   () =>
+    generating.value ||
     !canEdit.value ||
     (!!result.value && !['failed', 'rejected', 'unpublished'].includes(result.value.status)),
 );
@@ -109,7 +143,18 @@ const copyKeys = [
 ];
 const hiddenOrderable = ['sku', 'productIdentifiers', 'inventory', 'SkuUpdate', 'ProductIdUpdate'];
 const visibleProperties = computed(() => currentSpec.value?.sections.visible?.properties || {});
-const required = computed(() => currentSpec.value?.sections.visible?.required || []);
+const required = computed(() => [
+  ...new Set([
+    ...(currentSpec.value?.sections.visible?.required || []),
+    ...(doc.value?.requirements?.[activeSku.value]?.visible || []),
+  ]),
+]);
+const requiredOrderable = computed(() => [
+  ...new Set([
+    ...(currentSpec.value?.sections.orderable.required || []),
+    ...(doc.value?.requirements?.[activeSku.value]?.orderable || []),
+  ]),
+]);
 const mandatoryKeys = computed(() =>
   Object.keys(visibleProperties.value).filter(
     (k) => required.value.includes(k) && !basic.includes(k) && !copyKeys.includes(k),
@@ -124,8 +169,7 @@ const orderableKeys = computed(() =>
   Object.keys(currentSpec.value?.sections.orderable.properties || {}).filter(
     (k) =>
       !hiddenOrderable.includes(k) &&
-      (currentSpec.value?.sections.orderable.required?.includes(k) ||
-        ['price', 'msrp'].includes(k)),
+      (requiredOrderable.value.includes(k) || ['price', 'msrp'].includes(k)),
   ),
 );
 const optionalOrderableKeys = computed(() =>
@@ -202,9 +246,14 @@ async function load() {
 async function prepare() {
   await run(async () => {
     install(await publishingApi.prepare(props.bid));
-    await loadMetadata();
-    if (current.value?.product_type) await getSpec();
+    await pollGeneration();
+    if (!generating.value) {
+      await loadMetadata();
+      if (current.value?.product_type) await getSpec();
+    }
   });
+  await pollGeneration();
+  if (aiReady.value && !generation.value) await generate();
 }
 async function loadMetadata() {
   const values = await Promise.allSettled([
@@ -234,7 +283,7 @@ async function save() {
     throw new Error('有属性结构格式错误，请先修正标红字段');
   clearTimeout(saveTimer);
   if (saveFlight) await saveFlight;
-  if (!dirty.value || !doc.value || !canEdit.value) return;
+  if (!dirty.value || !doc.value || !canEdit.value || generating.value) return;
   saving.value = true;
   const input = structuredClone(
     doc.value ? JSON.parse(JSON.stringify(doc.value)) : null,
@@ -309,7 +358,8 @@ async function changeType() {
 watch(activeSku, async () => {
   tab.value = 'basic';
   typeQuery.value = '';
-  if (current.value?.product_type && !specs.value[current.value.product_type]) await run(getSpec);
+  if (!generating.value && current.value?.product_type && !specs.value[current.value.product_type])
+    await run(getSpec);
 });
 async function validate() {
   await run(async () => {
@@ -404,8 +454,7 @@ async function jump(issue: Issue) {
     segments.some((k) => basic.includes(k))
   )
     tab.value = 'basic';
-  else if (copyKeys.some((k) => issue.path.includes(k))) tab.value = 'content';
-  else tab.value = 'required';
+  else tab.value = 'basic';
   await nextTick();
   const normalizedPath = issue.path
     .toLowerCase()
@@ -442,14 +491,18 @@ async function upload(e: Event) {
   });
   input.value = '';
 }
-onMounted(() => {
-  void run(async () => {
+onMounted(async () => {
+  await run(async () => {
     await load();
+    await pollGeneration();
     if (doc.value && canEdit.value) {
-      await loadMetadata();
-      if (current.value?.product_type) await getSpec();
+      if (!generating.value) {
+        await loadMetadata();
+        if (current.value?.product_type) await getSpec();
+      }
     }
   });
+  if (live && doc.value && canEdit.value && aiReady.value && !generation.value) void generate();
 });
 async function saveBeforeNavigation() {
   try {
@@ -465,6 +518,7 @@ onBeforeRouteUpdate(saveBeforeNavigation);
 onBeforeUnmount(() => {
   live = false;
   clearTimeout(saveTimer);
+  clearTimeout(generationTimer);
 });
 </script>
 
@@ -474,7 +528,7 @@ onBeforeUnmount(() => {
       <div>
         <p class="eyebrow">WALMART US</p>
         <h2>商品刊登资料</h2>
-        <p>逐项填写，校验后提交到本批次指定店铺。</p>
+        <p>系统自动整理同 SKU 来源资料；检查生成结果，校验后提交到本批次指定店铺。</p>
       </div>
       <span v-if="doc" class="listing-save-state">{{
         saving ? '正在保存…' : dirty ? '有未保存修改' : '资料已保存'
@@ -510,10 +564,90 @@ onBeforeUnmount(() => {
         <div>
           <span>已发布</span><strong>{{ completed }} / {{ doc.rows.length }}</strong>
         </div>
-        <button class="btn small" :disabled="busy || saving || !canEdit" @click="refreshSource">
+        <button
+          class="btn small"
+          :disabled="busy || saving || generating || !canEdit"
+          @click="refreshSource"
+        >
           刷新来源价格库存
         </button>
       </div>
+      <section class="listing-generation notice-space" aria-label="自动生成状态" aria-live="polite">
+        <div class="listing-subheading">
+          <div>
+            <strong>{{
+              generating
+                ? '正在自动生成刊登资料'
+                : generation
+                  ? '刊登资料生成结果'
+                  : '自动生成刊登资料'
+            }}</strong>
+            <p>
+              {{
+                generation?.message ||
+                (aiReady
+                  ? '根据商品来源、官方类目与填写规则自动补齐'
+                  : 'AI 未配置，来源资料仍可正常查看和编辑')
+              }}
+            </p>
+            <small v-if="generation"
+              >已处理 {{ Object.keys(generation.report.rows).length }} /
+              {{ generation.report.total ?? doc.rows.length }} 个 SKU ·
+              {{ generation.report.model }}</small
+            >
+          </div>
+          <button
+            v-if="canEdit"
+            class="btn"
+            :disabled="busy || saving || generating"
+            @click="generate"
+          >
+            {{ generation ? '重新生成缺项' : '自动生成资料' }}
+          </button>
+        </div>
+        <p v-if="generationRow?.estimated" class="notice">
+          当前 SKU 有 {{ generationRow.estimated }} 项 AI 估算，具体依据见下方生成记录。
+        </p>
+        <p v-if="generationStale" class="muted">
+          资料已修改，生成记录为修改前的结果。请重新校验；仍有缺项时可重新生成。
+        </p>
+        <div
+          v-if="!generationStale && generationRow?.issues.length"
+          class="listing-generation-issues"
+        >
+          <button
+            v-for="(issue, index) in generationRow.issues"
+            :key="index"
+            class="btn small"
+            @click="jump(issue)"
+          >
+            {{ doc.labels[issue.path.split('.').at(-1)!] || issue.path || '生成异常' }}：{{
+              issue.message
+            }}
+          </button>
+        </div>
+        <details v-if="generationRow && Object.keys(generationRow.fields).length">
+          <summary>查看当前 SKU 的生成依据</summary>
+          <dl class="listing-generation-fields">
+            <template v-for="(field, path) in generationRow.fields" :key="path"
+              ><dt>
+                {{ doc.labels[String(path).split('.').at(-1)!] || path }} ·
+                {{
+                  field.kind === 'estimate'
+                    ? 'AI 估算'
+                    : field.kind === 'user_rule'
+                      ? '用户规则'
+                      : '来源映射'
+                }}
+              </dt>
+              <dd>
+                {{ field.reason
+                }}<span v-if="field.refs?.length"> · {{ field.refs.join('、') }}</span>
+              </dd></template
+            >
+          </dl>
+        </details>
+      </section>
       <div class="listing-workspace">
         <aside class="listing-sku-sidebar">
           <div class="listing-sku-heading">
@@ -612,9 +746,7 @@ onBeforeUnmount(() => {
           <nav class="listing-tabs" aria-label="刊登资料分组">
             <button
               v-for="[key, label] in [
-                ['basic', '基本信息'],
-                ['content', '图片与文案'],
-                ['required', '必填属性'],
+                ['basic', '商品刊登资料'],
                 ['optional', '选填属性'],
                 ['results', '处理结果'],
               ]"
@@ -623,12 +755,34 @@ onBeforeUnmount(() => {
               @click="tab = key"
             >
               {{ label }}
-              <span v-if="key === 'required' && mandatoryKeys.length">{{
-                mandatoryKeys.length
-              }}</span>
+              <span v-if="key === 'basic' && mandatoryKeys.length">{{ mandatoryKeys.length }}</span>
             </button>
           </nav>
-          <section v-if="tab === 'basic'" class="listing-form-section">
+          <nav v-if="tab === 'basic'" class="listing-section-links" aria-label="资料分区定位">
+            <a
+              href="#listing-basic"
+              @click.prevent="
+                root?.querySelector('#listing-basic')?.scrollIntoView({ behavior: 'smooth' })
+              "
+              >基本信息</a
+            >
+            <a
+              href="#listing-content"
+              @click.prevent="
+                root?.querySelector('#listing-content')?.scrollIntoView({ behavior: 'smooth' })
+              "
+              >图片与文案</a
+            >
+            <a
+              href="#listing-required"
+              @click.prevent="
+                root?.querySelector('#listing-required')?.scrollIntoView({ behavior: 'smooth' })
+              "
+              >必填属性 {{ mandatoryKeys.length }}</a
+            >
+          </nav>
+          <section v-if="tab === 'basic'" id="listing-basic" class="listing-form-section">
+            <div class="listing-subheading"><h3>基本信息与价格</h3></div>
             <div class="listing-field" data-listing-path="product_type">
               <label class="listing-field-label"
                 ><span><i class="listing-required">*</i>沃尔玛商品类型</span
@@ -663,7 +817,7 @@ onBeforeUnmount(() => {
                     </option></select
                   ><button
                     class="btn small"
-                    :disabled="busy"
+                    :disabled="busy || generating"
                     @click="
                       run(async () => {
                         await loadMetadata();
@@ -676,7 +830,7 @@ onBeforeUnmount(() => {
                 </div>
                 <small v-if="source?.category" class="muted">来源类目：{{ source.category }}</small>
                 <small class="muted"
-                  >根据来源类目及同义名称匹配当前店铺的实际商品类型；无法唯一匹配时请手动选择。</small
+                  >系统匹配当前店铺的实际商品类型；有冲突时记录原因，确认来源后可重新生成。</small
                 >
               </div>
             </div>
@@ -773,7 +927,7 @@ onBeforeUnmount(() => {
                 :labels="doc.labels"
                 :model-value="current.orderable[key]"
                 :disabled="locked"
-                :required="currentSpec.sections.orderable.required?.includes(key)"
+                :required="requiredOrderable.includes(key)"
                 :path="'orderable.' + key"
                 :issues="dirty ? [] : fieldIssues(key, 'Orderable')"
                 @update:model-value="update('orderable', key, $event)"
@@ -784,7 +938,8 @@ onBeforeUnmount(() => {
               <pre>{{ sourceVariant }}</pre>
             </details>
           </section>
-          <section v-else-if="tab === 'content'" class="listing-form-section">
+          <section v-if="tab === 'basic'" id="listing-content" class="listing-form-section">
+            <div class="listing-subheading"><h3>图片与文案</h3></div>
             <div class="listing-subheading">
               <h4>商品图片</h4>
               <p>第一张为主图，可点击放大。请使用真实商品图片。</p>
@@ -853,7 +1008,8 @@ onBeforeUnmount(() => {
             />
           </section>
           <section
-            v-else-if="tab === 'required' || tab === 'optional'"
+            v-if="tab === 'basic' || tab === 'optional'"
+            id="listing-required"
             class="listing-form-section"
           >
             <p v-if="!currentSpec" class="notice">
@@ -861,7 +1017,7 @@ onBeforeUnmount(() => {
             </p>
             <template v-else
               ><div class="listing-subheading">
-                <h4>{{ tab === 'required' ? '该类目必填属性' : '该类目选填属性' }}</h4>
+                <h3>{{ tab === 'basic' ? '该类目必填属性' : '该类目选填属性' }}</h3>
                 <p>单位、数值及选项均以沃尔玛当前规格为准。</p>
               </div>
               <div v-if="tab === 'optional'" class="listing-inline-controls">
@@ -879,7 +1035,7 @@ onBeforeUnmount(() => {
                 当前显示已填写项；搜索名称或勾选“显示全部”可添加更多属性。
               </p>
               <ListingSchemaField
-                v-for="key in tab === 'required'
+                v-for="key in tab === 'basic'
                   ? mandatoryKeys
                   : optionalKeys.filter((k) => showOptional(k, 'visible'))"
                 :key="key"
@@ -918,7 +1074,7 @@ onBeforeUnmount(() => {
                   @update:model-value="current!.extra[key] = $event" /></template
             ></template>
           </section>
-          <section v-else class="listing-form-section listing-results">
+          <section v-if="tab === 'results'" class="listing-form-section listing-results">
             <div class="listing-subheading">
               <h4>沃尔玛处理结果</h4>
               <p>收到批次编号代表已接收；以逐项处理和发布状态为准。</p>
@@ -1055,16 +1211,23 @@ onBeforeUnmount(() => {
           <button
             v-if="canEdit"
             class="btn"
-            :disabled="busy || saving || !dirty"
+            :disabled="busy || saving || generating || !dirty"
             @click="run(save)"
           >
             保存资料</button
-          ><button v-if="canEdit" class="btn" :disabled="busy || saving" @click="validate">
+          ><button
+            v-if="canEdit"
+            class="btn"
+            :disabled="busy || saving || generating"
+            @click="validate"
+          >
             1. 校验上架资料</button
           ><button
             v-if="canSubmit"
             class="btn primary"
-            :disabled="busy || saving || dirty || !selectedValid.length || !doc.validation.id"
+            :disabled="
+              busy || saving || generating || dirty || !selectedValid.length || !doc.validation.id
+            "
             @click="openSubmit"
           >
             2. 提交沃尔玛</button
