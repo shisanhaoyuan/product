@@ -23,6 +23,26 @@ export interface RealIdentifier {
 export type IdentifierInput = Omit<RealIdentifier, 'kind' | 'created_at'> & {
   type: RealIdentifier['kind'];
 };
+export interface IdentifierImportReport {
+  filename: string;
+  total: number;
+  valid: number;
+  duplicate: number;
+  invalid: number;
+  inserted?: number;
+  existing?: number;
+  at?: string;
+  sample: string[];
+  errors: { sheet: string; row: number; message: string }[];
+}
+export interface IdentifierPage {
+  items: RealIdentifier[];
+  total: number;
+  page: number;
+  page_size: number;
+  stats: { total: number; available: number; assigned: number };
+  imports: IdentifierImportReport[];
+}
 const body = (method: string, value: unknown = {}) => ({
   method,
   headers: { 'Content-Type': 'application/json' },
@@ -35,7 +55,16 @@ export const preparationApi = {
     request<{ nodes: ShipNode[]; types: ProductType[] }>(path(sid) + '/options', body('POST')),
   save: (sid: number, settings: PreparationSettings) =>
     request<PreparationSettings>(path(sid), body('PUT', settings)),
-  codes: () => request<{ items: RealIdentifier[] }>('/api/walmart/identifiers'),
+  codes: (q = '', status = '', page = 1) =>
+    request<IdentifierPage>(
+      '/api/walmart/identifiers?' + new URLSearchParams({ q, status, page: String(page) }),
+    ),
   import: (items: IdentifierInput[]) =>
     request<{ imported: number }>('/api/walmart/identifiers', body('POST', { items })),
+  spreadsheet: (file: File, brand = '', proof = '', preview = true) =>
+    request<IdentifierImportReport>(
+      '/api/walmart/identifiers/spreadsheet?' +
+        new URLSearchParams({ filename: file.name, brand, proof, preview: String(preview) }),
+      { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file },
+    ),
 };

@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import {
   preparationApi,
   type PreparationSettings,
   type RealIdentifier,
   type IdentifierInput,
+  type IdentifierImportReport,
 } from '../api/preparation';
 import type { WalmartStore } from '../api/walmart';
 import type { ProductType, ShipNode } from '../api/publishing';
@@ -57,14 +58,87 @@ const busy = ref(false),
   message = ref(''),
   input = ref(''),
   query = ref('');
-const filtered = computed(() =>
-  codes.value.filter((c) =>
-    [c.value, c.brand, c.source_sku, c.proof]
-      .join(' ')
-      .toLowerCase()
-      .includes(query.value.toLowerCase()),
-  ),
-);
+const stats = ref({ total: 0, available: 0, assigned: 0 });
+const page = ref(1),
+  total = ref(0),
+  codeStatus = ref('');
+const imports = ref<IdentifierImportReport[]>([]);
+const selectedFile = ref<File>();
+const fileReport = ref<IdentifierImportReport>();
+const fileBrand = ref(''),
+  fileProof = ref(''),
+  dragging = ref(false);
+const lastPage = computed(() => Math.max(1, Math.ceil(total.value / 100)));
+let searchTimer: ReturnType<typeof setTimeout> | undefined;
+let requestVersion = 0;
+async function refreshCodes() {
+  const version = ++requestVersion;
+  const result = await preparationApi.codes(query.value, codeStatus.value, page.value);
+  if (version !== requestVersion) return;
+  codes.value = result.items;
+  stats.value = result.stats;
+  total.value = result.total;
+  imports.value = result.imports;
+}
+watch([query, codeStatus], () => {
+  page.value = 1;
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(
+    () =>
+      void refreshCodes().catch((e) => {
+        error.value = errorMessage(e);
+      }),
+    250,
+  );
+});
+onBeforeUnmount(() => {
+  clearTimeout(searchTimer);
+  requestVersion++;
+});
+async function chooseFile(file?: File) {
+  selectedFile.value = undefined;
+  fileReport.value = undefined;
+  if (!file) return;
+  await run(async () => {
+    if (file.size > 8 * 1024 * 1024) throw new Error('编码表最大8MB，请拆分导入');
+    fileReport.value = await preparationApi.spreadsheet(file, fileBrand.value, fileProof.value);
+    selectedFile.value = file;
+  });
+}
+async function importFile() {
+  if (!selectedFile.value || !fileReport.value) return;
+  await run(async () => {
+    const report = await preparationApi.spreadsheet(
+      selectedFile.value!,
+      fileBrand.value,
+      fileProof.value,
+      false,
+    );
+    fileReport.value = report;
+    selectedFile.value = undefined;
+    page.value = 1;
+    await refreshCodes();
+    message.value = `入库 ${report.inserted} 个，已存在跳过 ${report.existing} 个，表内重复 ${report.duplicate} 个，无效 ${report.invalid} 个。`;
+  });
+}
+async function turnPage(value: number) {
+  page.value = value;
+  await run(refreshCodes);
+}
+function fileChanged(event: Event) {
+  const element = event.target as HTMLInputElement;
+  void chooseFile(element.files?.[0]);
+  element.value = '';
+}
+function dropFile(event: DragEvent) {
+  dragging.value = false;
+  if (busy.value) return;
+  if ((event.dataTransfer?.files.length || 0) !== 1) {
+    error.value = '请每次上传一个编码表格';
+    return;
+  }
+  void chooseFile(event.dataTransfer?.files[0]);
+}
 async function run(work: () => Promise<void>) {
   busy.value = true;
   error.value = '';
@@ -84,7 +158,7 @@ onMounted(() =>
       const actual = await preparationApi.options(props.store.store_id);
       nodes.value = actual.nodes;
       types.value = actual.types;
-    } else codes.value = (await preparationApi.codes()).items;
+    } else await refreshCodes();
   }),
 );
 async function save() {
@@ -132,7 +206,7 @@ async function importCodes() {
           };
         });
     const result = await preparationApi.import(items);
-    codes.value = (await preparationApi.codes()).items;
+    await refreshCodes();
     input.value = '';
     message.value = `已处理 ${result.imported} 条真实编码；重复导入保留原归属。`;
   });
@@ -235,29 +309,115 @@ async function importCodes() {
       </template>
       <template v-if="!store">
         <p class="notice">
-          仅导入有真实归属依据的编码，不生成随机条码。相同商品、品牌跨店复用；不同变体不会共用。已分配的归属不可覆盖。
+          创建预上架批次时随机抽取未分配编码，并固定绑定子 SKU
+          和品牌。不同商品不共用；同商品、同品牌跨店或重试沿用原编码。取消不会释放编码。
         </p>
-        <label
-          >批量导入（从表格复制，使用制表符分隔）<textarea
-            v-model="input"
-            rows="5"
-            :disabled="busy"
-            placeholder="类型[TAB]编码[TAB]品牌[TAB]归属证明[TAB]来源系统（可选）[TAB]来源SKU（可选）"
-          />
-        </label>
-        <small
-          >也可粘贴 JSON 数组：type、value、brand、proof、source_system、source_sku。未指定来源 SKU
-          的编码会按品牌依次分配；请保证归属证明允许该用途。</small
+        <div class="code-stats" aria-label="编码池统计">
+          <div>
+            <span>编码总数</span><strong>{{ stats.total.toLocaleString() }}</strong>
+          </div>
+          <div>
+            <span>可分配</span><strong>{{ stats.available.toLocaleString() }}</strong>
+          </div>
+          <div>
+            <span>已分配</span><strong>{{ stats.assigned.toLocaleString() }}</strong>
+          </div>
+        </div>
+        <section
+          class="code-upload"
+          :class="{ dragging }"
+          @dragover.prevent="dragging = true"
+          @dragleave.prevent="dragging = false"
+          @drop.prevent="dropFile"
         >
-        <button class="btn primary" :disabled="busy || !input.trim()" @click="importCodes">
-          校验并导入真实编码
-        </button>
-        <input
-          v-model="query"
-          type="search"
-          aria-label="搜索编码池"
-          placeholder="搜索编码、品牌、归属 SKU 或证明"
-        />
+          <div class="prep-heading">
+            <h3>导入编码表格</h3>
+            <label class="btn small code-file"
+              >选择表格<input
+                type="file"
+                accept=".xlsx,.csv,.tsv"
+                aria-label="选择编码表格"
+                :disabled="busy"
+                @change="fileChanged"
+            /></label>
+          </div>
+          <p class="muted">
+            拖入或选择 XLSX / CSV / TSV（最大8MB、10万行）。自动识别 EAN、UPC、GTIN 或 UPC/EAN码
+            列，保留前导零；重复编码自动跳过。
+          </p>
+          <div class="code-import-fields">
+            <label
+              >限定品牌（可选）<input
+                v-model="fileBrand"
+                :disabled="busy"
+                maxlength="200"
+                placeholder="留空：分配时绑定预上架品牌"
+            /></label>
+            <label
+              >来源备注（可选）<input
+                v-model="fileProof"
+                :disabled="busy"
+                maxlength="1000"
+                placeholder="默认记录上传文件名"
+            /></label>
+          </div>
+          <div v-if="fileReport" class="code-file-report" role="status">
+            <strong>{{ fileReport.filename }}</strong>
+            <p>
+              有效 {{ fileReport.valid.toLocaleString() }} · 表内重复 {{ fileReport.duplicate }} ·
+              无效 {{ fileReport.invalid }}
+            </p>
+            <small>示例：{{ fileReport.sample.join('、') }}</small>
+            <p v-for="e in fileReport.errors" :key="e.sheet + e.row" class="seller-risk-label">
+              {{ e.sheet }} 第{{ e.row }}行：{{ e.message }}
+            </p>
+          </div>
+          <button
+            class="btn primary"
+            :disabled="busy || !selectedFile || !fileReport"
+            @click="importFile"
+          >
+            确认导入编码池
+          </button>
+          <small
+            >系统校验格式、校验位和唯一性；编码来源记为用户提供，不代表平台已认可编码归属。</small
+          >
+        </section>
+        <details class="code-manual">
+          <summary>粘贴编码或 JSON 导入</summary>
+          <label
+            >批量导入（从表格复制，使用制表符分隔）<textarea
+              v-model="input"
+              rows="5"
+              :disabled="busy"
+              placeholder="类型[TAB]编码[TAB]品牌[TAB]归属证明[TAB]来源系统（可选）[TAB]来源SKU（可选）"
+            />
+          </label>
+          <small
+            >也可粘贴 JSON 数组：type、value、brand、proof、source_system、source_sku。未指定来源
+            SKU 的编码会随机分配；品牌留空可在分配时绑定。</small
+          >
+          <button class="btn primary" :disabled="busy || !input.trim()" @click="importCodes">
+            校验并导入真实编码
+          </button>
+        </details>
+        <div class="code-filters">
+          <input
+            v-model="query"
+            type="search"
+            aria-label="搜索编码池"
+            placeholder="搜索编码、品牌、归属 SKU 或证明"
+          />
+          <FilterSelect
+            v-model="codeStatus"
+            label="分配状态"
+            :options="[
+              { value: '', label: '全部编码' },
+              { value: 'available', label: '未分配' },
+              { value: 'assigned', label: '已分配' },
+            ]"
+          />
+        </div>
         <div class="prep-table">
           <table>
             <thead>
@@ -269,16 +429,35 @@ async function importCodes() {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="c in filtered" :key="c.value">
+              <tr v-for="c in codes" :key="c.value">
                 <td>{{ c.kind }} {{ c.value }}</td>
-                <td>{{ c.brand }}</td>
+                <td>{{ c.brand || '不限品牌（待分配）' }}</td>
                 <td>{{ c.source_sku ? c.source_system + ' / ' + c.source_sku : '未分配' }}</td>
                 <td>{{ c.proof }}</td>
               </tr>
             </tbody>
           </table>
         </div>
-        <small>显示最近 1000 条记录，已分配编码重试时复用。</small>
+        <div class="prep-heading">
+          <small>匹配 {{ total.toLocaleString() }} 个 · 第 {{ page }} / {{ lastPage }} 页</small>
+          <div class="prep-heading">
+            <button class="btn small" :disabled="busy || page <= 1" @click="turnPage(page - 1)">
+              上一页</button
+            ><button
+              class="btn small"
+              :disabled="busy || page >= lastPage"
+              @click="turnPage(page + 1)"
+            >
+              下一页
+            </button>
+          </div>
+        </div>
+        <details v-if="imports.length">
+          <summary>最近表格导入记录</summary>
+          <p v-for="(r, index) in imports" :key="index" class="muted">
+            {{ r.filename }} · 新增 {{ r.inserted }} · 已存在 {{ r.existing }} · {{ r.at }}
+          </p>
+        </details>
       </template>
     </section>
   </div>
@@ -352,6 +531,67 @@ textarea {
 .prep-dialog :deep(.filter-select) {
   width: 100%;
 }
+.code-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+.code-stats > div {
+  display: grid;
+  gap: 6px;
+  padding: 16px;
+  border-radius: 10px;
+  background: #f2f6fa;
+}
+.code-stats span {
+  color: #627888;
+  font-size: 13px;
+}
+.code-stats strong {
+  font-size: 26px;
+  font-variant-numeric: tabular-nums;
+}
+.code-upload {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px dashed #a8bacb;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+.code-upload.dragging {
+  background: #edf3fa;
+  border-color: #587b9d;
+}
+.code-import-fields,
+.code-filters {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.code-file {
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+}
+.code-file input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.code-file:focus-within {
+  outline: 2px solid #587b9d;
+}
+.code-file-report {
+  display: grid;
+  gap: 8px;
+  overflow-wrap: anywhere;
+}
+.code-manual[open] {
+  display: grid;
+  gap: 12px;
+}
 small,
 .muted {
   color: #627888;
@@ -384,6 +624,10 @@ th {
     padding: 18px;
   }
   .prep-exemption {
+    grid-template-columns: 1fr;
+  }
+  .code-import-fields,
+  .code-filters {
     grid-template-columns: 1fr;
   }
   header {

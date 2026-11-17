@@ -236,6 +236,11 @@ export interface PricePlan {
   currency?: string;
   sku: string;
   platform_sku?: string | null;
+  assigned_identifier?: {
+    state: 'pending' | 'assigned' | 'exhausted';
+    type: string;
+    value: string;
+  };
   asin: string;
   current_price: string | null;
   stock: string | null;

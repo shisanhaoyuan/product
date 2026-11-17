@@ -412,6 +412,107 @@ def test_discrete_bed_size_and_sleeper_semantics_are_enforced_in_code():
     assert result==row and report['rejected'] and report['state']=='no_progress'
 
 
+def test_bed_size_vision_receives_options_and_invalidates_old_context(publishing,monkeypatch):
+    _,catalog,*_=publishing
+    monkeypatch.setattr('catalog.listing_vision.fetch_image',lambda url:png())
+    monkeypatch.setattr('catalog.listing_vision.capability',lambda catalog,ai:None)
+    row=listing();shape=spec();visible=sections(shape,PT)['visible']
+    visible['properties']['bedSize']={'type':'string','enum':['Twin','Full','Queen']}
+    class Vision(AI):
+        settings=SimpleNamespace(model='test',vision=True)
+        def query(self,purpose,payload):
+            self.calls.append((purpose,payload))
+            return dict(source_sku=payload['source_sku'],observations=[dict(attribute='bedSize',value='Full',
+                kind='visual_inference',images=payload['images'],confidence=.44,
+                reason='展开睡眠面比例最接近 Full，图片没有清晰尺寸，存在不确定性')])
+    ai=Vision();before=copy.deepcopy(row)
+    variant={'content':{'copy':{'title':'Sleeper Sofa'}}}
+    observations,report=image_evidence(catalog,row,variant,ai,shape)
+    assert report['state']=='complete' and observations[0]['value']=='Full'
+    assert ai.calls[0][1]['fields']['bedSize']['enum']==['Twin','Full','Queen']
+    image_evidence(catalog,row,variant,ai,shape)
+    assert len(ai.calls)==1
+    visible['properties']['bedSize']['enum']=['Queen']
+    image_evidence(catalog,row,variant,ai,shape)
+    assert len(ai.calls)==2 and row==before
+
+
+def test_visual_bed_size_uses_best_low_confidence_without_text_model_agreement():
+    from catalog.listing_generation import fill_row
+    row=listing();shape=spec();visible=sections(shape,PT)['visible']
+    visible['properties']['bedSize']={'type':'string','enum':['Twin','Full','Queen']}
+    visible['required'].append('bedSize')
+    facts={'visual_evidence':[dict(attribute='bedSize',value=value,kind='visual_inference',
+        images=['same-sku-image'],confidence=confidence,reason='按展开床面比例估计，非实测')
+        for value,confidence in [('Twin',.2),('Full',.48),('Queen',.32),('invented',.99)]]}
+    audit={};before=copy.deepcopy(row)
+    filled,issues=fill_row(row,shape,facts,AI(),audit)
+    assert filled['visible']['bedSize']=='Full'
+    assert audit['visible.bedSize']['kind']=='visual_inference'
+    assert audit['visible.bedSize']['confidence']==.48
+    assert audit['visible.bedSize']['refs']==['visual_evidence.1']
+    assert not any(i['path']=='visible.bedSize' for i in issues)
+    assert row==before and filled['orderable']['price']==row['orderable']['price']
+    row['visible']['bedSize']='Queen'
+    assert fill_row(row,shape,facts,AI(),{})[0]['visible']['bedSize']=='Queen'
+
+
+def test_all_ordinary_missing_fields_select_highest_valid_candidate_in_fill_and_repair():
+    from catalog.listing_generation import fill_row
+    row=listing();shape=spec();visible=sections(shape,PT)['visible']
+    for key in ('bedSize','seat_back_cushion_style'):
+        visible['properties'][key]={'type':'string','enum':['First','Best','Other']}
+        visible['required'].append(key)
+    class Ranked(AI):
+        def query(self,purpose,payload):
+            result=super().query(purpose,payload)
+            for field in payload['fields']:
+                if field not in ('visible.bedSize','visible.seat_back_cushion_style'):
+                    continue
+                result['actions'].append(dict(field=field,candidates=[dict(value=value,kind='estimate',refs=[],
+                    confidence=confidence,reason='来源不全，按当前商品用途选最可能候选，非来源事实')
+                    for value,confidence in [('First',.12),('Best',.45),('Other',.23),('INVALID',.99)]]))
+            return result
+    audit={};filled,_=fill_row(row,shape,{},Ranked(),audit)
+    for key in ('bedSize','seat_back_cushion_style'):
+        assert filled['visible'][key]=='Best'
+        assert audit['visible.'+key]['confidence']==.45
+        assert audit['visible.'+key]['selection_policy']=='user_authorized_highest_confidence'
+    errors=[dict(path='visible.'+key,message='缺少必填项') for key in ('bedSize','seat_back_cushion_style')]
+    audit={};fixed,report=repair_row(row,shape,errors,{},Ranked(),audit,1)
+    assert report['state']=='changed' and fixed['visible']['bedSize']=='Best'
+    assert fixed['identification']==row['identification'] and fixed['orderable']==row['orderable']
+    assert fixed['visible']['mainImageUrl']==row['visible']['mainImageUrl']
+
+
+def test_job_persists_same_sku_visual_bed_size_and_reopens(publishing,monkeypatch):
+    c,catalog,*_,base,remote=publishing
+    visible=sections(remote.schema,PT)['visible']
+    visible['properties']['bedSize']={'type':'string','enum':['Twin','Full','Queen']}
+    visible['required'].append('bedSize')
+    seen=[]
+    def visual(catalog,row,variant,ai,schema):
+        assert sections(schema,PT)['visible']['properties']['bedSize']['enum']==['Twin','Full','Queen']
+        seen.append(row['source_sku'])
+        value='Full' if row['source_sku']=='W1' else 'Queen'
+        return [dict(attribute='bedSize',value=value,kind='visual_inference',confidence=.41,
+            images=[row['source_sku']+'-image'],reason='按本 SKU 展开床面比例推测，非实测')],dict(state='complete')
+    monkeypatch.setattr('catalog.listing_generation_jobs.image_evidence',visual)
+    source=catalog.export();before=c.get(base).json()
+    doc,job=run(publishing)
+    assert set(seen)=={'W1','W2'}
+    assert doc['validation']['valid_count']==2
+    assert c.get(base).json()['rows']==doc['rows']
+    for old,row in zip(before['rows'],doc['rows']):
+        assert row['visible']['bedSize']==('Full' if row['source_sku']=='W1' else 'Queen')
+        assert row['orderable']['price']==old['orderable']['price']
+        assert row['identification']==old['identification']
+        assert row['visible']['mainImageUrl']==old['visible']['mainImageUrl']
+        entry=job['report']['rows'][row['platform_sku']]
+        assert entry['fields']['visible.bedSize']['confidence']==.41
+    assert catalog.export()==source and not remote.posts and not remote.stock
+
+
 def test_new_preparation_endpoints_are_admin_only(team,vault):
     from test_auth import login
     admin,_=login(team)

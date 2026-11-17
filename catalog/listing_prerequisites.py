@@ -1,10 +1,11 @@
 """Admin-managed real identifiers and store-scoped, verified prerequisites."""
 import json
+import secrets
 import time
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from .database import write_lock, is_postgres
@@ -51,6 +52,11 @@ def initialize(db):
         batch_id TEXT NOT NULL,platform_sku TEXT NOT NULL,data_json TEXT NOT NULL,
         PRIMARY KEY(batch_id,platform_sku))''')
     db.execute('INSERT INTO migrations VALUES(18) ON CONFLICT DO NOTHING')
+    db.execute('''CREATE TABLE IF NOT EXISTS listing_identifier_imports(
+        id TEXT PRIMARY KEY,filename TEXT NOT NULL,digest TEXT NOT NULL,brand TEXT NOT NULL,
+        report_json TEXT NOT NULL,actor_id INTEGER,created_at TEXT NOT NULL)''')
+    db.execute('CREATE INDEX IF NOT EXISTS listing_identifier_available ON listing_real_identifiers(source_sku,brand,code_key)')
+    db.execute('INSERT INTO migrations VALUES(19) ON CONFLICT DO NOTHING')
 
 
 def preparation_settings(db, bound):
@@ -62,7 +68,7 @@ def preparation_settings(db, bound):
 
 def resource_digest(db, bound):
     # Assignment is transactional but does not change available business evidence.
-    codes=[dict(r) for r in db.execute('SELECT code_key,brand,proof FROM listing_real_identifiers ORDER BY code_key')]
+    codes=[dict(r) for r in db.execute('SELECT code_key,proof FROM listing_real_identifiers ORDER BY code_key')]
     return fingerprint(dict(settings=preparation_settings(db,bound),codes=codes))
 
 
@@ -123,17 +129,43 @@ def validation_current(db, doc, bound, report):
     return True
 
 
-def pool_assignment(db, source_system, source_sku, brand):
+def pool_lookup(db, source_system, source_sku, brand):
+    return db.execute('''SELECT * FROM listing_real_identifiers WHERE
+        source_system=? AND source_sku=? AND brand=? AND package_key='each' ''',
+        (source_system,source_sku,brand)).fetchone()
+
+
+def pool_assignment(db, source_system, source_sku, brand, actor_id=None):
+    """Caller holds the catalog write lock; retries reuse the original binding."""
+    if not source_system or not source_sku or not brand:
+        raise HTTPException(422,'编码分配必须有来源、子 SKU 和品牌')
     identity=(source_system,source_sku,brand,'each')
     row=db.execute('''SELECT * FROM listing_real_identifiers WHERE
         source_system=? AND source_sku=? AND brand=? AND package_key=?''',identity).fetchone()
     if not row:
-        row=db.execute("SELECT * FROM listing_real_identifiers WHERE source_sku='' AND brand=? ORDER BY created_at,code_key LIMIT 1",(brand,)).fetchone()
+        # A manually entered code in an existing listing/attempt is already in
+        # use even if it was imported into the pool later. Never draw it for a
+        # different product, including failed/unknown historical submissions.
+        occupied=set()
+        for record in db.execute('SELECT rows_json FROM walmart_listing_documents UNION ALL SELECT rows_json FROM walmart_listing_attempts'):
+            for saved in json.loads(record[0]):
+                identification=saved.get('identification',{})
+                if identification.get('mode')=='identifier' and identification.get('value'):
+                    occupied.add(identification['value'].zfill(14))
+        # Prefer an explicitly brand-scoped pool, otherwise bind an unscoped
+        # imported code to the current brand exactly once. Random selection is
+        # performed under the same transaction as ownership and audit writes.
+        for scope in (brand,''):
+            candidates=[r[0] for r in db.execute("SELECT code_key FROM listing_real_identifiers WHERE source_sku='' AND brand=? ORDER BY code_key",(scope,)) if r[0] not in occupied]
+            if candidates:
+                row=db.execute('SELECT * FROM listing_real_identifiers WHERE code_key=?',(candidates[secrets.randbelow(len(candidates))],)).fetchone()
+                break
         if row:
-            db.execute('UPDATE listing_real_identifiers SET source_system=?,source_sku=?,package_key=? WHERE code_key=? AND source_sku=?',
-                       (source_system,source_sku,'each',row['code_key'],''))
+            db.execute('UPDATE listing_real_identifiers SET source_system=?,source_sku=?,brand=?,package_key=? WHERE code_key=? AND source_sku=?',
+                       (source_system,source_sku,brand,'each',row['code_key'],''))
             db.execute('INSERT INTO listing_identifier_events VALUES(?,?,?,?,?,?)',
-                (uuid.uuid4().hex,row['code_key'],None,'assign',encoded(dict(source_system=source_system,source_sku=source_sku,brand=brand,package_key='each')),int(time.time())))
+                (uuid.uuid4().hex,row['code_key'],actor_id,'assign',encoded(dict(source_system=source_system,source_sku=source_sku,brand=brand,package_key='each')),int(time.time())))
+            row=pool_lookup(db,source_system,source_sku,brand)
     return dict(row) if row else None
 
 
@@ -164,7 +196,7 @@ def apply_prerequisites(catalog, bound, row, item, nodes, remote, audit, guard):
     if assigned:
         row['identification']=dict(mode='identifier',type=assigned['kind'],value=assigned['value'],submission_id='')
         audit['identification']=dict(kind='verified_prerequisite',value=row['identification'],refs=[],
-            reason='管理员导入的真实编码已按来源、子 SKU、品牌和包装层级事务绑定')
+            reason='用户导入编码已校验格式，按来源、子 SKU、品牌和包装层级事务绑定；不代表平台已认可归属')
 
 
 class Exemption(BaseModel):
@@ -186,7 +218,7 @@ class RealCode(BaseModel):
     model_config=ConfigDict(extra='forbid',str_strip_whitespace=True)
     type:str=Field(pattern='^(EAN|UPC|GTIN)$')
     value:str=Field(min_length=1,max_length=14)
-    brand:str=Field(min_length=1,max_length=200)
+    brand:str=Field(default='',max_length=200)
     proof:str=Field(min_length=3,max_length=1000)
     source_system:str=Field(default='',max_length=100)
     source_sku:str=Field(default='',max_length=200)
@@ -195,6 +227,37 @@ class RealCode(BaseModel):
 class CodeImport(BaseModel):
     model_config=ConfigDict(extra='forbid',str_strip_whitespace=True)
     items:list[RealCode]=Field(min_length=1,max_length=1000)
+
+
+def import_identifier_rows(db, items, actor_id=None):
+    """Shared atomic import; duplicates never overwrite allocation or metadata."""
+    existing={r['code_key']:dict(r) for r in db.execute('SELECT * FROM listing_real_identifiers')}
+    owners={(r['source_system'],r['source_sku'],r['brand']) for r in existing.values() if r['source_sku']}
+    new=[];events=[];seen=set();duplicates=0;at=datetime.now(timezone.utc).isoformat()
+    for value in items:
+        item=RealCode.model_validate(value) if isinstance(value,dict) else value
+        if identifier_errors(dict(mode='identifier',type=item.type,value=item.value)):
+            raise HTTPException(422,'编码格式或校验位不正确，保留前导零')
+        if bool(item.source_system)!=bool(item.source_sku) or item.source_sku and not item.brand:
+            raise HTTPException(422,'指定来源 SKU 时必须同时指定来源系统和品牌')
+        key=item.value.zfill(14)
+        prior=existing.get(key)
+        if prior:
+            if item.brand and prior['brand']!=item.brand or item.source_sku and (prior['source_system'],prior['source_sku'])!=(item.source_system,item.source_sku):
+                raise HTTPException(409,'编码已有其他品牌或商品归属，不能覆盖或重新分配')
+            duplicates+=1;continue
+        if key in seen:
+            duplicates+=1;continue
+        owner=(item.source_system,item.source_sku,item.brand)
+        if item.source_sku and owner in owners:
+            raise HTTPException(409,'该来源 SKU 和品牌已绑定编码')
+        if item.source_sku: owners.add(owner)
+        seen.add(key)
+        new.append((key,item.type,item.value,item.brand,item.proof,item.source_system,item.source_sku,'each',actor_id,at))
+        events.append((uuid.uuid4().hex,key,actor_id,'import',encoded(item.model_dump()),int(time.time())))
+    db.executemany('INSERT INTO listing_real_identifiers VALUES(?,?,?,?,?,?,?,?,?,?)',new)
+    db.executemany('INSERT INTO listing_identifier_events VALUES(?,?,?,?,?,?)',events)
+    return dict(imported=len(items),inserted=len(new),existing=duplicates)
 
 
 def prerequisite_routes(catalog):
@@ -266,38 +329,53 @@ def prerequisite_routes(catalog):
             raise HTTPException(400,str(exc)) from None
 
     @router.get('/identifiers')
-    def codes():
+    def codes(q:str=Query('',max_length=200),status:str=Query('',pattern='^(available|assigned)?$'),page:int=Query(1,ge=1)):
+        where=[];args=[]
+        if q:
+            where.append("(value LIKE ? OR brand LIKE ? OR source_sku LIKE ? OR proof LIKE ?)")
+            args.extend(['%'+q+'%']*4)
+        if status:
+            where.append("source_sku=''" if status=='available' else "source_sku<>''")
+        condition=' WHERE '+' AND '.join(where) if where else ''
         with catalog.connect() as db:
-            return {'items':[dict(r) for r in db.execute('SELECT * FROM listing_real_identifiers ORDER BY created_at DESC,code_key LIMIT 1000')]}
+            stats=dict(db.execute("SELECT count(*) AS total,COALESCE(sum(CASE WHEN source_sku='' THEN 1 ELSE 0 END),0) AS available,COALESCE(sum(CASE WHEN source_sku<>'' THEN 1 ELSE 0 END),0) AS assigned FROM listing_real_identifiers").fetchone())
+            total=db.execute('SELECT count(*) FROM listing_real_identifiers'+condition,args).fetchone()[0]
+            records=[dict(r) for r in db.execute('SELECT * FROM listing_real_identifiers'+condition+' ORDER BY created_at DESC,code_key LIMIT 100 OFFSET ?',(*args,(page-1)*100))]
+            imports=[json.loads(r[0]) for r in db.execute('SELECT report_json FROM listing_identifier_imports ORDER BY created_at DESC LIMIT 10')]
+            return dict(items=records,total=total,page=page,page_size=100,stats=stats,imports=imports)
 
     @router.post('/identifiers')
     def import_codes(data:CodeImport,request:Request):
-        prepared=[]
-        for item in data.items:
-            if identifier_errors(dict(mode='identifier',type=item.type,value=item.value)):
-                raise HTTPException(422,'编码格式或校验位不正确，保留前导零并使用真实编码')
-            if bool(item.source_system)!=bool(item.source_sku):
-                raise HTTPException(422,'来源系统和来源 SKU 必须同时指定或同时留空')
-            prepared.append((item.value.zfill(14),item))
-        if len({k for k,_ in prepared})!=len(prepared):
+        # Preserve strict rejection of equivalent duplicates within a manual
+        # request; spreadsheet uploads report and skip duplicates explicitly.
+        if len({i.value.zfill(14) for i in data.items})!=len(data.items):
             raise HTTPException(422,'导入中包含重复或等价编码')
         with catalog.connect() as db:
             write_lock(db)
-            for key,item in prepared:
-                existing=db.execute('SELECT * FROM listing_real_identifiers WHERE code_key=?',(key,)).fetchone()
-                if existing:
-                    if any(existing[k]!=v for k,v in [('brand',item.brand),('proof',item.proof)]) or (item.source_sku and
-                            (existing['source_system'],existing['source_sku'])!=(item.source_system,item.source_sku)):
-                        raise HTTPException(409,'真实编码已有其他归属，不能覆盖或重新分配')
-                    continue
-                if item.source_sku and db.execute('SELECT 1 FROM listing_real_identifiers WHERE source_system=? AND source_sku=? AND brand=? AND package_key=?',
-                        (item.source_system,item.source_sku,item.brand,'each')).fetchone():
-                    raise HTTPException(409,'该来源 SKU 和品牌已绑定真实编码')
-                db.execute('INSERT INTO listing_real_identifiers VALUES(?,?,?,?,?,?,?,?,?,?)',
-                    (key,item.type,item.value,item.brand,item.proof,item.source_system,item.source_sku,'each',
-                     getattr(request.state,'user',{}).get('id'),datetime.now(timezone.utc).isoformat()))
-                db.execute('INSERT INTO listing_identifier_events VALUES(?,?,?,?,?,?)',
-                    (uuid.uuid4().hex,key,getattr(request.state,'user',{}).get('id'),'import',encoded(item.model_dump()),int(time.time())))
-        return dict(imported=len(prepared))
+            return import_identifier_rows(db,data.items,getattr(request.state,'user',{}).get('id'))
+
+    @router.post('/identifiers/spreadsheet')
+    async def spreadsheet(request:Request,filename:str=Query(...,min_length=1,max_length=200),
+                          brand:str=Query('',max_length=200),proof:str=Query('',max_length=1000),preview:bool=False):
+        from .identifier_spreadsheets import MAX_FILE,parse_spreadsheet
+        from starlette.concurrency import run_in_threadpool
+        data=bytearray()
+        async for chunk in request.stream():
+            data.extend(chunk)
+            if len(data)>MAX_FILE:
+                raise HTTPException(413,'编码表最大8MB，请拆分导入')
+        actor=getattr(request.state,'user',{}).get('id')
+        def process():
+            items,report=parse_spreadsheet(bytes(data),filename,brand,proof)
+            if preview:
+                return report | dict(preview=True)
+            with catalog.connect() as db:
+                write_lock(db)
+                result=import_identifier_rows(db,items,actor)
+                report |= result | dict(brand=brand.strip(),at=datetime.now(timezone.utc).isoformat())
+                db.execute('INSERT INTO listing_identifier_imports VALUES(?,?,?,?,?,?,?)',
+                    (uuid.uuid4().hex,report['filename'],report['digest'],brand.strip(),encoded(report),actor,report['at']))
+            return report | dict(preview=False)
+        return await run_in_threadpool(process)
 
     return router

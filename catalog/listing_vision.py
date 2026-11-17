@@ -123,7 +123,7 @@ def capability(catalog,ai):
         raise ListingAIError(record['message'])
 
 
-def image_evidence(catalog,row,variant,ai):
+def image_evidence(catalog,row,variant,ai,schema=None):
     if not getattr(ai.settings,'vision',False):
         return [],dict(state='disabled',images=[])
     urls=list(dict.fromkeys([row['visible'].get('mainImageUrl',''),
@@ -147,14 +147,30 @@ def image_evidence(catalog,row,variant,ai):
     if not images:
         return [],dict(state='failed',images=[],message='图片读取失败，请补采或上传该 SKU 图片')
     capability(catalog,ai)
-    key=fingerprint(dict(identity=vision_identity(ai),sku=row['source_sku'],images=[d for d,_ in images]))
+    from .walmart_listing_schema import sections
+    fields={}
+    if schema:
+        # Include conditional fields too: Sleeper may activate bedSize later.
+        fields={k:v for k,v in sections(schema,row['product_type'])['visible'].get('properties',{}).items()
+                if k.casefold()=='bedsize'}
+    context=dict(product_type=row['product_type'],copy=variant.get('content',{}).get('copy',{}))
+    key=fingerprint(dict(identity=vision_identity(ai),sku=row['source_sku'],images=[d for d,_ in images],
+                         task_version='attribute-inference-v2',context=context,fields=fields))
     with catalog.connect() as db:
         cached=db.execute('SELECT data_json FROM listing_vision_cache WHERE digest=?',(key,)).fetchone()
     if cached:
         return json.loads(cached[0]),dict(state='complete',cached=True,images=[d for d,_ in images],warnings=failures)
     result=ai.query('image_evidence',dict(source_sku=row['source_sku'],_images=[p for _,p in images],
-        images=[d for d,_ in images],task='Describe visible product structure/style and legible specification labels. '
-            'Do not infer exact dimensions or weight without a clearly readable label. Do not infer certifications, origin or product identifiers.',
+        images=[d for d,_ in images],fields=fields,
+        context=context,
+        task='Describe visible product structure/style and legible specification labels. '
+            'For bedSize, actively inspect dimension diagrams, mattress labels and unfolded sleeping-area proportions. '
+            'Choose the most plausible actual provided bedSize option, even when confidence is low; '
+            'use visual_inference and explain assumptions and uncertainty. Prioritize readable sleeping-area '
+            'dimensions over whole-sofa or packaging dimensions. Standard US mattress sizes may guide the estimate. '
+            'Non-Standard means an apparently nonstandard sleeping surface, not simply unknown dimensions. '
+            'Do not invent measured dimensions or weight without a clearly readable label. '
+            'Do not infer certifications, origin or product identifiers.',
         output_contract={'source_sku':row['source_sku'],'observations':[{'attribute':'field or ordinary attribute name',
             'value':'observed value','kind':'visual_inference or image_label','images':['exact image digest'],
             'source_text':'verbatim readable label for image_label, otherwise empty','reason':'中文依据和局限','confidence':'0..1'}]}))

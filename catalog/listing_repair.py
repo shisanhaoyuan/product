@@ -4,7 +4,7 @@ import re
 
 from .listing_ai_client import ListingAIError
 from .listing_generation import (PROTECTED,CONTENT_FIELDS,BLOCKED,RULES,empty,candidate_value,
-    fact_reference_exists,summarize_generation_issues,semantic_patch_error)
+    fact_reference_exists,summarize_generation_issues,semantic_patch_error,ranked_action)
 from .walmart_listing_schema import sections
 
 MAX_REPAIR_ROUNDS=3
@@ -81,11 +81,15 @@ def repair_row(row,schema,issues,facts,ai,audit,round_number):
     proposal=ai.query('repair_attributes',dict(source_sku=row['source_sku'],product_type=row['product_type'],
         existing=row,facts=facts,fields=fields,errors=summarize_generation_issues(issues),rules=RULES,round=round_number,
         instructions='Repair only listed fields using source facts, visual evidence or defensible ordinary estimates. '
+            'For each ordinary missing field, rank plausible schema-valid candidates and choose the highest-confidence value, '
+            'even at low confidence; uncertainty alone must not leave it empty. Mark it estimate and explain assumptions. '
             'Do not delete fields or change identity, category, price, inventory, images or real identifiers. '
             'Do not remove a real Sleeper design just to avoid bedSize. Modular and Sleeper may coexist. '
             'Do not select Non-Standard merely because bed dimensions are unknown. Preserve all manual values.',
         output_contract={'source_sku':row['source_sku'],'actions':[{'field':'exact allowed path','value':'valid schema value',
-            'kind':'source or estimate','refs':['real fact path'],'confidence':'0..1','reason':'中文依据与修复理由'}],
+            'kind':'source or estimate','refs':['real fact path'],'confidence':'0..1','reason':'中文依据与修复理由',
+            'candidates':[{'value':'plausible valid value','kind':'source or estimate','refs':['real fact path'],
+                'confidence':'actual number 0..1','reason':'中文依据和不确定性'}]}],
             'missing':[{'field':'allowed path','reason':'中文实际障碍'}]}))
     if proposal.get('source_sku')!=row['source_sku'] or not isinstance(proposal.get('actions'),list):
         raise ListingAIError('修复计划 SKU 或格式不匹配，未写入')
@@ -95,12 +99,13 @@ def repair_row(row,schema,issues,facts,ai,audit,round_number):
         if path not in fields or path in seen:
             raise ListingAIError('修复计划包含越权或重复字段，整轮未采用')
         seen.add(path)
+        action=ranked_action(action,fields[path],facts)
         value=candidate_value(fields[path],action.get('value'))
         if empty(value) or not valid_evidence(action,facts):
             rejected.append(dict(path=path,message='修复值或依据未通过校验'))
             continue
         section,key=path.split('.',1)
-        error=semantic_patch_error(path,value,facts,row[section].get(key))
+        error=semantic_patch_error(path,value,facts,row[section].get(key),estimated=action['kind']=='estimate')
         if error:
             rejected.append(dict(path=path,message=error))
             continue
@@ -112,6 +117,8 @@ def repair_row(row,schema,issues,facts,ai,audit,round_number):
             continue
         result[section][key]=value
         audit[path]=action | dict(value=value,previous_value=previous,round=round_number)
+        if action['kind']=='estimate':
+            audit[path]['selection_policy']='user_authorized_highest_confidence'
         if action['kind']=='estimate' and any(r.startswith('visual_evidence') for r in action.get('refs',[])):
             audit[path]['kind']='visual_inference'
         changes.append(dict(path=path,before=previous,after=value))

@@ -216,6 +216,8 @@ def planned_price(row, check, multiplier, variant):
 
 
 def build_preview(catalog, db, data, exclude_batch=None):
+    from .listing_prerequisites import pool_lookup
+    has_pool = bool(db.execute('SELECT 1 FROM listing_real_identifiers LIMIT 1').fetchone())
     store = db.execute('SELECT * FROM listing_stores WHERE id=? AND active=1', (data.store_id,)).fetchone()
     if not store:
         raise HTTPException(409, '目标店铺不存在或已停用')
@@ -275,6 +277,11 @@ def build_preview(catalog, db, data, exclude_batch=None):
         seen_variants.update(identities)
         for variant in priced:
             variant['platform_sku'] = platform_sku.lookup(db, data.store_id, d['source'], variant)
+            assigned = pool_lookup(db,d['source'],variant['sku'],data.brand)
+            if assigned:
+                variant['assigned_identifier'] = dict(state='assigned',type=assigned['kind'],value=assigned['value'])
+            elif has_pool:
+                variant['assigned_identifier'] = dict(state='pending',type='EAN',value='')
         if not is_giga:
             errors += [f"{v['sku']}：{v['error']}" for v in priced if v['error']]
             errors += [f"{v['sku']}：库存缺失或不符合 0 / 10 规则，执行前需核验" for v in priced if str(v['stock']) not in {'0', '10'}]
@@ -299,7 +306,7 @@ def build_preview(catalog, db, data, exclude_batch=None):
 
 def preview_fingerprint(result):
     hash_input = {k: v for k, v in result.items() if k != 'preview_hash'} | {'items': [item | {'variants': [
-        {k: value for k, value in v.items() if k != 'platform_sku'} for v in item['variants']
+        {k: value for k, value in v.items() if k not in ('platform_sku','assigned_identifier')} for v in item['variants']
     ]} for item in result['items']]}
     return fingerprint(hash_input)
 
@@ -426,9 +433,15 @@ def prelisting_routes(catalog):
             if not result['can_create']:
                 raise HTTPException(409, '包含重复或已在未取消批次中的商品，请调整选择')
             bid, now = uuid.uuid4().hex, datetime.now(timezone.utc).isoformat()
+            from .listing_prerequisites import pool_assignment
             for item in result['items']:
                 for variant in item['variants']:
                     variant['platform_sku'] = platform_sku.allocate(db, result['store'], item['source'], variant, now)
+                    assigned=pool_assignment(db,item['source'],variant['sku'],result['brand'],actor(request))
+                    if assigned:
+                        variant['assigned_identifier']=dict(state='assigned',type=assigned['kind'],value=assigned['value'])
+                    elif 'assigned_identifier' in variant:
+                        variant['assigned_identifier']=dict(state='exhausted',type='EAN',value='')
             settings = dict(listing_ids=[r['id'] for r in rows], store_id=data.store_id, brand=data.brand, multiplier=str(data.multiplier))
             if data.variant_skus is not None:
                 settings['variant_skus'] = data.variant_skus

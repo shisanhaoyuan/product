@@ -91,8 +91,16 @@ python validation/frontend_state_check.py
 
 ## AI 刊登资料闭环维护
 
-规则版本 v5，数据库迁移18。核心模块为 `listing_generation_jobs.py`（任务）、`listing_repair.py`（3轮受限修复）、`listing_prerequisites.py`（真实编码及店铺前提）、`listing_source_evidence.py`（同 SKU 补采）、`listing_vision.py`（受控图片与证据）和 `listing_result_worker.py`（只读轮询与修复草稿）。资料校验复用 `walmart_publishing.validate_document`，禁止另设“AI 完成就视为通过”的路径。
+规则版本 v6，数据库迁移19。核心模块为 `listing_generation_jobs.py`（任务）、`listing_repair.py`（3轮受限修复）、`listing_prerequisites.py`（真实编码及店铺前提）、`listing_source_evidence.py`（同 SKU 补采）、`listing_vision.py`（受控图片与证据）和 `listing_result_worker.py`（只读轮询与修复草稿）。资料校验复用 `walmart_publishing.validate_document`，禁止另设“AI 完成就视为通过”的路径。
 
 校验有效期600秒，来源/资料/店铺/Schema/前提/平台反馈改变后失效。保留人工改动及改后恢复的锁定记录；AI 不改价格、库存、SKU、ASIN、编码、品牌、图片及法律证明字段。真实编码归属与唯一分配必须在事务锁内操作。后台任务不得调用提交接口或库存 PUT；原管理员失权后暂停。后台修复只排草稿，仍需用户确认提交。
 
 模型密钥只在私有配置保存。测试必须禁用真实 AI，并使用隔离数据库及模拟模型/来源/平台，不能使用生产凭证或 DSN。部署需备份数据库、图片和原加密主密钥，重启应用执行迁移，不覆盖生产数据。新开关与首版限制见 `docs/AI自动刊登闭环设计.md`、`docs/沃尔玛正式上架.md` 和 `deploy/jiwu.env.example`。
+
+## 编码表格与分配维护
+
+`identifier_spreadsheets.py` 只读取 XLSX/CSV/TSV，禁止执行公式。`listing_prerequisites.import_identifier_rows` 共用事务导入、等价编码去重与归属保护。`prelisting.create` 在原创建事务中调用随机分配，不依赖 AI 或店铺已绑定；`assigned_identifier` 与来源 content.ean 分开保存，预览摘要忽略服务器分配值，正式刊登默认值优先采用已分配编码。pool_assignment 必须在 catalog 写锁内调用；取消、重试不释放或重新随机编码。
+
+迁移19包含导入记录和可用池索引。数据库备份包含编码池及分配审计，禁止只恢复商品表而丢失已用编码。新增导入不改历史商品来源；业务授权仅为用户提供编码，校验位通过不等于官方归属认证。
+
+普通缺项采用用户授权的最高置信度候选策略：Python 对候选逐个校验后取置信度最大值，不设普通估算置信度门槛；来源事实仍执行证据门槛。bedSize 识图携带实际官方选项与同 SKU 文案，识图缓存包含任务版本、类型和选项；来源/默认优先，其次直接采用最高置信度有效床型观察，已有值保留。不得扩大到价格、库存、编码和合规证明等受保护字段。

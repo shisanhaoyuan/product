@@ -65,8 +65,10 @@ class ListingAIClient:
             'Never invent identifiers, certifications, legal disclosures, warranties or prices. '
             'Explicit user-authorized Skill defaults are applied by the program as user_rule, not source facts or AI estimates. '
             'No tools, navigation, publishing, code execution, or cross-SKU facts. '
-            'If neither source mapping, an authorized rule, nor a defensible ordinary-attribute estimate is possible, '
-            'return missing fields with a short Chinese reason. Do not pick an arbitrary enum to pass validation. '
+            'For ordinary attributes the user requires completion: rank plausible schema-valid candidates and select '
+            'the highest-confidence one even when confidence is low or exact evidence is absent. '
+            'Explain uncertainty, mark estimates honestly and prefer current-SKU image evidence. '
+            'Do not choose by enum order or invent supplier facts. Protected fields still require their dedicated rules. '
         )
         payload = dict(payload)
         pictures = payload.pop('_images', [])

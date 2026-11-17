@@ -11,7 +11,7 @@ from .listing_ai_client import ListingAIError
 from .walmart_listing_schema import plain, sections, feed_item, schema_errors, identifier_errors, precise_validator
 from .listing_skill_defaults import has_default, skill_default, length_fallback
 
-RULES_VERSION = 'listing-generation-v5'
+RULES_VERSION = 'listing-generation-v6'
 RULES = Path(__file__).with_name('listing_generation_rules.md').read_text()
 BLOCKED = re.compile(r'prop.?65|warranty|certif|nrtl|chemical|origin|warning|exempt|gtin|upc|ean|model|partnumber', re.I)
 PROTECTED = {'sku','productIdentifiers','inventory','price','msrp','SkuUpdate','ProductIdUpdate','fulfillmentCenterID'}
@@ -32,7 +32,7 @@ def norm(value):
     return re.sub(r'\s+', ' ', str(value).casefold().replace('&', ' and ')).strip()
 
 
-def semantic_patch_error(path, value, facts, previous=None):
+def semantic_patch_error(path, value, facts, previous=None, *, estimated=False):
     """Reject known invalid shortcuts even when they satisfy a schema enum."""
     def values(data):
         if isinstance(data, dict):
@@ -44,7 +44,7 @@ def semantic_patch_error(path, value, facts, previous=None):
     text += ' ' + ' '.join(str(v.get('source_text','')) for v in facts.get('visual_evidence',[])
                           if isinstance(v,dict) and v.get('kind')=='image_label')
     if path.split('.')[-1].casefold() == 'bedsize':
-        if not re.search(r'\b(bed|mattress|sleep\w*)\b|床|睡眠',text,re.I):
+        if not estimated and not re.search(r'\b(bed|mattress|sleep\w*)\b|床|睡眠',text,re.I):
             return '没有床面、床垫或睡眠用途依据，不能选择离散床型'
         if 'non-standard' in norm(value).replace(' ','-') and not re.search(
                 r'\bnon[ -]?standard\b|\bcustom[ -](?:size|mattress)\b|非标准|定制床',text,re.I):
@@ -53,6 +53,57 @@ def semantic_patch_error(path, value, facts, previous=None):
             not re.search(r'\bsleeper\b',str(value),re.I) and re.search(r'\bsleeper\b',text,re.I)):
         return '来源明确包含 Sleeper，不能删除睡眠款式以避开条件必填'
     return ''
+
+
+def ranked_action(action, definition, facts):
+    """Select the highest-confidence valid proposal, never enum order/default scores."""
+    if not isinstance(action,dict):
+        return action
+    candidates=action.get('candidates')
+    if candidates is None:
+        return action  # Older compatible providers may still return one action.
+    if not isinstance(candidates,list):
+        return {}
+    valid=[]
+    for candidate in candidates[:20]:
+        if not isinstance(candidate,dict):
+            continue
+        confidence=candidate.get('confidence');refs=candidate.get('refs',[])
+        if (candidate_value(definition,candidate.get('value')) is None
+                or type(confidence) not in (int,float) or not 0<confidence<=1
+                or candidate.get('kind') not in ('source','estimate')
+                or not isinstance(candidate.get('reason'),str) or not candidate['reason'].strip()
+                or not isinstance(refs,list) or any(not fact_reference_exists(facts,r) for r in refs)
+                or candidate['kind']=='source' and (confidence<=.75 or not refs
+                    or any(r.startswith('visual_evidence') for r in refs))
+                or semantic_patch_error(str(action.get('field','')),candidate.get('value'),facts,
+                    estimated=candidate.get('kind')=='estimate')):
+            continue
+        valid.append(candidate)
+    return (max(valid,key=lambda c:c['confidence']) | {'field':action.get('field')}) if valid else {}
+
+
+def visual_bed_size(key, definition, facts):
+    if key.casefold()!='bedsize':
+        return None
+    candidates=[]
+    for index,observation in enumerate(facts.get('visual_evidence',[])):
+        if not isinstance(observation,dict):
+            continue
+        attribute=re.sub(r'[^a-z]', '',str(observation.get('attribute','')).casefold())
+        if attribute not in ('bedsize','visiblebedsize'):
+            continue
+        value=candidate_value(definition,observation.get('value'))
+        confidence=observation.get('confidence')
+        if (value is None or observation.get('kind') not in ('visual_inference','image_label')
+                or not observation.get('images') or not observation.get('reason')
+                or type(confidence) not in (int,float) or not 0<confidence<=1
+                or semantic_patch_error('visible.'+key,value,facts,estimated=True)):
+            continue
+        candidates.append(dict(value=value,kind='visual_inference',confidence=confidence,
+            refs=['visual_evidence.'+str(index)],reason=observation['reason'],
+            selection_policy='user_authorized_highest_confidence'))
+    return max(candidates,key=lambda c:c['confidence']) if candidates else None
 
 
 def summarize_generation_issues(issues):
@@ -369,10 +420,15 @@ def fill_row(row, schema, facts, ai, provenance):
                 if v is None:
                     v, reason = skill_default(key,props[key],current,facts)
                     refs, kind = [], 'user_rule'
+                visual=visual_bed_size(key,props[key],facts) if v is None else None
+                if visual:
+                    v,refs,kind,reason=visual['value'],visual['refs'],visual['kind'],visual['reason']
                 if v is not None:
                     if v != current:
                         row[section][key] = v
                         provenance[field] = dict(kind=kind, refs=refs, value=v, reason=reason)
+                        if visual:
+                            provenance[field].update(visual)
                 else:
                     if not empty(current):
                         continue
@@ -390,10 +446,16 @@ def fill_row(row, schema, facts, ai, provenance):
             proposal = ai.query('required_attributes', dict(source_sku=row['source_sku'],
                 product_type=row['product_type'], brand=row['visible'].get('brand'), facts=facts,
                 fields=missing, existing=row, rules=RULES,
+                selection_policy='For every listed ordinary attribute, rank plausible valid values and fill the highest-confidence one. '
+                    'Low confidence or lack of exact evidence is not a reason to omit an ordinary attribute. '
+                    'Return estimates with honest uncertainty; never fabricate source facts. Prefer image evidence for bedSize.',
                 output_contract={'source_sku':row['source_sku'], 'actions':[
                     {'field':'visible.field or orderable.field', 'value':'schema value','kind':'source or estimate',
                      'refs':['existing fact key or nested dotted path, e.g. content.copy.features.0'],
-                     'reason':'中文依据', 'confidence':'number 0..1'}],
+                     'reason':'中文依据和不确定性', 'confidence':'number 0..1',
+                     'candidates':[{'value':'plausible schema value','kind':'source or estimate',
+                         'refs':['real fact path, or empty for contextual estimate'],
+                         'reason':'中文依据和不确定性','confidence':'actual number 0..1; rank plausible alternatives'}]}],
                      'missing':[{'field':'path','reason':'中文缺失原因'}]}))
             if proposal.get('source_sku') != row['source_sku'] or not isinstance(proposal.get('actions'), list):
                 raise ListingAIError('AI 返回的商品 SKU 或属性计划不匹配')
@@ -405,6 +467,7 @@ def fill_row(row, schema, facts, ai, provenance):
                     raise ListingAIError('AI 返回未知或重复属性，未采用该轮结果')
                 seen.add(field)
                 section, key = field.split('.', 1)
+                action=ranked_action(action,missing[field],facts)
                 value = candidate_value(missing[field], action.get('value'))
                 refs = action.get('refs', [])
                 confidence = action.get('confidence')
@@ -420,12 +483,14 @@ def fill_row(row, schema, facts, ai, provenance):
                     continue
                 accepted.append((section,key,value,action))
             for section,key,value,action in accepted:
-                error = semantic_patch_error(section+'.'+key,value,facts,row[section].get(key))
+                error = semantic_patch_error(section+'.'+key,value,facts,row[section].get(key),estimated=action['kind']=='estimate')
                 if error:
                     problems.append(dict(path=section+'.'+key,message=error))
                     continue
                 row[section][key] = value
                 evidence = dict(action)
+                if action['kind']=='estimate':
+                    evidence['selection_policy']='user_authorized_highest_confidence'
                 if action['kind']=='estimate' and any(r.startswith('visual_evidence') for r in action.get('refs',[])):
                     evidence['kind']='visual_inference'
                 provenance[section+'.'+key] = evidence

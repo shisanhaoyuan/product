@@ -271,7 +271,7 @@ def run_job(catalog, publisher, jid, ai):
                         with catalog.connect() as db:
                             write_lock(db);checked_context(db,job);cache_put(db,bound,'spec',schema,stored['version'],pt)
                     try:
-                        visual,vision=image_evidence(catalog,updated,variant,ai)
+                        visual,vision=image_evidence(catalog,updated,variant,ai,schema)
                         entry['vision']=vision
                         if visual:
                             facts['visual_evidence']=visual

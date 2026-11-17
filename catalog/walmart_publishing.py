@@ -287,6 +287,9 @@ def default_rows(preview):
                          else c.get('product_id_type') or 'GTIN') if code else 'EAN'
             if code_type not in ('UPC','GTIN','EAN','ISBN'):
                 code_type = 'GTIN' if code else 'EAN'
+            allocated=v.get('assigned_identifier')
+            if allocated is not None:
+                code,code_type=allocated.get('value',''),allocated.get('type','EAN')
             orderable = {}
             if v.get('price') is not None:
                 orderable['price'] = float(v['price'])

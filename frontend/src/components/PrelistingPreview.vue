@@ -50,6 +50,7 @@ defineProps<{ preview: PrelistingPreview }>();
             <tr>
               <th>SKU / ASIN</th>
               <th>目标店铺 SKU</th>
+              <th>预上架编码</th>
               <th>{{ item.source === 'GigaB2B' ? '来源商品单价' : '当前售价' }}</th>
               <th>来源含运费</th>
               <th>{{ item.source === 'GigaB2B' ? '物流费（含打包）' : '首次 ERP 原价' }}</th>
@@ -71,6 +72,18 @@ defineProps<{ preview: PrelistingPreview }>();
                   >MY{{ preview.store.sku_code }} · 待分配</span
                 >
                 <span v-else class="muted">旧批次未分配</span>
+              </td>
+              <td>
+                <strong v-if="v.assigned_identifier?.value"
+                  >{{ v.assigned_identifier.type }} {{ v.assigned_identifier.value }}</strong
+                >
+                <span
+                  v-else-if="v.assigned_identifier?.state === 'exhausted'"
+                  class="seller-risk-label"
+                  >编码池不足，请导入后生成补齐</span
+                >
+                <span v-else-if="v.assigned_identifier" class="muted">创建批次时随机分配</span>
+                <span v-else class="muted">{{ v.content?.ean || '未填写' }}</span>
               </td>
               <td>{{ money(item.source === 'GigaB2B' ? v.unit_price : v.current_price) }}</td>
               <td>{{ money(v.landed) }}</td>
