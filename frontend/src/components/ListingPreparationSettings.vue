@@ -13,7 +13,7 @@ import { errorMessage } from '../utils/display';
 import AppIcon from './AppIcon.vue';
 import FilterSelect from './FilterSelect.vue';
 const props = defineProps<{ store?: WalmartStore | null }>();
-const emit = defineEmits<{ close: [] }>();
+const emit = defineEmits<{ close: []; imported: [number] }>();
 const dialog = ref<HTMLElement>();
 const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 function keyboard(event: KeyboardEvent) {
@@ -118,6 +118,7 @@ async function importFile() {
     selectedFile.value = undefined;
     page.value = 1;
     await refreshCodes();
+    emit('imported', report.valid);
     message.value = `入库 ${report.inserted} 个，已存在跳过 ${report.existing} 个，表内重复 ${report.duplicate} 个，无效 ${report.invalid} 个。`;
   });
 }
@@ -207,6 +208,7 @@ async function importCodes() {
         });
     const result = await preparationApi.import(items);
     await refreshCodes();
+    emit('imported', result.imported);
     input.value = '';
     message.value = `已处理 ${result.imported} 条真实编码；重复导入保留原归属。`;
   });
@@ -230,7 +232,9 @@ async function importCodes() {
       <header>
         <div>
           <p class="eyebrow">LISTING PREPARATION</p>
-          <h2 id="prep-title">{{ store ? store.name + ' · 生成前提配置' : '真实商品编码池' }}</h2>
+          <h2 id="prep-title">
+            {{ store ? store.name + ' · 生成前提配置' : 'EAN 编码池 · 导入编码表格' }}
+          </h2>
         </div>
         <button class="btn icon" aria-label="关闭配置" :disabled="busy" @click="emit('close')">
           <AppIcon name="X" />

@@ -81,6 +81,9 @@ def start_job(catalog, publisher, bid, actor_id=None, ai=None, schedule=True):
             db.execute('INSERT INTO walmart_listing_documents VALUES(?,?,?,?,?,?,?)',
                 (bid,1,os.environ.get('CATALOG_WALMART_SPEC_VERSION',DEFAULT_VERSION),encoded(default_rows(basis)),encoded(basis),'{}',now()))
         stored = document(db,bid)
+        from .listing_prerequisites import allocate_document_identifiers
+        allocate_document_identifiers(db,stored,actor_id)
+        stored = document(db,bid)
         basis = unchanged_sources(db,stored)
         _,bound = binding(db,basis['store']['id'])
         schemas = {r['product_type']: cache_value(db,bound,'spec',stored['version'],r['product_type'])

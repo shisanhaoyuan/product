@@ -169,6 +169,49 @@ def pool_assignment(db, source_system, source_sku, brand, actor_id=None):
     return dict(row) if row else None
 
 
+def allocate_document_identifiers(db, doc, actor_id=None):
+    """Caller holds write lock. Fill empty editable rows without AI/store API calls."""
+    from .walmart_publishing import unchanged_sources, latest_results, EDITABLE
+    basis=unchanged_sources(db,doc)
+    sources={(item['listing_id'],variant['sku']):item['source']
+             for item in basis['items'] for variant in item['variants']}
+    rows=json.loads(doc['rows_json']);latest=latest_results(db,doc['batch_id'])
+    changed=[];missing=[];skipped=[]
+    for row in rows:
+        identity=row['identification'];sku=row['platform_sku']
+        if identity.get('mode')!='identifier' or str(identity.get('value','')).strip() or identity.get('submission_id'):
+            continue
+        if latest.get(sku,{}).get('status','unsubmitted') not in EDITABLE:
+            skipped.append(sku);continue
+        source=sources.get((row['listing_id'],row['source_sku']))
+        if not source:
+            raise HTTPException(409,'子 SKU 与来源不对应，已停止编码分配')
+        if row['visible'].get('brand','')!=basis['brand']:
+            raise HTTPException(409,'商品品牌与批次品牌不一致，已停止编码分配')
+        code=pool_assignment(db,source,row['source_sku'],row['visible'].get('brand',''),actor_id)
+        if code:
+            row['identification']=dict(mode='identifier',type=code['kind'],value=code['value'],submission_id='')
+            changed.append(dict(platform_sku=sku,source_sku=row['source_sku'],type=code['kind'],value=code['value']))
+        else:
+            missing.append(sku)
+    if changed:
+        db.execute('UPDATE walmart_listing_documents SET revision=revision+1,rows_json=?,validation_json=?,updated_at=? WHERE batch_id=?',
+                   (encoded(rows),'{}',datetime.now(timezone.utc).isoformat(),doc['batch_id']))
+        # Reflect target identifiers in the batch overview as well; source codes stay intact.
+        record=db.execute('SELECT preview_json FROM prelisting_batches WHERE id=?',(doc['batch_id'],)).fetchone()
+        preview=json.loads(record[0])
+        by_sku={r['platform_sku']:r for r in changed}
+        for item in preview['items']:
+            for variant in item['variants']:
+                if variant.get('platform_sku') in by_sku:
+                    code=by_sku[variant['platform_sku']]
+                    variant['assigned_identifier']=dict(state='assigned',type=code['type'],value=code['value'])
+        db.execute('UPDATE prelisting_batches SET preview_json=? WHERE id=?',(encoded(preview),doc['batch_id']))
+        db.execute('INSERT INTO walmart_listing_events VALUES(?,?,?,?,?,?)',
+                   (uuid.uuid4().hex,doc['batch_id'],actor_id,'allocate_identifiers',datetime.now(timezone.utc).isoformat(),encoded(changed)))
+    return dict(assigned=len(changed),missing=missing,skipped=skipped)
+
+
 def apply_prerequisites(catalog, bound, row, item, nodes, remote, audit, guard):
     """Only this deterministic layer may allocate real codes; never the model."""
     with catalog.connect() as db:

@@ -1,5 +1,6 @@
 import { request } from './client';
 import type { ProductType, ShipNode } from './publishing';
+import type { ListingDocument } from './publishing';
 export interface ExemptionSetting {
   brand: string;
   product_type: string;
@@ -50,6 +51,11 @@ const body = (method: string, value: unknown = {}) => ({
 });
 const path = (sid: number) => `/api/walmart/accounts/${sid}/preparation`;
 export const preparationApi = {
+  allocate: (bid: string, revision: number) =>
+    request<{ document: ListingDocument; assigned: number; missing: string[]; skipped: string[] }>(
+      `/api/prelisting/batches/${bid}/walmart/identifiers/allocate`,
+      body('POST', { revision }),
+    ),
   read: (sid: number) => request<PreparationSettings>(path(sid)),
   options: (sid: number) =>
     request<{ nodes: ShipNode[]; types: ProductType[] }>(path(sid) + '/options', body('POST')),

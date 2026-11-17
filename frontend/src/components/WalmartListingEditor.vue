@@ -20,6 +20,8 @@ import { applyListingDefaults } from '../utils/listingDefaults';
 import ListingSchemaField from './ListingSchemaField.vue';
 import ProductImage from './ProductImage.vue';
 import AppIcon from './AppIcon.vue';
+import ListingPreparationSettings from './ListingPreparationSettings.vue';
+import { preparationApi } from '../api/preparation';
 const props = defineProps<{ bid: string }>();
 const { auth } = useAuth();
 const canEdit = computed(
@@ -86,6 +88,37 @@ const dirty = computed(() => !!doc.value && serialized() !== saved.value);
 const current = computed(() => doc.value?.rows.find((r) => r.platform_sku === activeSku.value));
 const generation = ref<GenerationJob | null>(null);
 const aiReady = ref(false);
+const codePoolOpen = ref(false);
+const allocatingCodes = ref(false);
+let importedCodes = 0;
+async function assignCodes(showMessage = true) {
+  allocatingCodes.value = true;
+  try {
+    await save();
+    if (!doc.value || generating.value) return;
+    const result = await preparationApi.allocate(props.bid, doc.value.revision);
+    if (!live) return;
+    install(result.document);
+    if (showMessage || result.assigned) {
+      message.value = result.missing.length
+        ? `已补齐 ${result.assigned} 个编码，仍有 ${result.missing.length} 个 SKU 缺码。当前服务器编码池可用于此品牌的编码不足，请导入编码表格。`
+        : `已补齐 ${result.assigned} 个编码；已有编码保持原样，无需等待 AI。修改后请重新校验。`;
+    }
+  } finally {
+    allocatingCodes.value = false;
+  }
+}
+async function closeCodePool() {
+  codePoolOpen.value = false;
+  if (importedCodes > 0) {
+    importedCodes = 0;
+    await run(() => assignCodes());
+  } else
+    await run(async () => {
+      await save();
+      await load();
+    });
+}
 const generating = computed(() => ['queued', 'running'].includes(generation.value?.state || ''));
 const generationRow = computed(() => generation.value?.report.rows[activeSku.value]);
 const generationStale = computed(
@@ -184,6 +217,7 @@ const result = computed(() => doc.value?.results[activeSku.value]);
 const locked = computed(
   () =>
     generating.value ||
+    allocatingCodes.value ||
     !canEdit.value ||
     (!!result.value && !['failed', 'rejected', 'unpublished'].includes(result.value.status)),
 );
@@ -557,6 +591,12 @@ onMounted(async () => {
     await pollGeneration();
     if (doc.value && canEdit.value) {
       if (!generating.value) {
+        if (
+          doc.value.rows.some(
+            (row) => row.identification.mode === 'identifier' && !row.identification.value.trim(),
+          )
+        )
+          await assignCodes(false);
         await loadMetadata();
         if (current.value?.product_type) await getSpec();
       }
@@ -1024,7 +1064,7 @@ onBeforeUnmount(() => {
             <div class="listing-field" data-listing-path="identification">
               <label class="listing-field-label"
                 ><span><i class="listing-required">*</i>商品编码 / 豁免</span
-                ><small>GTIN / UPC</small></label
+                ><small>EAN / GTIN / UPC</small></label
               >
               <div class="listing-field-control">
                 <div class="listing-inline-controls">
@@ -1063,6 +1103,38 @@ onBeforeUnmount(() => {
                     >校验时会查询此店铺、品牌和商品类型是否已获批，不能仅填写“已豁免”。</small
                   ></template
                 >
+                <div
+                  v-if="current.identification.mode === 'identifier'"
+                  class="identifier-pool-tools"
+                >
+                  <small
+                    :class="doc.identifier_pool?.available ? 'muted' : 'identifier-pool-empty'"
+                  >
+                    编码池：共 {{ doc.identifier_pool?.total ?? 0 }} 个，本品牌可分配
+                    {{ doc.identifier_pool?.available ?? 0 }} 个。
+                    <template v-if="!doc.identifier_pool?.total"
+                      >请先在当前服务器导入表格，本机编码池不会随 Git 同步。</template
+                    >
+                  </small>
+                  <div class="actions">
+                    <button
+                      v-if="canEdit"
+                      class="btn small"
+                      :disabled="locked || busy"
+                      @click="run(() => assignCodes())"
+                    >
+                      从编码池补齐空白 EAN
+                    </button>
+                    <button
+                      v-if="canSubmit"
+                      class="btn small"
+                      :disabled="locked || busy"
+                      @click="codePoolOpen = true"
+                    >
+                      导入 EAN 编码表格
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
             <ListingSchemaField
@@ -1496,10 +1568,23 @@ onBeforeUnmount(() => {
         </div>
       </dialog>
     </template>
+    <ListingPreparationSettings
+      v-if="codePoolOpen"
+      @imported="importedCodes += $event"
+      @close="closeCodePool"
+    />
   </div>
 </template>
 
 <style scoped>
+.identifier-pool-tools {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+.identifier-pool-empty {
+  color: #ab5b36;
+}
 .preparation-summary {
   display: flex;
   flex-wrap: wrap;

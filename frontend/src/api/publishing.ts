@@ -63,6 +63,7 @@ export interface Attempt {
   polling?: { state: string; next_at: number; tries: number; last_error: string } | null;
 }
 export interface ListingDocument {
+  identifier_pool?: { total: number; available: number };
   requirements?: Record<string, { visible?: string[]; orderable?: string[] }>;
   specs?: Record<string, ListingSpec>;
   revision: number;

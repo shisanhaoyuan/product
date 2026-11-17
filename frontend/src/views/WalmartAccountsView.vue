@@ -183,15 +183,7 @@ onBeforeUnmount(() => {
   </div>
   <StoreManagementNav />
   <div class="wm-filters">
-    <button
-      class="btn"
-      @click="
-        preparationStore = null;
-        preparationOpen = true;
-      "
-    >
-      管理真实商品编码池</button
-    ><span class="muted">默认发货仓与已批准豁免可在各店铺卡片配置。</span>
+    <span class="muted">默认发货仓与已批准豁免可在各店铺卡片配置。</span>
   </div>
   <div class="wm-summary">
     <div>

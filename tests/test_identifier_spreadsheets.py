@@ -15,6 +15,7 @@ from catalog.database import write_lock
 from catalog.walmart_publishing import default_rows
 from test_prelisting import local, inputs, create
 from test_auth import team, login
+from test_walmart_publishing import publishing, ready, send, warehouse, settings, vault
 
 
 def ean(index):
@@ -196,3 +197,87 @@ def test_wrong_preview_hash_rolls_back_all_allocations(local):
     assert response.status_code==409
     assert client.get('/api/walmart/identifiers').json()['stats']['assigned']==0
     assert client.get('/api/prelisting/batches').json()['total']==0
+
+
+def test_old_batch_import_and_allocate_without_binding_or_ai(local):
+    client,catalog=local
+    batch,_=create(client,inputs(client))
+    base=f"/api/prelisting/batches/{batch['id']}/walmart"
+    doc=client.post(base+'/prepare').json()
+    assert doc['identifier_pool']['total']==0
+    assert all(not row['identification']['value'] for row in doc['rows'])
+    source=catalog.export();before=copy.deepcopy(doc['rows'])
+    assert upload(client,xlsx([['EAN']]+[[ean(i)] for i in range(5)])).status_code==200
+    response=client.post(base+'/identifiers/allocate',json={'revision':doc['revision']})
+    assert response.status_code==200,response.text
+    result=response.json();updated=result['document']
+    assert result['assigned']==3 and not result['missing']
+    assert updated['revision']==doc['revision']+1 and not updated['validation']['current']
+    values=[row['identification']['value'] for row in updated['rows']]
+    assert len(set(values))==3 and all(len(value)==13 for value in values)
+    assert client.get(base).json()['rows']==updated['rows']
+    for old,new in zip(before,updated['rows']):
+        assert {k:v for k,v in old.items() if k!='identification'}=={k:v for k,v in new.items() if k!='identification'}
+    repeated=client.post(base+'/identifiers/allocate',json={'revision':updated['revision']}).json()
+    assert repeated['assigned']==0 and repeated['document']['rows']==updated['rows']
+    assert client.post(base+'/identifiers/allocate',json={'revision':doc['revision']}).status_code==409
+    overview=client.get(f"/api/prelisting/batches/{batch['id']}").json()
+    assert sorted(v['assigned_identifier']['value'] for i in overview['preview']['items'] for v in i['variants'])==sorted(values)
+    assert catalog.export()==source
+
+
+def test_prepare_old_batch_with_imported_pool_allocates_only_blanks(local):
+    client,catalog=local
+    batch,_=create(client,inputs(client));base=f"/api/prelisting/batches/{batch['id']}/walmart"
+    doc=client.post(base+'/prepare').json()
+    doc['rows'][0]['identification'].update(type='EAN',value=ean(99))
+    doc['rows'][1]['identification'].update(mode='exemption',submission_id='approved-by-store')
+    response=client.patch(base,json={k:doc[k] for k in ('revision','version','rows')})
+    assert response.status_code==200,response.text
+    assert upload(client,xlsx([['EAN'],[ean(1)]])).status_code==200
+    response=client.post(base+'/prepare');assert response.status_code==200,response.text
+    rows=response.json()['rows']
+    assert rows[0]['identification']['value']==ean(99)
+    assert rows[1]['identification']['submission_id']=='approved-by-store'
+    assert rows[2]['identification']['value']==ean(1)
+    assert client.get('/api/walmart/identifiers').json()['stats']['assigned']==1
+
+
+def test_allocate_exhaustion_is_clear_and_cancelled_batch_is_blocked(local):
+    client,catalog=local
+    batch,_=create(client,inputs(client));base=f"/api/prelisting/batches/{batch['id']}/walmart"
+    doc=client.post(base+'/prepare').json()
+    result=client.post(base+'/identifiers/allocate',json={'revision':doc['revision']}).json()
+    assert result['assigned']==0 and len(result['missing'])==3
+    assert result['document']['identifier_pool']==dict(total=0,available=0)
+    assert upload(client,xlsx([['EAN'],[ean(1)]])).status_code==200
+    client.post(f"/api/prelisting/batches/{batch['id']}/action",json={'action':'cancel'})
+    assert client.post(base+'/identifiers/allocate',json={'revision':doc['revision']}).status_code==409
+    assert client.get('/api/walmart/identifiers').json()['stats']['assigned']==0
+
+
+def test_allocator_cannot_modify_submitted_skus_or_consume_their_codes(publishing):
+    client,catalog,*_,base,remote=publishing
+    send(publishing,ready(publishing))
+    doc=client.get(base).json()
+    # Simulate a historical broken document; submitted attempt keeps its original identifiers.
+    for row in doc['rows']:
+        row['identification'].update(value='',submission_id='',mode='identifier')
+    with catalog.connect() as db:
+        db.execute('UPDATE walmart_listing_documents SET rows_json=? WHERE batch_id=?',
+                   (json.dumps(doc['rows']),publishing[4]['id']))
+    assert upload(client,xlsx([['EAN'],[ean(1)],[ean(2)]])).status_code==200
+    result=client.post(base+'/identifiers/allocate',json={'revision':doc['revision']}).json()
+    assert result['assigned']==0 and len(result['skipped'])==2
+    assert result['document']['rows']==doc['rows']
+    assert client.get('/api/walmart/identifiers').json()['stats']['assigned']==0
+
+
+def test_allocator_stops_during_generation(publishing):
+    from catalog.listing_generation_jobs import start_job
+    from test_listing_generation import AI
+    client,catalog,*_,base,remote=publishing
+    job=start_job(catalog,client.app.state.walmart_publisher,publishing[4]['id'],ai=AI(),schedule=False)
+    assert job['state']=='queued'
+    doc=client.get(base).json()
+    assert client.post(base+'/identifiers/allocate',json={'revision':doc['revision']}).status_code==409

@@ -253,10 +253,11 @@ def public_document(db, bid):
         task=db.execute('SELECT state,next_at,tries,last_error FROM listing_result_tasks WHERE attempt_id=?',(a['id'],)).fetchone()
         public['polling']=dict(task) if task else None
         attempts.append(public)
+    pool=dict(db.execute("SELECT count(*) AS total,COALESCE(sum(CASE WHEN source_sku='' AND (brand='' OR brand=?) THEN 1 ELSE 0 END),0) AS available FROM listing_real_identifiers",(p['brand'],)).fetchone())
     return dict(revision=row['revision'], version=row['version'], rows=json.loads(row['rows_json']),
                 basis=basis, validation=validation, labels=LABELS,
                 store=p['store'], brand=p['brand'], specs=cached_specs, requirements=requirements, updated_at=row['updated_at'], results=latest_results(db, bid),
-                attempts=attempts)
+                attempts=attempts,identifier_pool=pool)
 
 
 def fresh_basis(catalog, db, record):
@@ -513,14 +514,30 @@ def publishing_routes(catalog):
             write_lock(db); current=batch(db,bid)
             existing=public_document(db,bid)
             if existing:
+                if not db.execute("SELECT 1 FROM listing_generation_jobs WHERE batch_id=? AND state IN ('queued','running')",(bid,)).fetchone():
+                    from .listing_prerequisites import allocate_document_identifiers
+                    allocate_document_identifiers(db,document(db,bid),getattr(request.state,'user',{}).get('id'))
+                    return public_document(db,bid)
                 return existing
             basis=fresh_basis(catalog,db,current)
             rows=default_rows(basis)
             version=os.environ.get('CATALOG_WALMART_SPEC_VERSION',DEFAULT_VERSION)
             db.execute('INSERT INTO walmart_listing_documents VALUES(?,?,?,?,?,?,?)',
                 (bid,1,version,encoded(rows),encoded(basis),'{}',now()))
+            from .listing_prerequisites import allocate_document_identifiers
+            allocate_document_identifiers(db,document(db,bid),getattr(request.state,'user',{}).get('id'))
             event(db,bid,request,'prepare')
             return public_document(db,bid)
+
+    @router.post('/identifiers/allocate')
+    def allocate_identifiers(bid:str,data:Revision,request:Request):
+        with catalog.connect() as db:
+            write_lock(db);batch(db,bid);doc=document(db,bid);revision_check(doc,data.revision)
+            if db.execute("SELECT 1 FROM listing_generation_jobs WHERE batch_id=? AND state IN ('queued','running')",(bid,)).fetchone():
+                raise HTTPException(409,'资料正在生成，请结束后再分配编码')
+            from .listing_prerequisites import allocate_document_identifiers
+            result=allocate_document_identifiers(db,doc,getattr(request.state,'user',{}).get('id'))
+            return result | {'document':public_document(db,bid)}
 
     @router.patch('')
     def save(bid: str, data: Save, request: Request):
