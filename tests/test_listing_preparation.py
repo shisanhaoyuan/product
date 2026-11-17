@@ -159,14 +159,14 @@ def test_source_conflict_cannot_be_bypassed_by_manual_validate(publishing,monkey
     assert not remote.posts
 
 
-def test_readiness_expires_and_resources_change_invalidates_submit(publishing):
+def test_readiness_has_no_time_expiry_and_resources_change_invalidates_submit(publishing):
     c,catalog,*_,b,base,remote=publishing
     doc=ready(publishing);assert doc['validation']['current']
     with catalog.connect() as db:
         report=json.loads(db.execute('SELECT validation_json FROM walmart_listing_documents WHERE batch_id=?',(b['id'],)).fetchone()[0])
         report['at']=int(time.time())-601
         db.execute('UPDATE walmart_listing_documents SET validation_json=? WHERE batch_id=?',(encoded(report),b['id']))
-    assert c.get(base).json()['validation']['current'] is False
+    assert c.get(base).json()['validation']['current'] is True
     doc=c.post(base+'/validate',json={'revision':doc['revision']}).json()
     assert c.post('/api/walmart/identifiers',json={'items':[code()]}).status_code==200
     assert c.get(base).json()['validation']['current'] is False

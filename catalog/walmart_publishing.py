@@ -21,6 +21,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from . import platform_sku
+from .listing_titles import branded_title, source_brands
 from .blacklist import active_entries, matches
 from .credential_vault import decrypt, VaultError
 from .database import write_lock, is_postgres
@@ -37,7 +38,6 @@ ACTIVE = {'sending', 'unknown', 'processing'}
 RETRYABLE = {'failed'}
 EDITABLE = {'unsubmitted', 'failed', 'rejected', 'unpublished'}
 MAX_SOURCE_AGE = 86400
-VALIDATION_AGE = 600
 
 
 def initialize(db):
@@ -268,6 +268,7 @@ def fresh_basis(catalog, db, record):
         raise HTTPException(409, '来源 SKU、平台 SKU 或变体对应关系已改变，请核查后重新创建批次')
     for item in prepared['items']:
         source=json.loads(db.execute('SELECT data_json FROM current_listings WHERE id=?',(item['listing_id'],)).fetchone()[0])
+        item['source_brands'] = source_brands(source)
         item['category'] = category(source)
         item['category_hints'] = source_category_hints(source)
         for v in item['variants']:
@@ -303,7 +304,7 @@ def default_rows(preview):
                         orderable['ShippingWeight'] = float(weight)
                 except Exception:
                     pass
-            visible = dict(productName=copy_data.get('title') or '', brand=preview['brand'],
+            visible = dict(productName=branded_title(copy_data.get('title') or '',preview['brand'],item.get('source_brands',[])), brand=preview['brand'],
                            shortDescription=copy_data.get('description') or '', keyFeatures=copy_data.get('features') or [],
                            mainImageUrl=images[0] if images else '')
             if len(images) > 1:
@@ -355,8 +356,8 @@ def source_issues(item, variant):
         errors.append('当前无可上架库存或库存未核验，请先更新来源库存')
     try:
         age=time.time() - datetime.fromisoformat(item['observed_at']).timestamp()
-        if age > MAX_SOURCE_AGE or age < -300:
-            errors.append('来源价格库存超过 24 小时，请先重新采集／同步，再刷新来源')
+        if age < -300:
+            errors.append('来源核验时间晚于当前时间，请核对来源时间')
     except (ValueError, TypeError):
         errors.append('来源核验时间无效，请重新采集／同步')
     return list(dict.fromkeys(errors))
@@ -449,28 +450,52 @@ def check_rows(db, doc, session, binding_row, skus=None):
                 from .listing_vision import stable_feed_row
                 entry, validation_schema = feed_item(stable_feed_row(db,row),schema,doc['version'],os.environ.get('CATALOG_PUBLIC_ORIGIN',''),exemption=exempt,
                     stock=int(variant['stock']) if str(variant.get('stock')) in ('0','10') else None)
-                if 'msrp' in entry['Orderable']:
-                    prices=[r['orderable'].get('price') for r in json.loads(doc['rows_json']) if r['listing_id']==row['listing_id']]
-                    try:
-                        if Decimal(str(entry['Orderable']['msrp']))!=max(Decimal(str(p)) for p in prices)*2:
-                            errors.append(dict(path='orderable.msrp',message='MSRP 必须为本商品组最高最终售价的两倍'))
-                    except Exception:
-                        errors.append(dict(path='orderable.price',message='请填写有效售价后核对 MSRP'))
                 errors.extend(schema_errors(validation_schema,entry,doc['version']))
                 payloads[sku] = entry
             except (ValueError,VaultError) as exc:
                 errors.append(dict(path='visible.mainImageUrl',message=str(exc)))
         results[sku] = dict(valid=not errors,errors=errors)
     from .listing_prerequisites import resource_digest
-    return dict(feedback_digest=fingerprint(latest_results(db,doc['batch_id'])),resources_digest=resource_digest(db,binding_row),id=uuid.uuid4().hex,revision=doc['revision'],at=int(time.time()),binding_revision=binding_row['revision'],
+    return dict(title_policy='brand_prefix_v1',feedback_digest=fingerprint(latest_results(db,doc['batch_id'])),resources_digest=resource_digest(db,binding_row),id=uuid.uuid4().hex,revision=doc['revision'],at=int(time.time()),binding_revision=binding_row['revision'],
                 partner_id=binding_row['partner_id'],rows=results,schema_digests=schema_digests,payloads=payloads,
                 valid_count=sum(r['valid'] for r in results.values()))
+
+
+def normalize_titles(db, rows, basis, latest):
+    changes=[]
+    for row in rows:
+        if latest.get(row['platform_sku'],{}).get('status','unsubmitted') not in EDITABLE:
+            continue
+        source=db.execute('SELECT data_json FROM current_listings WHERE id=?',(row['listing_id'],)).fetchone()
+        brands=source_brands(json.loads(source[0])) if source else []
+        previous=row['visible'].get('productName','')
+        title=branded_title(previous,basis['brand'],brands)
+        if title!=previous:
+            row['visible']['productName']=title
+            changes.append(dict(platform_sku=row['platform_sku'],before=previous,after=title))
+    return changes
+
+
+def normalize_document_titles(db, doc):
+    """Caller holds write lock. Explicit user rule also applies to existing drafts."""
+    basis=unchanged_sources(db,doc)
+    rows=json.loads(doc['rows_json'])
+    changes=normalize_titles(db,rows,basis,latest_results(db,doc['batch_id']))
+    if changes:
+        db.execute('UPDATE walmart_listing_documents SET rows_json=?,revision=revision+1,validation_json=?,updated_at=? WHERE batch_id=?',
+            (encoded(rows),'{}',now(),doc['batch_id']))
+        db.execute('INSERT INTO walmart_listing_events VALUES(?,?,?,?,?,?)',
+            (uuid.uuid4().hex,doc['batch_id'],None,'title_brand_rule',now(),encoded({'rule':'target_brand_prefix','changes':changes})))
+    return document(db,doc['batch_id'])
 
 
 def validate_document(catalog, bid, revision, remote, bound):
     """Shared, read-only upstream validation with guarded persistence afterward."""
     with catalog.connect() as db:
-        doc=document(db,bid);revision_check(doc,revision)
+        write_lock(db);doc=document(db,bid);revision_check(doc,revision)
+        doc=normalize_document_titles(db,doc)
+        revision=doc['revision']
+    with catalog.connect() as db:
         report=check_rows(db,doc,remote,bound)
     with catalog.connect() as db:
         write_lock(db);batch(db,bid);current=document(db,bid);revision_check(current,revision)
@@ -516,6 +541,7 @@ def publishing_routes(catalog):
             if existing:
                 if not db.execute("SELECT 1 FROM listing_generation_jobs WHERE batch_id=? AND state IN ('queued','running')",(bid,)).fetchone():
                     from .listing_prerequisites import allocate_document_identifiers
+                    normalize_document_titles(db,document(db,bid))
                     allocate_document_identifiers(db,document(db,bid),getattr(request.state,'user',{}).get('id'))
                     return public_document(db,bid)
                 return existing
@@ -554,6 +580,7 @@ def publishing_routes(catalog):
                     raise HTTPException(409,'正在处理、结果未知或已成功的商品不能修改；请先查询处理结果')
                 if any(k in r['orderable'] for k in ('sku','productIdentifiers','inventory','SkuUpdate','ProductIdUpdate')) or any(k in r['extra'] for k in ('Visible','Orderable')):
                     raise HTTPException(422,'店铺 SKU 和商品编码只能通过专用字段设置')
+            normalize_titles(db,rows,json.loads(doc['basis_json']),latest)
             if data.version!=doc['version'] and latest:
                 raise HTTPException(409,'已有提交记录的批次不能切换规格版本，请保留原版本')
             raw=encoded(rows)
@@ -580,17 +607,7 @@ def publishing_routes(catalog):
                         r['orderable']['price']=defaults[r['platform_sku']]['orderable']['price']
                     else:
                         r['orderable'].pop('price',None)
-            # MSRP follows the highest final price in this product group, including
-            # immutable submitted rows. Refresh must not retain an old multiplier's MSRP.
-            for listing_id in {r['listing_id'] for r in rows}:
-                group = [r for r in rows if r['listing_id'] == listing_id]
-                prices = [Decimal(str(r['orderable']['price'])) for r in group if 'price' in r['orderable']]
-                for r in group:
-                    if latest.get(r['platform_sku'],{}).get('status','unsubmitted') in EDITABLE:
-                        if prices:
-                            r['orderable']['msrp'] = float(max(prices) * 2)
-                        else:
-                            r['orderable'].pop('msrp',None)
+            # MSRP is an editable suggestion; refreshing source prices preserves it.
             db.execute('UPDATE walmart_listing_documents SET revision=revision+1,rows_json=?,basis_json=?,validation_json=?,updated_at=? WHERE batch_id=?',
                 (encoded(rows),encoded(basis),'{}',now(),bid))
             event(db,bid,request,'refresh_source',{'previous_basis':fingerprint(json.loads(doc['basis_json'])),'new_basis':fingerprint(basis)})
@@ -703,7 +720,7 @@ def publishing_routes(catalog):
                     from .listing_prerequisites import validation_current
                     if (report.get('id')!=data.validation_id or not validation_current(db,doc,current_binding,report)
                         or current_binding['revision']!=bound['revision']):
-                        raise HTTPException(409,'校验已过期、资料或店铺绑定发生变化，请重新校验')
+                        raise HTTPException(409,'资料、来源、规格或店铺配置已变化，请重新校验')
                     if data.confirm_store_id!=bound['store_id'] or data.confirm_partner_id!=bound['partner_id']:
                         raise HTTPException(409,'确认店铺与批次绑定不一致，未提交')
                     assert_not_sending(db,bound['store_id'])
@@ -721,7 +738,7 @@ def publishing_routes(catalog):
                         basis_item=next(i for i in basis['items'] if i['listing_id']==row['listing_id'])
                         basis_variant=next(v for v in basis_item['variants'] if v['platform_sku']==sku)
                         if source_issues(basis_item,basis_variant):
-                            raise HTTPException(409,'来源价格库存已过期或不符合要求，请刷新来源并重新校验')
+                            raise HTTPException(409,'来源售价或库存不符合要求，请刷新来源并重新校验')
                         source=json.loads(db.execute('SELECT data_json FROM current_listings WHERE id=?',(row['listing_id'],)).fetchone()[0])
                         if matches(source,entries):
                             raise HTTPException(409,'商品卖家已被拉黑，已阻止提交')

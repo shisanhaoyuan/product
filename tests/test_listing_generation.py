@@ -196,7 +196,7 @@ def test_concurrent_edit_rejected_and_completed_source_maps_kept(publishing):
     ai.hook=edit
     run_job(catalog,c.app.state.walmart_publisher,job['id'],ai)
     assert c.get(base+'/generation').json()['job']['state']=='failed'
-    assert c.get(base).json()['rows'][0]['visible']['productName']=='Manual title'
+    assert c.get(base).json()['rows'][0]['visible']['productName']=='NewBrand Manual title'
 
 
 def test_client_stream_validates_completion_and_redacts_errors():

@@ -8,10 +8,11 @@ from pathlib import Path
 from jsonschema import Draft7Validator
 
 from .listing_ai_client import ListingAIError
+from .listing_titles import branded_title, source_brands
 from .walmart_listing_schema import plain, sections, feed_item, schema_errors, identifier_errors, precise_validator
 from .listing_skill_defaults import has_default, skill_default, length_fallback
 
-RULES_VERSION = 'listing-generation-v6'
+RULES_VERSION = 'listing-generation-v7'
 RULES = Path(__file__).with_name('listing_generation_rules.md').read_text()
 BLOCKED = re.compile(r'prop.?65|warranty|certif|nrtl|chemical|origin|warning|exempt|gtin|upc|ean|model|partnumber', re.I)
 PROTECTED = {'sku','productIdentifiers','inventory','price','msrp','SkuUpdate','ProductIdUpdate','fulfillmentCenterID'}
@@ -186,6 +187,7 @@ def source_facts(source, item, variant):
              if k in ('copy','attributes','shipping_weight') and not empty(v)}
     facts['category'] = item.get('category', '')
     facts['category_hints'] = item.get('category_hints', [])
+    facts['source_brands'] = source_brands(source)
     if source.get('brand'):
         facts['source_brand'] = source['brand']
     if source.get('source') != 'GigaB2B':
@@ -210,7 +212,7 @@ def source_facts(source, item, variant):
 
 
 def prepare_copy(row, facts, provenance):
-    """Only normalize untouched source copy; preserve manual/previously generated text."""
+    """Normalize source copy, with the explicit title-brand exception for all drafts."""
     original = facts.get('content.copy') or {}
     brand = row['visible'].get('brand', '')
     old_brand = facts.get('source_brand', '')
@@ -223,7 +225,12 @@ def prepare_copy(row, facts, provenance):
             parts = re.split(r'\n+|(?<=[.!?])\s+',text)
             text = '\n'.join(dict.fromkeys(p.strip() for p in parts if p.strip() and not forbidden.search(p)))
         return text
-    for field, source_key in [('productName','title'),('shortDescription','description'),('keyFeatures','features')]:
+    title=row['visible'].get('productName','')
+    branded=branded_title(title,brand,facts.get('source_brands',[]) + [old_brand])
+    if branded!=title:
+        row['visible']['productName']=branded
+        provenance['visible.productName']=dict(kind='user_rule',value=branded,previous_value=title,refs=[],reason='用户指定：移除已识别品牌，目标店铺品牌置于标题开头')
+    for field, source_key in [('shortDescription','description'),('keyFeatures','features')]:
         value = row['visible'].get(field)
         if value != original.get(source_key) or empty(value):
             continue
@@ -248,7 +255,7 @@ def source_copy(key, schema, facts, brand):
             r'\b(?:Amazon|ASIN|SKU|UPC|EAN|GTIN|manufacturer|warranty|shipping|delivery|discount|price|reviews)\b',v,re.I)))
     refs = ['content.copy']
     if key == 'productName':
-        value = clean(original.get('title', ''))
+        value = branded_title(clean(original.get('title', '')),brand,facts.get('source_brands',[]) + [old_brand])
     elif key == 'keyFeatures':
         value = list(dict.fromkeys(clean(v) for v in original.get('features', []) if isinstance(v,str)))
         value = [v for v in value if v]
@@ -515,6 +522,8 @@ def fill_row(row, schema, facts, ai, provenance):
                 row[section][key] = value
                 provenance[section+'.'+key] = dict(kind='user_rule',value=value,refs=[],
                     reason='user_authorized_rule: unavailable parameter default 22 inch；来源缺失且 AI 未能补齐的长度兜底，非实测值')
+    # The explicit brand-prefix rule also covers titles filled by this pass.
+    prepare_copy(row,facts,provenance)
     # A later conditional pass may have filled a previously missing field.
     problems = [p for p in problems if not p['path'] or
                 empty(row.get(p['path'].split('.')[0], {}).get(p['path'].split('.')[-1]))]

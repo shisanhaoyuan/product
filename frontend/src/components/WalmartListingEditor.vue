@@ -125,14 +125,11 @@ const generationRow = computed(() => generation.value?.report.rows[activeSku.val
 const generationStale = computed(
   () => !generating.value && generation.value && generation.value.revision !== doc.value?.revision,
 );
-const clock = ref(Date.now());
-let clockTimer: ReturnType<typeof setInterval> | undefined;
 const validationCurrent = computed(
   () =>
     !!doc.value?.validation.current &&
     !dirty.value &&
-    doc.value.validation.revision === doc.value.revision &&
-    (doc.value.validation.at || 0) * 1000 > clock.value - 600000,
+    doc.value.validation.revision === doc.value.revision,
 );
 const preparationLabels: Record<string, string> = {
   collecting: '补全来源',
@@ -584,9 +581,6 @@ async function upload(e: Event) {
   input.value = '';
 }
 onMounted(async () => {
-  clockTimer = setInterval(() => {
-    clock.value = Date.now();
-  }, 1000);
   await run(async () => {
     await load();
     if (
@@ -634,7 +628,6 @@ onBeforeUnmount(() => {
   clearTimeout(saveTimer);
   clearTimeout(generationTimer);
   clearTimeout(resultTimer);
-  clearInterval(clockTimer);
 });
 </script>
 
@@ -747,7 +740,7 @@ onBeforeUnmount(() => {
           >
         </p>
         <p v-if="doc.validation.id && !validationCurrent" class="seller-risk-label">
-          上次校验已失效或超过 10 分钟，请重新校验后提交。
+          资料、来源、规格或店铺配置已变化，请重新校验后提交。
         </p>
         <p v-if="generationRow?.collection?.message" class="muted">
           来源补全：{{ generationRow.collection.message }}

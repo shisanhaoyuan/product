@@ -317,15 +317,16 @@ def test_source_refresh_no_double_markup_binding_and_stale_validation_guards(pub
         doc=response.json()
         row=next(r for r in doc['rows'] if r['source_sku']=='W1')
         assert row['orderable']['price']==83.18 # (70+2.33)*1.15, never already marked-up price.
-        assert row['orderable']['msrp']==166.36
+        assert row['orderable']['msrp']==159.46 # Preserve the existing suggestion; no forced repricing.
         assert row['visible']['assembledProductHeight']['measure']==32.5
     checked=c.post(base+'/validate',json={'revision':doc['revision']}).json()
     assert checked['validation']['valid_count']==2,checked['validation']
     with catalog.connect() as db:
-        report=checked['validation'];report['at']=0
+        report=json.loads(db.execute('SELECT validation_json FROM walmart_listing_documents WHERE batch_id=?',(publishing[4]['id'],)).fetchone()[0]);report['at']=0
         db.execute('UPDATE walmart_listing_documents SET validation_json=? WHERE batch_id=?',(encoded(report),publishing[4]['id']))
-    assert c.post(base+'/submit',json=submission(checked)).status_code==409
-    assert not remote.posts
+    assert c.get(base).json()['validation']['current'] is True
+    assert c.post(base+'/submit',json=submission(checked)).status_code==200
+    assert len(remote.posts)==1
 
 
 def test_exact_store_brand_type_gtin_exemption_and_invalid_check_digit(publishing):

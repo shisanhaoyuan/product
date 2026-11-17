@@ -22,7 +22,7 @@ from .listing_source_evidence import supplement_facts
 from .listing_vision import image_evidence, vision_identity
 from .walmart_listing_schema import DEFAULT_VERSION, normalize_spec, taxonomy_options
 from .walmart_publishing import (batch, binding, document, public_document, fresh_basis,
-    default_rows, latest_results, EDITABLE, cache_value, cache_put, unchanged_sources, source_issues, check_rows, validate_document, VALIDATION_AGE)
+    default_rows, normalize_titles, normalize_document_titles, latest_results, EDITABLE, cache_value, cache_put, unchanged_sources, source_issues, check_rows, validate_document)
 
 POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix='listing-preparation')
 
@@ -80,7 +80,7 @@ def start_job(catalog, publisher, bid, actor_id=None, ai=None, schedule=True):
             basis = fresh_basis(catalog,db,current)
             db.execute('INSERT INTO walmart_listing_documents VALUES(?,?,?,?,?,?,?)',
                 (bid,1,os.environ.get('CATALOG_WALMART_SPEC_VERSION',DEFAULT_VERSION),encoded(default_rows(basis)),encoded(basis),'{}',now()))
-        stored = document(db,bid)
+        stored = normalize_document_titles(db,document(db,bid))
         from .listing_prerequisites import allocate_document_identifiers
         allocate_document_identifiers(db,stored,actor_id)
         stored = document(db,bid)
@@ -197,6 +197,11 @@ def run_job(catalog, publisher, jid, ai):
                 write_lock(db);stored,_=checked_context(db,job)
                 if latest_results(db,job['batch_id']).get(sku,{}).get('status','unsubmitted') not in EDITABLE:
                     raise ListingAIError('商品已开始提交，停止写入生成资料')
+                title_changes=normalize_titles(db,[updated],basis,{})
+                if title_changes:
+                    change=title_changes[0]
+                    report['rows'][sku].setdefault('fields',{})['visible.productName']=dict(kind='user_rule',
+                        value=change['after'],previous_value=change['before'],refs=[],reason='用户指定：目标品牌置于标题开头，移除已识别品牌')
                 live_rows=json.loads(stored['rows_json'])
                 for n,value in enumerate(live_rows):
                     if value['platform_sku']==sku:

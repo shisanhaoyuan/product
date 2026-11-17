@@ -91,9 +91,9 @@ python validation/frontend_state_check.py
 
 ## AI 刊登资料闭环维护
 
-规则版本 v6，数据库迁移19。核心模块为 `listing_generation_jobs.py`（任务）、`listing_repair.py`（3轮受限修复）、`listing_prerequisites.py`（真实编码及店铺前提）、`listing_source_evidence.py`（同 SKU 补采）、`listing_vision.py`（受控图片与证据）和 `listing_result_worker.py`（只读轮询与修复草稿）。资料校验复用 `walmart_publishing.validate_document`，禁止另设“AI 完成就视为通过”的路径。
+规则版本 v7，当前数据库迁移20。核心模块为 `listing_generation_jobs.py`（任务）、`listing_repair.py`（3轮受限修复）、`listing_prerequisites.py`（真实编码及店铺前提）、`listing_source_evidence.py`（同 SKU 补采）、`listing_vision.py`（受控图片与证据）和 `listing_result_worker.py`（只读轮询与修复草稿）。资料校验复用 `walmart_publishing.validate_document`，禁止另设“AI 完成就视为通过”的路径。
 
-校验有效期600秒，来源/资料/店铺/Schema/前提/平台反馈改变后失效。保留人工改动及改后恢复的锁定记录；AI 不改价格、库存、SKU、ASIN、编码、品牌、图片及法律证明字段。真实编码归属与唯一分配必须在事务锁内操作。后台任务不得调用提交接口或库存 PUT；原管理员失权后暂停。后台修复只排草稿，仍需用户确认提交。
+校验不设固定10分钟过期，来源/资料/店铺/Schema/前提/平台反馈改变后失效。保留人工改动及改后恢复的锁定记录；AI 不改价格、库存、SKU、ASIN、编码、品牌、图片及法律证明字段。真实编码归属与唯一分配必须在事务锁内操作。后台任务不得调用提交接口或库存 PUT；原管理员失权后暂停。后台修复只排草稿，仍需用户确认提交。
 
 模型密钥只在私有配置保存。测试必须禁用真实 AI，并使用隔离数据库及模拟模型/来源/平台，不能使用生产凭证或 DSN。部署需备份数据库、图片和原加密主密钥，重启应用执行迁移，不覆盖生产数据。新开关与首版限制见 `docs/AI自动刊登闭环设计.md`、`docs/沃尔玛正式上架.md` 和 `deploy/jiwu.env.example`。
 
@@ -118,3 +118,9 @@ python validation/frontend_state_check.py
 `walmart_review.py` 按提交 rows_json 展开 SKU，窗口排序选每店铺／Partner／SKU 的最新结果，筛选和分页在数据库完成；SQLite 与 PostgreSQL 分别使用原生 JSON 函数。只投影公开结果，不暴露提交 payload 或凭证。预上架列表复用该投影：已提交隐藏、失败返回、部分提交保留未提交工作，不更改批次状态或 SKU/EAN。无新表，无迁移版本变化。
 
 审核页 GET 只读本地库；管理员 POST 查询复用原 Feed/Partner/SKU 校验及轮询租约，强制 `sync_inventory=False`。批量查询同一 attempt 只执行一次，不调用自动修复、Feed POST 或库存 PUT。平台查询失败原结果保持，前端15秒只读取本地记录。测试在独立库模拟接口，涵盖失败返回／重试移出、部分提交、多店隔离、历史记录及只读查询。
+
+## 标题品牌与校验限制调整（2026-11-17）
+
+`listing_titles.py` 统一目标品牌前缀、已核验来源品牌移除及幂等处理。准备／生成／编辑保存／显式校验共用，原标题非品牌文字保留；旧草稿校验会先保存标题、增加修订号并记录 `title_brand_rule`，再按新修订号校验。已处理、结果未知及已发布行不改。`brand_prefix_v1` 标记使旧规则校验首次升级后需重新校验，后续不按10分钟失效。生成规则版本v7使历史失败缓存重算。
+
+移除 MSRP 两倍强制校验和刷新来源时的 MSRP 覆盖；初始建议仍可取现有价格规则的两倍，人工可修改或按 Schema 省略。来源超过24小时不再阻止生成、校验或提交，但真实售价、库存可用、有效核验时间及来源摘要变化检查保留。实际库存 PUT 仍使用独立的24小时时效及SKU归属回读保护，不能与资料校验混为同一状态。无新数据库迁移，不改来源商品或已提交内容。
