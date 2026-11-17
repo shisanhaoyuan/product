@@ -114,7 +114,16 @@ export interface GenerationJob {
         state: string;
         issues: Issue[];
         estimated?: number;
-        fields: Record<string, { kind: string; value?: unknown; reason?: string; refs?: string[] }>;
+        fields: Record<
+          string,
+          {
+            kind: string;
+            value?: unknown;
+            previous_value?: unknown;
+            reason?: string;
+            refs?: string[];
+          }
+        >;
       }
     >;
   };

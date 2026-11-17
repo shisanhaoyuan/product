@@ -637,12 +637,18 @@ onBeforeUnmount(() => {
                     ? 'AI 估算'
                     : field.kind === 'user_rule'
                       ? '用户规则'
-                      : '来源映射'
+                      : field.kind === 'schema_cleanup'
+                        ? '旧类目字段已移除'
+                        : '来源映射'
                 }}
               </dt>
               <dd>
                 {{ field.reason
                 }}<span v-if="field.refs?.length"> · {{ field.refs.join('、') }}</span>
+                <details v-if="field.kind === 'schema_cleanup'">
+                  <summary>查看保留的原值</summary>
+                  <pre>{{ JSON.stringify(field.previous_value, null, 2) }}</pre>
+                </details>
               </dd></template
             >
           </dl>

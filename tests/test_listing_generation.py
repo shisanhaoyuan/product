@@ -52,8 +52,10 @@ def test_schema_mapping_units_and_conditionals():
     result,issues=fill_row(row,schema,facts,ai,audit)
     assert result['visible']['assembledProductHeight']=={'measure':32.5,'unit':'in'}
     assert result['orderable']['ShippingWeight']==22.0462
-    assert any('明确来源' in i['message'] for i in issues)
-    assert not ai.calls  # No AI required for legal disclosure, which needs evidence.
+    assert not issues
+    assert result['visible']['isProp65WarningRequired']=='No'
+    assert audit['visible.isProp65WarningRequired']['kind']=='user_rule'
+    assert not ai.calls  # Skill defaults execute locally, without fabricated AI evidence.
     assert row==listing()
     shape=schema['properties']['MPItem']['items']['properties']['Visible']['properties'][PT]
     assert 'prop65WarningText' in required_keys(shape,{'isProp65WarningRequired':'Yes'})
@@ -67,7 +69,9 @@ def test_ai_rejects_identity_injection_invalid_values_and_legal_estimates():
         def query(self,purpose,payload):
             return dict(source_sku='WRONG',actions=[])
     result,issues=fill_row(row,schema,facts,Evil(),{})
-    assert result==row and any('SKU' in i['message'] for i in issues)
+    assert result['orderable']==row['orderable'] and result['source_sku']==row['source_sku']
+    assert result['visible']['assembledProductHeight']=={'measure':22,'unit':'in'}
+    assert any('SKU' in i['message'] for i in issues)
     class Price(AI):
         def query(self,purpose,payload):
             return dict(source_sku='W1',actions=[dict(field='orderable.price',value=1)])
@@ -138,9 +142,11 @@ def test_required_attributes_accept_real_leaf_refs_and_reject_missing_leaf():
     audit={};row,issues=fill_row(listing(),spec(),facts,Nested(),audit)
     assert row['visible']['assembledProductHeight']=={'measure':32.5,'unit':'in'}
     assert audit['visible.assembledProductHeight']['kind']=='source'
-    row,issues=fill_row(listing(),spec(),{'content.attributes':{'Height':''}},Nested(),{})
-    assert 'assembledProductHeight' not in row['visible']
-    assert any('证据' in i['message'] for i in issues)
+    audit={}
+    row,issues=fill_row(listing(),spec(),{'content.attributes':{'Height':''}},Nested(),audit)
+    assert row['visible']['assembledProductHeight']=={'measure':22,'unit':'in'}
+    assert audit['visible.assembledProductHeight']['kind']=='user_rule'
+    assert 'confidence' not in audit['visible.assembledProductHeight']
 
 
 def test_category_failure_points_to_type_even_with_existing_wrong_type(publishing,monkeypatch):
@@ -175,7 +181,7 @@ def test_persistent_job_preserves_identity_prices_and_never_publishes(publishing
         for key in ['source_sku','platform_sku','listing_id','identification']:assert row[key]==old[key]
         for key in ['price','msrp']:assert row['orderable'][key]==old['orderable'][key]
         assert row['visible']['assembledProductHeight']['measure']==32.5
-        assert any('明确来源' in i['message'] for i in status['report']['rows'][row['platform_sku']]['issues'])
+        assert status['report']['rows'][row['platform_sku']]['fields']['visible.isProp65WarningRequired']['kind']=='user_rule'
     assert len(remote.posts)==0 and remote.stock=={}
     assert c.get(base).json()['rows']==doc['rows']
 
@@ -296,3 +302,42 @@ def test_single_variant_facts_never_borrow_another_child():
     facts=source_facts(source,item,{'sku':'B','content':{'copy':{'title':'Blue chair'}}})
     assert facts['verified_source']=={'color':'blue'}
     assert 'red' not in json.dumps(facts)
+
+
+def test_skill_defaults_persisted_readback_cleanup_audit_and_repeat_noop(publishing):
+    from catalog.walmart_listing_schema import sections
+    c,catalog,_,_,b,base,remote=publishing
+    ready(publishing)
+    props=sections(remote.schema,PT)['visible']['properties']
+    props['ageGroup']={'type':'array','items':{'type':'string','enum':['Adult','Child']}}
+    props['has_written_warranty']={'type':'string','enum':['No','Yes - Warranty Text']}
+    props['netContent']={'type':'object','properties':{
+        'unit':{'type':'string','enum':['Case']},'measure':{'type':'number'}},'required':['unit','measure']}
+    doc=c.get(base).json()
+    for index,row in enumerate(doc['rows']):
+        row['visible']['oldCategoryField']=['Prior value '+str(index)]
+        row['visible']['netContent']={'unit':'Each','measure':index+3}
+    assert c.patch(base,json={k:doc[k] for k in ('revision','version','rows')}).status_code==200
+    # ready() fetched the earlier schema; force retrieval of the new official fixture.
+    with catalog.connect() as db:
+        db.execute("DELETE FROM walmart_listing_metadata WHERE kind='spec'")
+    ai=AI();publisher=c.app.state.walmart_publisher
+    job=start_job(catalog,publisher,b['id'],ai=ai,schedule=False)
+    run_job(catalog,publisher,job['id'],ai)
+    saved=c.get(base).json()
+    report=c.get(base+'/generation').json()['job']
+    for index,row in enumerate(saved['rows']):
+        sku=row['platform_sku'];fields=report['report']['rows'][sku]['fields']
+        assert row['visible']['ageGroup']==['Adult']
+        assert row['visible']['has_written_warranty']=='No'
+        assert row['visible']['netContent']=={'unit':'Case','measure':index+3}
+        assert 'oldCategoryField' not in row['visible']
+        assert fields['visible.oldCategoryField']['previous_value']==['Prior value '+str(index)]
+        assert fields['visible.netContent']['kind']=='user_rule'
+        assert row['orderable']==doc['rows'][index]['orderable']
+        for key in ('source_sku','platform_sku','identification'):
+            assert row[key]==doc['rows'][index][key]
+    assert all(r['state']=='complete' for r in report['report']['rows'].values()),report
+    assert start_job(catalog,publisher,b['id'],ai=ai,schedule=False)['id']==job['id']
+    assert c.get(base).json()['revision']==saved['revision']
+    assert not remote.posts and not remote.stock

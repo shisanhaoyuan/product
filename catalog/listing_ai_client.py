@@ -56,6 +56,7 @@ class ListingAIClient:
             'Return one JSON object only. Follow the supplied rules and exact output contract. '
             'Use only supplied product facts for this source_sku and listed official options. '
             'Never invent identifiers, certifications, legal disclosures, warranties or prices. '
+            'Explicit user-authorized Skill defaults are applied by the program as user_rule, not source facts or AI estimates. '
             'No tools, navigation, publishing, code execution, or cross-SKU facts. '
             'If evidence is insufficient, return missing fields with a short Chinese reason. '
         )

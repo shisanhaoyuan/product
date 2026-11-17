@@ -39,6 +39,11 @@ LABELS = {
     'upholstered':'是否软包','condition_notes':'成色说明','fulfillmentCenterID':'发货仓',
     'assemblyInstructions':'组装说明','suggested_number_of_people_for_assembly':'建议组装人数',
     'prop65WarningText':'加州 65 号警告内容','longDescription':'详细描述',
+    'country_of_origin_textiles':'纺织品产地','countryOfOriginTextiles':'纺织品产地',
+    'stateChemicalDisclosure':'州化学品披露','isFragile':'是否易碎',
+    'hasNRTLListingCertification':'是否有 NRTL 认证','adjustableHeight':'是否可调高度',
+    'seat_back_cushion_style':'靠背软垫款式','bedSize':'床尺寸',
+    'recommendedLocations':'建议使用场所',
 }
 
 
@@ -191,17 +196,36 @@ def chinese_schema_error(error):
     return dict(path=path, message=message)
 
 
+def precise_validator(schema, **kwargs):
+    """Keep decimal multipleOf checks when nested official schemas repeat $schema.
+
+    jsonschema.evolve otherwise switches our extended validator back to Draft7.
+    Removing redundant declarations of the same dialect preserves its semantics.
+    """
+    def prepare(value):
+        if isinstance(value, dict):
+            return {k: v if k in ('enum','const','default','examples') else prepare(v) for k, v in value.items()
+                    if not (k == '$schema' and isinstance(v, str) and
+                            v.endswith(('draft-07/schema#', 'draft-07/schema')))}
+        if isinstance(value, list):
+            return [prepare(v) for v in value]
+        return value
+
+    def exact_multiple(validator, step, instance, definition):
+        if isinstance(instance, (int, float, Decimal)) and not isinstance(instance, bool):
+            if Decimal(str(instance)) % Decimal(str(step)) != 0:
+                yield ValidationError('金额或数值精度不符合要求')
+
+    cls = validators.extend(Draft7Validator, {'multipleOf': exact_multiple})
+    return cls(prepare(schema), **kwargs)
+
+
 def schema_errors(schema, item, version):
     def refuse(uri):
         raise NoSuchResource(ref=uri)
     payload = dict(MPItemFeedHeader={'businessUnit': 'WALMART_US', 'locale': 'en', 'version': version}, MPItem=[item])
     try:
-        def exact_multiple(validator, step, instance, definition):
-            if isinstance(instance,(int,float,Decimal)) and not isinstance(instance,bool):
-                if Decimal(str(instance)) % Decimal(str(step)) != 0:
-                    yield ValidationError('金额或数值精度不符合要求')
-        cls=validators.extend(Draft7Validator,{'multipleOf':exact_multiple})
-        validator = cls(schema, registry=Registry(retrieve=refuse), format_checker=FormatChecker())
+        validator = precise_validator(schema, registry=Registry(retrieve=refuse), format_checker=FormatChecker())
         errors = [chinese_schema_error(e) for e in validator.iter_errors(payload)]
     except Exception:
         return [dict(path='', message='官方规格含无法解析的约束，不能确认资料完整；请重新获取规格并联系维护人员')]

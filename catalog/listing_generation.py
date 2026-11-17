@@ -8,12 +8,14 @@ from pathlib import Path
 from jsonschema import Draft7Validator
 
 from .listing_ai_client import ListingAIError
-from .walmart_listing_schema import plain, sections, feed_item, schema_errors, identifier_errors
+from .walmart_listing_schema import plain, sections, feed_item, schema_errors, identifier_errors, precise_validator
+from .listing_skill_defaults import has_default, skill_default, length_fallback
 
-RULES_VERSION = 'listing-generation-v2'
+RULES_VERSION = 'listing-generation-v3'
 RULES = Path(__file__).with_name('listing_generation_rules.md').read_text()
 BLOCKED = re.compile(r'prop.?65|warranty|certif|nrtl|chemical|origin|warning|exempt|gtin|upc|ean|model|partnumber', re.I)
 PROTECTED = {'sku','productIdentifiers','inventory','price','msrp','SkuUpdate','ProductIdUpdate','fulfillmentCenterID'}
+CONTENT_FIELDS = {'productName','brand','shortDescription','keyFeatures','mainImageUrl','productSecondaryImageURL'}
 
 
 def empty(value):
@@ -133,6 +135,47 @@ def prepare_copy(row, facts, provenance):
             provenance['visible.'+field] = dict(kind='user_rule',value=cleaned,refs=['content.copy'],reason='品牌同步与来源文案清理，保留事实')
 
 
+def source_copy(key, schema, facts, brand):
+    """Recover missing copy using this SKU only, including a feature-based description."""
+    original = facts.get('content.copy') or {}
+    old_brand = facts.get('source_brand', '')
+    def clean(value):
+        value = plain(value)
+        if old_brand and brand:
+            value = re.sub(r'(?<!\w)'+re.escape(old_brand)+r'(?!\w)',lambda _:brand,value,flags=re.I)
+        sentences = re.split(r'\n+|(?<=[.!?])\s+',value)
+        return '\n'.join(dict.fromkeys(v.strip() for v in sentences if v.strip() and not re.search(
+            r'\b(?:Amazon|ASIN|SKU|UPC|EAN|GTIN|manufacturer|warranty|shipping|delivery|discount|price|reviews)\b',v,re.I)))
+    refs = ['content.copy']
+    if key == 'productName':
+        value = clean(original.get('title', ''))
+    elif key == 'keyFeatures':
+        value = list(dict.fromkeys(clean(v) for v in original.get('features', []) if isinstance(v,str)))
+        value = [v for v in value if v]
+    elif key == 'shortDescription':
+        value = clean(original.get('description', ''))
+        if not value:
+            features = list(dict.fromkeys(clean(v) for v in original.get('features', []) if isinstance(v,str)))
+            features = [v for v in features if v]
+            parts = ['Features:\n'+'\n'.join(f'{i}. {v}' for i,v in enumerate(features,1))] if features else []
+            attrs = facts.get('content.attributes') or facts.get('detail.attributes') or {}
+            if isinstance(attrs,dict):
+                specifications = list(dict.fromkeys(clean(f'{k}: {v}') for k,v in attrs.items()
+                    if isinstance(v,(str,int,float)) and not empty(v)))
+                specifications = [v for v in specifications if v]
+                if specifications:
+                    parts.append('Product Information:\n'+'\n'.join(specifications))
+                    refs.append('content.attributes' if 'content.attributes' in facts else 'detail.attributes')
+            value = '\n\n'.join(parts)
+    else:
+        return None, []
+    # Never duplicate text to meet minimum lengths, or truncate a word/unit.
+    if isinstance(value,str) and len(value) > schema.get('maxLength',len(value)):
+        value = value[:schema['maxLength']].rsplit(' ',1)[0].rstrip()
+    refs = [ref for ref in refs if fact_reference_exists(facts,ref)]
+    return (candidate_value(schema,value), refs) if not empty(value) and refs else (None, [])
+
+
 def choose_type(row, item, facts, types, ai):
     hints = {norm(v) for value in [item.get('category', ''), *item.get('category_hints', [])]
              for v in [value, re.split(r'>+|/|→|\||::', value)[-1]] if v}
@@ -193,7 +236,7 @@ def candidate_value(schema, value):
     if schema.get('enum') and isinstance(value, str):
         matches = [v for v in schema['enum'] if norm(v) == norm(value)]
         value = matches[0] if len(matches) == 1 else value
-    return value if Draft7Validator(schema).is_valid(value) else None
+    return value if precise_validator(schema).is_valid(value) else None
 
 
 def mapped_value(key, schema, facts):
@@ -237,29 +280,52 @@ def mapped_value(key, schema, facts):
 
 def fill_row(row, schema, facts, ai, provenance):
     row = copy.deepcopy(row)
-    prepare_copy(row,facts,provenance)
     spec = sections(schema, row['product_type'])
+    # A class change may leave old fields in the document. Keep their full values
+    # in the audit so cleanup is recoverable, without sending unsupported fields.
+    for section in ('visible','orderable'):
+        definition = spec[section]
+        for key,value in list(row[section].items()):
+            unsupported = (definition.get('additionalProperties') is False and
+                key not in definition.get('properties', {}) and
+                not any(re.search(pattern,key) for pattern in definition.get('patternProperties', {})))
+            if key not in PROTECTED and (unsupported and key not in CONTENT_FIELDS or empty(value)):
+                del row[section][key]
+                if not empty(value):
+                    provenance[section+'.'+key] = dict(kind='schema_cleanup',value=None,previous_value=value,
+                        refs=[],reason='当前商品类型不接受此旧字段，原值保留在审计中')
+    prepare_copy(row,facts,provenance)
     problems = []
-    for turn in range(2):
+    for turn in range(3):
         missing = {}
         for section in ('visible','orderable'):
             props = spec[section].get('properties', {})
             needed = required_keys(spec[section], row[section])
+            needed |= {k for k,s in props.items() if has_default(k,s)}
             if section == 'visible':
                 needed |= {'productName','brand','shortDescription','keyFeatures','mainImageUrl'}
             for key in sorted(needed):
-                if key in PROTECTED or key not in props or not empty(row[section].get(key)):
+                if key in PROTECTED or key not in props:
                     continue
                 field = section + '.' + key
-                v, refs = mapped_value(key, props[key], facts)
+                current = row[section].get(key)
+                if not empty(current) and key != 'netContent':
+                    continue
+                v, refs = mapped_value(key, props[key], facts) if empty(current) else (None, [])
                 kind = 'source'
-                if v is None and key in ('condition','fulfillmentLagTime'):
-                    v = candidate_value(props[key], 'New' if key == 'condition' else 1)
+                reason = '来源映射／确定单位换算'
+                if v is None and section == 'visible':
+                    v,refs = source_copy(key,props[key],facts,row['visible'].get('brand',''))
+                if v is None:
+                    v, reason = skill_default(key,props[key],current,facts)
                     refs, kind = [], 'user_rule'
                 if v is not None:
-                    row[section][key] = v
-                    provenance[field] = dict(kind=kind, refs=refs, value=v, reason='来源映射／确定单位换算' if refs else '用户业务默认规则')
+                    if v != current:
+                        row[section][key] = v
+                        provenance[field] = dict(kind=kind, refs=refs, value=v, reason=reason)
                 else:
+                    if not empty(current):
+                        continue
                     if BLOCKED.search(key):
                         problems.append(dict(path=field,message='缺少该字段的明确来源或证明，不能估算'))
                     else:
@@ -305,8 +371,23 @@ def fill_row(row, schema, facts, ai, provenance):
                 if isinstance(issue, dict) and issue.get('field') in missing and isinstance(issue.get('reason'), str):
                     problems.append(dict(path=issue['field'], message=issue['reason'][:400]))
         except ListingAIError as exc:
-            problems.append(dict(path='', message=str(exc)))
+            problems.extend(dict(path=path, message=str(exc)) for path in missing)
             break
+    # Source and model estimates get priority. The Skill's 22-inch rule is a
+    # deterministic final fallback; never applied to weights or identifiers.
+    for section in ('visible','orderable'):
+        props = spec[section].get('properties', {})
+        for key in required_keys(spec[section],row[section]):
+            if key in PROTECTED or key not in props:
+                continue
+            current = row[section].get(key)
+            if current is not None and candidate_value(props[key],current) is not None and not empty(current):
+                continue
+            value = length_fallback(key,props[key],current)
+            if value is not None:
+                row[section][key] = value
+                provenance[section+'.'+key] = dict(kind='user_rule',value=value,refs=[],
+                    reason='user_authorized_rule: unavailable parameter default 22 inch；来源缺失且 AI 未能补齐的长度兜底，非实测值')
     # A later conditional pass may have filled a previously missing field.
     problems = [p for p in problems if not p['path'] or
                 empty(row.get(p['path'].split('.')[0], {}).get(p['path'].split('.')[-1]))]
