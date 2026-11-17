@@ -9,6 +9,7 @@ export interface ExemptionSetting {
 }
 export interface PreparationSettings {
   revision: number;
+  default_brand: string;
   fulfillment_center_id: string;
   exemptions: ExemptionSetting[];
 }

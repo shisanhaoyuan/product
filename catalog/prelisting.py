@@ -63,6 +63,9 @@ def initialize(db):
                        [(name, seller_key(name), alias, origin) for name, alias, origin in stores])
         db.execute('INSERT INTO migrations VALUES(4)')
     platform_sku.initialize(db)
+    db.execute('''CREATE TABLE IF NOT EXISTS prelisting_batch_trash(
+        batch_id TEXT PRIMARY KEY REFERENCES prelisting_batches(id),deleted_at TEXT NOT NULL,actor_id INTEGER)''')
+    db.execute('INSERT INTO migrations VALUES(20) ON CONFLICT DO NOTHING')
 
 
 class StrictInput(BaseModel):
@@ -162,6 +165,18 @@ class CreateInput(PlanInput):
 
 class BatchAction(StrictInput):
     action: Literal['confirm', 'cancel', 'upgrade_skus']
+
+
+class BatchBulkAction(StrictInput):
+    ids: list[str] = Field(min_length=1,max_length=100)
+    action: Literal['delete','restore']
+
+    @field_validator('ids')
+    @classmethod
+    def unique_ids(cls, values):
+        if len(set(values))!=len(values) or any(not v or len(v)>100 for v in values):
+            raise ValueError('请选择不重复的有效批次')
+        return values
 
 
 def money(value, *, zero=False):
@@ -370,13 +385,19 @@ def prelisting_routes(catalog):
         row = db.execute('SELECT * FROM prelisting_batches WHERE id=?', (bid,)).fetchone()
         if not row:
             raise HTTPException(404, '批次不存在')
-        return dict(id=row['id'], status=row['status'], created_at=row['created_at'], updated_at=row['updated_at'],
+        trash=db.execute('SELECT deleted_at FROM prelisting_batch_trash WHERE batch_id=?',(bid,)).fetchone()
+        return dict(id=row['id'], status=row['status'], created_at=row['created_at'], updated_at=row['updated_at'],deleted_at=trash[0] if trash else None,
                     preview=json.loads(row['preview_json']), execution_enabled=False)
 
     @router.get('/api/listing-stores')
     def stores():
         with catalog.connect() as db:
-            return [dict(r) for r in db.execute('SELECT * FROM listing_stores ORDER BY lower(name)')]
+            from .listing_prerequisites import preparation_settings
+            result=[]
+            for r in db.execute('SELECT * FROM listing_stores ORDER BY lower(name)'):
+                bound=db.execute("SELECT * FROM walmart_accounts WHERE store_id=? AND encrypted_credentials<>''",(r['id'],)).fetchone()
+                result.append(dict(r) | {'default_brand':preparation_settings(db,bound).get('default_brand','') if bound else ''})
+            return result
 
     @router.post('/api/listing-stores', status_code=201)
     def add_store(data: StoreInput):
@@ -456,15 +477,53 @@ def prelisting_routes(catalog):
             return batch(db, bid)
 
     @router.get('/api/prelisting/batches')
-    def batches(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
+    def batches(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
+                status:Literal['','draft','confirmed','cancelled']='',store_id:int=Query(0,ge=0),
+                q:str=Query('',max_length=200),trash:bool=False):
         with catalog.connect() as db:
-            rows = db.execute('SELECT * FROM prelisting_batches ORDER BY created_at DESC,id LIMIT ? OFFSET ?', (page_size,(page-1)*page_size)).fetchall()
+            read_snapshot(db)
+            store_expr="CAST(b.preview_json AS jsonb)->'store'->>'id'" if catalog.postgres else "CAST(json_extract(b.preview_json,'$.store.id') AS TEXT)"
+            brand_expr="CAST(b.preview_json AS jsonb)->>'brand'" if catalog.postgres else "json_extract(b.preview_json,'$.brand')"
+            name_expr="CAST(b.preview_json AS jsonb)->'store'->>'name'" if catalog.postgres else "json_extract(b.preview_json,'$.store.name')"
+            where=['t.batch_id IS NOT NULL' if trash else 't.batch_id IS NULL'];args=[]
+            if status:where.append('b.status=?');args.append(status)
+            if store_id:where.append(f'{store_expr}=?');args.append(str(store_id))
+            if q.strip():
+                where.append(f'(lower(b.id) LIKE ? OR lower({brand_expr}) LIKE ? OR lower({name_expr}) LIKE ?)')
+                args.extend(['%'+q.strip().lower()+'%']*3)
+            relation=' FROM prelisting_batches b LEFT JOIN prelisting_batch_trash t ON b.id=t.batch_id WHERE '+' AND '.join(where)
+            total=db.execute('SELECT count(*)'+relation,args).fetchone()[0]
+            rows = db.execute('SELECT b.*,t.deleted_at'+relation+' ORDER BY b.created_at DESC,b.id LIMIT ? OFFSET ?', (*args,page_size,(page-1)*page_size)).fetchall()
             items=[]
             for r in rows:
                 p=json.loads(r['preview_json'])
-                items.append(dict(id=r['id'],status=r['status'],created_at=r['created_at'],store=p['store']['name'],
+                items.append(dict(id=r['id'],status=r['status'],created_at=r['created_at'],deleted_at=r['deleted_at'],store=p['store']['name'],
                                   brand=p['brand'],multiplier=p['multiplier'],total=p['total'],ready_count=p['ready_count'],variant_count=p['variant_count']))
-            return dict(items=items,total=db.execute('SELECT COUNT(*) FROM prelisting_batches').fetchone()[0],page=page,page_size=page_size)
+            return dict(items=items,total=total,page=page,page_size=page_size)
+
+    @router.post('/api/prelisting/batches/bulk-action')
+    def bulk_action(data:BatchBulkAction,request:Request):
+        with catalog.connect() as db:
+            write_lock(db)
+            # Validate the whole selection first, so mixed-status requests change nothing.
+            for bid in data.ids:
+                current=batch(db,bid)
+                if current['status']!='cancelled':
+                    raise HTTPException(409,'只能删除或恢复已取消的批次，请重新筛选')
+                if db.execute("SELECT 1 FROM walmart_listing_attempts WHERE batch_id=? AND state<>'rejected'",(bid,)).fetchone():
+                    raise HTTPException(409,'所选批次有沃尔玛提交记录，不能删除')
+                if db.execute("SELECT 1 FROM listing_generation_jobs WHERE batch_id=? AND state IN ('queued','running')",(bid,)).fetchone():
+                    raise HTTPException(409,'所选批次仍在生成资料，请等待任务结束')
+            at=datetime.now(timezone.utc).isoformat();changed=0
+            for bid in data.ids:
+                exists=db.execute('SELECT 1 FROM prelisting_batch_trash WHERE batch_id=?',(bid,)).fetchone()
+                if data.action=='delete' and not exists:
+                    db.execute('INSERT INTO prelisting_batch_trash VALUES(?,?,?)',(bid,at,actor(request)))
+                elif data.action=='restore' and exists:
+                    db.execute('DELETE FROM prelisting_batch_trash WHERE batch_id=?',(bid,))
+                else:continue
+                event(db,bid,request,'trash' if data.action=='delete' else 'restore',at);changed+=1
+            return dict(changed=changed)
 
     @router.get('/api/prelisting/batches/{bid}')
     def detail(bid: str):
@@ -476,6 +535,8 @@ def prelisting_routes(catalog):
         with catalog.connect() as db:
             write_lock(db)
             current=batch(db,bid)
+            if current['deleted_at']:
+                raise HTTPException(409,'批次已移入回收站，请先恢复记录')
             if data.action in ('cancel','upgrade_skus') and db.execute(
                 "SELECT 1 FROM walmart_listing_attempts WHERE batch_id=? AND state<>'rejected'", (bid,)).fetchone():
                 raise HTTPException(409, '该批次已有沃尔玛提交记录，不能取消或重新分配 SKU；请在上架资料中修正失败项')

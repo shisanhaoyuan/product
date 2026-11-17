@@ -212,6 +212,7 @@ export interface SellerBlockPage {
 }
 
 export interface ListingStore {
+  default_brand?: string;
   id: number;
   name: string;
   marketplace_name: string;
@@ -293,6 +294,7 @@ export interface PrelistingPreview {
   }[];
 }
 export interface PrelistingBatch {
+  deleted_at?: string | null;
   id: string;
   status: 'draft' | 'confirmed' | 'cancelled';
   created_at: string;
@@ -302,6 +304,7 @@ export interface PrelistingBatch {
 }
 export interface BatchPage {
   items: {
+    deleted_at?: string | null;
     id: string;
     status: PrelistingBatch['status'];
     created_at: string;

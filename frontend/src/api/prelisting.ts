@@ -29,8 +29,20 @@ export const prelistingApi = {
       '/api/prelisting/batches',
       json('POST', { ...input, preview_hash, request_key }),
     ),
-  batches: (page = 1, signal?: AbortSignal) =>
-    request<BatchPage>(`/api/prelisting/batches?page=${page}`, { signal }),
+  batches: (
+    page = 1,
+    signal?: AbortSignal,
+    filters: { status?: string; store_id?: string; q?: string; trash?: string } = {},
+  ) =>
+    request<BatchPage>(
+      '/api/prelisting/batches?' + new URLSearchParams({ page: String(page), ...filters }),
+      { signal },
+    ),
+  bulkAction: (ids: string[], action: 'delete' | 'restore') =>
+    request<{ changed: number }>(
+      '/api/prelisting/batches/bulk-action',
+      json('POST', { ids, action }),
+    ),
   batch: (id: string, signal?: AbortSignal) =>
     request<PrelistingBatch>(`/api/prelisting/batches/${encodeURIComponent(id)}`, { signal }),
   action: (id: string, action: 'confirm' | 'cancel' | 'upgrade_skus') =>

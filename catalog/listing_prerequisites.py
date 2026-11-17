@@ -62,8 +62,8 @@ def initialize(db):
 def preparation_settings(db, bound):
     row=db.execute('SELECT * FROM listing_store_preparation WHERE store_id=?',(bound['store_id'],)).fetchone()
     if not row or row['partner_id']!=bound['partner_id']:
-        return dict(revision=0,fulfillment_center_id='',exemptions=[])
-    return json.loads(row['data_json']) | {'revision':row['revision']}
+        return dict(revision=0,default_brand='',fulfillment_center_id='',exemptions=[])
+    return {'default_brand':''} | json.loads(row['data_json']) | {'revision':row['revision']}
 
 
 def resource_digest(db, bound):
@@ -253,6 +253,7 @@ class Exemption(BaseModel):
 class SettingsInput(BaseModel):
     model_config=ConfigDict(extra='forbid',str_strip_whitespace=True)
     revision:int=Field(ge=0)
+    default_brand:str=Field(default='',max_length=100)
     fulfillment_center_id:str=Field(default='',max_length=200)
     exemptions:list[Exemption]=Field(default_factory=list,max_length=100)
 
@@ -358,6 +359,8 @@ def prerequisite_routes(catalog):
                 if current['revision']!=data.revision or live['revision']!=bound['revision']:
                     raise HTTPException(409,'店铺或生成配置已变化，请刷新')
                 record=data.model_dump(exclude={'revision'})
+                if 'default_brand' not in data.model_fields_set:
+                    record['default_brand']=current.get('default_brand','')
                 db.execute('''INSERT INTO listing_store_preparation VALUES(?,?,?,?,?) ON CONFLICT(store_id)
                     DO UPDATE SET partner_id=excluded.partner_id,revision=excluded.revision,data_json=excluded.data_json,updated_at=excluded.updated_at''',
                     (sid,bound['partner_id'],data.revision+1,encoded(record),datetime.now(timezone.utc).isoformat()))

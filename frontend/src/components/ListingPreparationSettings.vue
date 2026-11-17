@@ -248,6 +248,16 @@ async function importCodes() {
           按实际 Partner 绑定。生成时自动使用默认仓库与准确匹配的已批准豁免；保存配置不会刊登。
         </p>
         <label
+          >店铺默认品牌<input
+            v-model="settings.default_brand"
+            maxlength="100"
+            :disabled="busy"
+            placeholder="例如 Growlume；留空表示每次手动填写"
+        /></label>
+        <p class="muted">
+          预上架选择本店铺后自动带入品牌，可在当前批次修改。保存不会改变已有批次。
+        </p>
+        <label
           >默认发货仓<FilterSelect
             label="默认发货仓"
             v-model="settings.fulfillment_center_id"

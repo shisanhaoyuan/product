@@ -195,6 +195,40 @@ def test_actual_store_defaults_exemption_guard_and_revision(publishing):
     assert all(r['fields']['identification']['kind']=='verified_prerequisite' for r in job['report']['rows'].values())
 
 
+def test_store_default_brand_is_persistent_scoped_and_does_not_change_batches(publishing):
+    c,catalog,*_,b,base,remote=publishing
+    sid=b['preview']['store']['id'];path=f'/api/walmart/accounts/{sid}/preparation'
+    before=c.get(base).json();source=catalog.export()
+    assert c.get(path).json()['default_brand']==''
+    response=c.put(path,json=dict(revision=0,default_brand='  Growlume  ',fulfillment_center_id='',exemptions=[]))
+    assert response.status_code==200,response.text
+    assert response.json()['default_brand']=='Growlume'
+    stores=c.get('/api/listing-stores').json()
+    assert next(row for row in stores if row['id']==sid)['default_brand']=='Growlume'
+    assert all(not row['default_brand'] for row in stores if row['id']!=sid)
+    cards=c.get('/api/walmart/accounts').json()['stores']
+    assert next(row for row in cards if row['store_id']==sid)['default_brand']=='Growlume'
+    assert c.get(base).json()['rows']==before['rows'] and catalog.export()==source
+    response=c.put(path,json=dict(revision=1,fulfillment_center_id='',exemptions=[]))
+    assert response.status_code==200 and response.json()['default_brand']=='Growlume'
+    assert c.put(path,json=dict(revision=1,default_brand='Other')).status_code==409
+    with catalog.connect() as db:
+        db.execute('UPDATE walmart_accounts SET partner_id=? WHERE store_id=?',('another-partner',sid))
+    assert c.get(path).json()['default_brand']==''
+    assert next(row for row in c.get('/api/listing-stores').json() if row['id']==sid)['default_brand']==''
+
+
+def test_cancelled_batch_cannot_be_deleted_while_generation_is_active(publishing):
+    c,catalog,*_,b,base,remote=publishing
+    job=start_job(catalog,c.app.state.walmart_publisher,b['id'],ai=AI(),schedule=False)
+    assert c.post(f"/api/prelisting/batches/{b['id']}/action",json={'action':'cancel'}).status_code==200
+    payload=dict(ids=[b['id']],action='delete')
+    assert c.post('/api/prelisting/batches/bulk-action',json=payload).status_code==409
+    with catalog.connect() as db:
+        db.execute("UPDATE listing_generation_jobs SET state='interrupted' WHERE id=?",(job['id'],))
+    assert c.post('/api/prelisting/batches/bulk-action',json=payload).json()['changed']==1
+
+
 def test_pool_atomic_assignment_equivalent_dedup_ownership_and_cross_store_reuse(publishing):
     c,catalog,*_=publishing
     response=c.post('/api/walmart/identifiers',json={'items':[code()]});assert response.status_code==200

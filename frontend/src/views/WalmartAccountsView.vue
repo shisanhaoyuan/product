@@ -238,6 +238,7 @@ onBeforeUnmount(() => {
         <div>
           <h2>{{ s.name }}</h2>
           <span>{{ s.sku_code ? 'SKU 前缀 MY' + s.sku_code : '未设置 SKU 店铺编码' }}</span>
+          <p class="muted">默认品牌：{{ s.default_brand || '未设置' }}</p>
         </div>
         <span
           class="wm-badge"
@@ -337,7 +338,10 @@ onBeforeUnmount(() => {
   <ListingPreparationSettings
     v-if="preparationOpen"
     :store="preparationStore"
-    @close="preparationOpen = false"
+    @close="
+      preparationOpen = false;
+      refresh();
+    "
   />
   <div v-if="selected" class="wm-overlay" @click.self="close">
     <section class="wm-dialog" role="dialog" aria-modal="true" aria-labelledby="wm-bind-title">

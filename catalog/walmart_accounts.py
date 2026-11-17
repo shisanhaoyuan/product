@@ -151,8 +151,13 @@ def walmart_routes(catalog):
             vault = {'ready': False, 'key_id': '', 'message': str(exc)}
         with catalog.connect() as db:
             rows = db.execute('SELECT * FROM listing_stores ORDER BY lower(name)').fetchall()
-            result = [dict(store_id=s['id'], name=s['name'], active=bool(s['active']),
-                           sku_code=s['sku_code'], account=public(account(db, s['id']))) for s in rows]
+            from .listing_prerequisites import preparation_settings
+            result=[]
+            for s in rows:
+                bound=account(db,s['id'])
+                result.append(dict(store_id=s['id'],name=s['name'],active=bool(s['active']),sku_code=s['sku_code'],
+                    account=public(bound),default_brand=preparation_settings(db,bound).get('default_brand','')
+                    if bound and bound['encrypted_credentials'] else ''))
         return dict(vault=vault, stores=result, execution_enabled=True)
 
     @router.post('/accounts/preview')

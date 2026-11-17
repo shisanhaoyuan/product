@@ -21,6 +21,7 @@ export interface WalmartAccount {
   bound: boolean;
 }
 export interface WalmartStore {
+  default_brand?: string;
   store_id: number;
   name: string;
   active: boolean;

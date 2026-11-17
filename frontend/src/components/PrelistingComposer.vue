@@ -31,6 +31,13 @@ const valid = computed(
     Number(multiplier.value) <= 100,
 );
 watch(
+  storeId,
+  (value) => {
+    brand.value = stores.value.find((store) => String(store.id) === value)?.default_brand || '';
+  },
+  { flush: 'sync' },
+);
+watch(
   [storeId, brand, multiplier],
   () => {
     preview.value = undefined;
@@ -132,7 +139,7 @@ async function create() {
             v-model="brand"
             required
             maxlength="100"
-            placeholder="输入本批品牌"
+            placeholder="选择店铺后自动带入，也可手动填写"
             :disabled="busy"
         /></label>
         <label
