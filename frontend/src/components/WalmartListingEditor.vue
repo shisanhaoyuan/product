@@ -910,16 +910,16 @@ onBeforeUnmount(() => {
             class="listing-sku-card"
             :class="{ active: row.platform_sku === activeSku }"
             :disabled="busy"
-            @click="activeSku = row.platform_sku"
+            aria-haspopup="dialog"
+            :aria-label="'查看商品档案 ' + row.source_sku"
+            @click="
+              activeSku = row.platform_sku;
+              detailRow = row;
+            "
           >
             <ProductImage
               :src="String(row.visible.mainImageUrl || '')"
               image-class="listing-sku-image"
-              role="button"
-              tabindex="0"
-              aria-label="查看商品信息详情"
-              @click.stop="detailRow = row"
-              @keydown.enter.stop.prevent="detailRow = row"
             />
             <span
               ><strong>{{ row.source_sku }}</strong
@@ -927,6 +927,7 @@ onBeforeUnmount(() => {
               ><span class="listing-sku-title">{{
                 plain(String(row.visible.productName || '未填写标题'))
               }}</span
+              ><small class="listing-sku-detail-hint">点击查看商品档案</small
               ><small
                 :class="{
                   'seller-risk-label':
