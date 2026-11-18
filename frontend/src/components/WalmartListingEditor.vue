@@ -1383,13 +1383,13 @@ onBeforeUnmount(() => {
                   <template v-if="!locked">
                     <button
                       v-if="i > 0"
-                      class="btn small"
+                      class="btn small listing-photo-make-main"
                       @click="setPhotos([url, ...photos.filter((_, j) => j !== i)])"
                     >
                       设主图
                     </button>
                     <button
-                      class="icon-btn"
+                      class="icon-btn listing-photo-remove"
                       :aria-label="'删除图片 ' + (i + 1)"
                       @click="setPhotos(photos.filter((_, j) => j !== i))"
                     >

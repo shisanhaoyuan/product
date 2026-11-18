@@ -37,21 +37,52 @@ const labels: Record<string, string> = {
 </template>
 <style scoped>
 .store-history {
-  display: grid;
-  gap: 6px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
   font-size: 13px;
-  margin: 10px 0;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px solid #dce6ee;
+  border-radius: 10px;
+  background: #f5f8fb;
   color: #536b7e;
+}
+.store-history > strong {
+  color: #46647b;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.store-history > .muted {
+  color: #8092a1;
 }
 .store-history summary {
   cursor: pointer;
-  white-space: normal;
+  color: #385b75;
+  font-weight: 600;
+}
+.store-history details {
+  min-width: 0;
 }
 .store-history-entry {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-  padding: 8px 0;
-  border-bottom: 1px solid #e3e9ef;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid #e3e9ef;
+  border-radius: 8px;
+  background: #fff;
+}
+.store-history-entry b {
+  color: #385b75;
+}
+@media (max-width: 760px) {
+  .store-history {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
 }
 </style>
