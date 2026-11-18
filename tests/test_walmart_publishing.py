@@ -503,6 +503,55 @@ def test_required_upstream_reason_names_recognized_field_in_chinese():
     assert reasons[0]['original']=='Missing required color'
 
 
+def test_missing_primary_image_is_not_translated_as_missing_attributes():
+    from catalog.walmart_listing_schema import upstream_reason
+    original = "This item is missing a primary image. Add a 'Main Image URL' and resubmit the item."
+    reason = upstream_reason([{'description': original}])[0]
+    assert '主图' in reason['message'] and '必填资料' not in reason['message']
+    assert reason['original'] == original
+
+
+def test_unpublished_main_image_feedback_blocks_unchanged_image_and_unrelated_edits(publishing):
+    c,_,_,_,_,base,remote=publishing
+    doc=ready(publishing);a=send(publishing,doc);target=doc['rows'][0]['platform_sku']
+    original_handler=remote.handler
+    def handler(request):
+        if request.url.path=='/v3/items/'+target:
+            return httpx.Response(200,json={'ItemResponse':[{'sku':target,'publishedStatus':'UNPUBLISHED',
+                'unpublishedReasons':{'reason':["This item is missing a primary image. Add a 'Main Image URL' and resubmit the item."]}}]})
+        return original_handler(request)
+    c.app.state.walmart_publisher=WalmartPublishingClient(httpx.MockTransport(handler))
+    result=c.post(base+f"/attempts/{a['id']}/refresh")
+    assert result.status_code==200,result.text
+    assert result.json()['results'][target]['status']=='unpublished'
+    current=c.get(base).json()
+    assert not current['validation']['current']
+    checked=c.post(base+'/validate',json={'revision':current['revision']}).json()
+    errors=checked['validation']['rows'][target]['errors']
+    assert any(e['path']=='visible.mainImageUrl' and '主图' in e['message'] for e in errors)
+    assert c.post(base+'/submit',json=submission(checked,skus=[target])).status_code==409
+    checked['rows'][0]['orderable']['price']+=1
+    saved=c.patch(base,json={k:checked[k] for k in ('revision','version','rows')}).json()
+    checked=c.post(base+'/validate',json={'revision':saved['revision']}).json()
+    assert not checked['validation']['rows'][target]['valid']
+    checked['rows'][0]['visible']['mainImageUrl']='https://example.com/repaired-image.jpg'
+    saved=c.patch(base,json={k:checked[k] for k in ('revision','version','rows')}).json()
+    checked=c.post(base+'/validate',json={'revision':saved['revision']}).json()
+    assert checked['validation']['rows'][target]['valid'],checked['validation']
+    assert len(remote.posts)==1  # Repair and validation must never resubmit automatically.
+
+
+def test_validation_before_publication_feedback_fix_requires_recheck(publishing):
+    c,catalog,_,_,b,base,_=publishing
+    doc=ready(publishing)
+    with catalog.connect() as db:
+        report=json.loads(db.execute('SELECT validation_json FROM walmart_listing_documents WHERE batch_id=?',(b['id'],)).fetchone()[0])
+        report.pop('feedback_policy')
+        db.execute('UPDATE walmart_listing_documents SET validation_json=? WHERE batch_id=?',(encoded(report),b['id']))
+    assert not c.get(base).json()['validation']['current']
+    assert c.post(base+'/submit',json=submission(doc)).status_code==409
+
+
 def test_unknown_local_image_digest_cannot_be_submitted(publishing):
     c,_,_,_,_,base,_=publishing;doc=ready(publishing)
     doc['rows'][0]['visible']['mainImageUrl']='/api/products/images/assets/'+'a'*64

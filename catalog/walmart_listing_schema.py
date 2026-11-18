@@ -240,6 +240,10 @@ def schema_errors(schema, item, version):
     return errors[:200]
 
 
+def primary_image_error(text):
+    return bool(re.search(r'\b(?:main\s*image(?:\s*url)?|primary\s+image)\b', text, re.I))
+
+
 def upstream_reason(errors):
     """Provide concise Chinese categories while retaining the original codes/text."""
     result = []
@@ -250,11 +254,13 @@ def upstream_reason(errors):
         text = (code + ' ' + original).lower()
         if any(s in text for s in ('gtin', 'upc', 'product id', 'productidentifier')):
             message = '商品编码或豁免未通过，请核对 GTIN／UPC 及品牌、类目'
+        elif primary_image_error(text):
+            message = '沃尔玛未取得可用主图，请检查主图链接的公网访问及图片要求后重新提交'
+        elif any(s in text for s in ('image', 'picture')):
+            message = '商品图片未通过，请检查公网访问、格式及图片要求'
         elif any(s in text for s in ('required', 'missing', 'mandatory')):
             fields = [label for key,label in LABELS.items() if re.search(r'(?<![a-z0-9_])'+re.escape(key.lower())+r'(?![a-z0-9_])', original.lower())]
             message = '缺少必填资料：'+'、'.join(dict.fromkeys(fields)) if fields else '缺少沃尔玛必填资料，请按原始提示补齐属性'
-        elif any(s in text for s in ('image', 'picture')):
-            message = '商品图片未通过，请检查公网访问、格式及图片要求'
         elif 'price' in text:
             message = '价格未通过，请核对售价和平台价格政策'
         elif any(s in text for s in ('category', 'product type', 'producttype')):

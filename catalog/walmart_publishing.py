@@ -377,7 +377,8 @@ def approved_exemption(session, row, category_name, submission_id):
 
 
 def feedback_errors(db,doc,row,spec):
-    """Only exact field names from a definite DATA_ERROR can drive AI repair."""
+    """Keep unresolved ingestion/publication feedback tied to the submitted SKU."""
+    from .walmart_listing_schema import primary_image_error
     attempts=db.execute('SELECT * FROM walmart_listing_attempts WHERE batch_id=? ORDER BY created_at DESC,id DESC',(doc['batch_id'],)).fetchall()
     sku=row['platform_sku']
     for a in attempts:
@@ -385,7 +386,8 @@ def feedback_errors(db,doc,row,spec):
         if not originals:
             continue
         result=json.loads(a['results_json']).get(sku,{})
-        if result.get('status')!='failed' or result.get('ingestion_status')!='DATA_ERROR':
+        if not (result.get('status')=='unpublished' or
+                (result.get('status')=='failed' and result.get('ingestion_status')=='DATA_ERROR')):
             return []
         original=originals[0];issues=[]
         for error in result.get('errors',[]):
@@ -394,13 +396,14 @@ def feedback_errors(db,doc,row,spec):
                 if section not in ('visible','orderable'):
                     continue
                 for key in shape.get('properties',{}):
-                    if re.search(r'(?<![a-zA-Z0-9_])'+re.escape(key)+r'(?![a-zA-Z0-9_])',text,re.I):
+                    if (re.search(r'(?<![a-zA-Z0-9_])'+re.escape(key)+r'(?![a-zA-Z0-9_])',text,re.I)
+                            or section=='visible' and key=='mainImageUrl' and primary_image_error(text)):
                         matched.append((section,key))
             for section,key in matched:
                 if original.get(section,{}).get(key)==row[section].get(key):
                     issues.append(dict(path=section+'.'+key,message='平台处理反馈：'+error['message']+'；'+text[:400]))
             if not matched and all(row[k]==original.get(k) for k in ('visible','orderable','product_type','identification','extra')):
-                issues.append(dict(path='',message='平台资料失败尚未修正：'+error['message']))
+                issues.append(dict(path='',message='平台退回原因尚未处理：'+error['message']))
         return issues
     return []
 
@@ -468,7 +471,7 @@ def check_rows(db, doc, session, binding_row, skus=None):
                 errors.append(dict(path='visible.mainImageUrl',message=str(exc)))
         results[sku] = dict(valid=not errors,errors=errors)
     from .listing_prerequisites import resource_digest
-    return dict(content_policy='images8_copy_rebuild_origin_v2',title_policy='brand_prefix_v1',feedback_digest=fingerprint(latest_results(db,doc['batch_id'])),resources_digest=resource_digest(db,binding_row),id=uuid.uuid4().hex,revision=doc['revision'],at=int(time.time()),binding_revision=binding_row['revision'],
+    return dict(feedback_policy='publication_feedback_v1',content_policy='images8_copy_rebuild_origin_v2',title_policy='brand_prefix_v1',feedback_digest=fingerprint(latest_results(db,doc['batch_id'])),resources_digest=resource_digest(db,binding_row),id=uuid.uuid4().hex,revision=doc['revision'],at=int(time.time()),binding_revision=binding_row['revision'],
                 partner_id=binding_row['partner_id'],rows=results,schema_digests=schema_digests,payloads=payloads,
                 valid_count=sum(r['valid'] for r in results.values()))
 

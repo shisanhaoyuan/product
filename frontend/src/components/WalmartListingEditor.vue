@@ -21,6 +21,8 @@ import ListingSchemaField from './ListingSchemaField.vue';
 import ProductImage from './ProductImage.vue';
 import ListingProductDetails from './ListingProductDetails.vue';
 import ProductStoreHistory from './ProductStoreHistory.vue';
+import ListingImagePicker from './ListingImagePicker.vue';
+import WalmartResultReasons from './WalmartResultReasons.vue';
 function fixedOrigin(key: string, schema?: JsonSchema) {
   const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, '');
   return [key, schema?.title || ''].some(
@@ -58,6 +60,7 @@ const optionalQuery = ref('');
 const showAllOptional = ref(false);
 const zoomDialog = ref<HTMLDialogElement>();
 const zoomUrl = ref('');
+const imagePickerOpen = ref(false);
 const optionalMatches = (key: string) =>
   `${key} ${doc.value?.labels[key] || ''} ${visibleProperties.value[key]?.title || ''}`
     .toLowerCase()
@@ -703,7 +706,9 @@ onBeforeUnmount(() => {
           ><strong>{{
             dirty
               ? '修改后需重新校验'
-              : `${doc.validation.valid_count ?? 0} / ${doc.rows.length} SKU`
+              : !validationCurrent
+                ? '需重新校验'
+                : `${doc.validation.valid_count ?? 0} / ${doc.rows.length} SKU`
           }}</strong>
         </div>
         <div>
@@ -1273,8 +1278,16 @@ onBeforeUnmount(() => {
                   :disabled="busy"
                   @change="upload"
               /></label>
+              <button
+                v-if="!locked"
+                class="btn small"
+                :disabled="photos.length >= 8"
+                @click="imagePickerOpen = true"
+              >
+                ＋ 添加附图
+              </button>
             </div>
-            <div class="listing-photo-gallery">
+            <div class="listing-photo-gallery" data-listing-path="visible.mainImageUrl">
               <figure v-for="(url, i) in photos" :key="url + i" class="listing-photo-card">
                 <button
                   class="listing-photo-zoom"
@@ -1304,14 +1317,20 @@ onBeforeUnmount(() => {
                 </figcaption>
               </figure>
             </div>
+            <div data-listing-path="visible.productSecondaryImageURL">
+              <p
+                v-for="issue in [
+                  ...fieldIssues('mainImageUrl'),
+                  ...fieldIssues('productSecondaryImageURL'),
+                ]"
+                :key="issue"
+                class="seller-risk-label"
+              >
+                {{ issue }}
+              </p>
+            </div>
             <ListingSchemaField
-              v-for="key in [
-                'mainImageUrl',
-                'productSecondaryImageURL',
-                'shortDescription',
-                'longDescription',
-                'keyFeatures',
-              ].filter(
+              v-for="key in ['shortDescription', 'longDescription', 'keyFeatures'].filter(
                 (k) =>
                   visibleProperties[k] ||
                   ['mainImageUrl', 'shortDescription', 'keyFeatures'].includes(k),
@@ -1435,17 +1454,10 @@ onBeforeUnmount(() => {
                   </td>
                   <td>
                     {{ doc.results[row.platform_sku]?.message || '填写资料并校验后可提交' }}
-                    <p
-                      v-for="(e, i) in doc.results[row.platform_sku]?.errors"
-                      :key="i"
-                      class="seller-risk-label"
-                    >
-                      {{ e.message }}
-                    </p>
-                    <details v-if="doc.results[row.platform_sku]?.errors.length">
-                      <summary>原始原因</summary>
-                      <pre>{{ doc.results[row.platform_sku].errors }}</pre>
-                    </details>
+                    <WalmartResultReasons
+                      v-if="doc.results[row.platform_sku]?.errors.length"
+                      :errors="doc.results[row.platform_sku].errors"
+                    />
                     <button
                       v-if="
                         ['failed', 'rejected', 'unpublished'].includes(
@@ -1594,6 +1606,20 @@ onBeforeUnmount(() => {
         </button>
         <ProductImage :src="zoomUrl" image-class="listing-full-image" />
       </dialog>
+      <ListingImagePicker
+        v-if="imagePickerOpen && current"
+        :listing-id="current.listing_id"
+        :sku="current.source_sku"
+        :existing="photos"
+        :source-images="sourceVariant?.content?.images || []"
+        @close="imagePickerOpen = false"
+        @add="
+          (urls) => {
+            setPhotos([...photos, ...urls]);
+            imagePickerOpen = false;
+          }
+        "
+      />
       <dialog
         ref="confirmDialog"
         class="listing-confirm-dialog"

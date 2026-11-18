@@ -5,6 +5,7 @@ import { useAuth } from '../composables/useAuth';
 import { errorMessage } from '../utils/display';
 import FilterSelect from '../components/FilterSelect.vue';
 import AppIcon from '../components/AppIcon.vue';
+import WalmartResultReasons from '../components/WalmartResultReasons.vue';
 const { auth } = useAuth();
 const canPoll = computed(() => !auth.enabled || auth.user?.role === 'admin');
 const data = ref<ReviewPage>();
@@ -267,10 +268,8 @@ onBeforeUnmount(() => {
             <td class="review-outcome">
               <span class="review-status" :class="tone(row.status)">{{ row.status_label }}</span>
               <p>{{ row.message }}</p>
-              <small v-if="row.errors.length" class="danger"
-                >{{ row.errors[0]?.message
-                }}{{ row.errors.length > 1 ? ` 等 ${row.errors.length} 项问题` : '' }}</small
-              ><small v-if="!row.binding_matches" class="warning">店铺绑定已变化，查询已保护</small
+              <WalmartResultReasons :errors="row.errors" />
+              <small v-if="!row.binding_matches" class="warning">店铺绑定已变化，查询已保护</small
               ><small v-else-if="row.last_error" class="warning"
                 >后台查询提示：{{ row.last_error }}</small
               >
@@ -375,15 +374,7 @@ onBeforeUnmount(() => {
       </p>
       <div v-if="selected.errors.length" class="review-reasons">
         <h3>需要处理的问题</h3>
-        <ul>
-          <li v-for="(reason, index) in selected.errors" :key="index">
-            {{ reason.message || '平台返回异常，请展开原始原因查看' }}
-          </li>
-        </ul>
-        <details>
-          <summary>查看平台原始原因</summary>
-          <pre>{{ JSON.stringify(selected.errors, null, 2) }}</pre>
-        </details>
+        <WalmartResultReasons :errors="selected.errors" />
       </div>
       <p v-if="pollError" class="error-box review-error">{{ pollError }}</p>
       <div class="review-dialog-footer">
