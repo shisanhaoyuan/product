@@ -53,6 +53,9 @@ defineProps<{ preview: PrelistingPreview }>();
       </p>
       <p v-for="issue in item.errors" :key="issue" class="seller-risk-label">{{ issue }}</p>
       <p v-for="warning in item.warnings" :key="warning" class="subtitle">{{ warning }}</p>
+      <p v-if="item.source === 'GigaB2B'" class="subtitle">
+        计算规则：（来源商品单价 ＋ 运费（含打包费））× {{ preview.multiplier }}，结果保留两位小数。
+      </p>
       <div class="table-scroll">
         <table class="data-table">
           <thead>

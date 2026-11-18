@@ -1198,9 +1198,40 @@ onBeforeUnmount(() => {
             <div class="listing-subheading">
               <h4>价格与履约</h4>
               <p>原产国（实质性转变）固定 China（中国），按用户规则填写，非来源核验结论。</p>
-              <p>
+              <template v-if="source?.source === 'GigaB2B'">
+                <p v-if="sourceVariant?.shipping_fee != null">
+                  来源单价 {{ money(sourceVariant?.unit_price) }} ＋ 运费（含打包费）
+                  {{ money(sourceVariant?.shipping_fee) }} ＝ 含运费基准
+                  {{ money(sourceVariant?.base) }}
+                </p>
+                <p v-else>
+                  来源单价 {{ money(sourceVariant?.unit_price) }} ·
+                  运费未单列，请展开“来源价格及库存依据”核对。
+                </p>
+                <p>
+                  含运费基准 {{ money(sourceVariant?.base) }} × 倍率 {{ doc.basis.multiplier }} ＝
+                  <strong>计算售价 {{ money(sourceVariant?.price) }}</strong>
+                </p>
+              </template>
+              <p v-else>
                 倍率 ×{{ doc.basis.multiplier }} · 已核验计价基准 {{ money(sourceVariant?.base) }} ·
-                目标库存 {{ sourceVariant?.stock ?? '未核验' }}
+                计算售价 {{ money(sourceVariant?.price) }}
+              </p>
+              <p>
+                <strong
+                  >当前填写售价 {{ money(current.orderable.price as number | undefined) }}</strong
+                >
+                · 目标库存 {{ sourceVariant?.stock ?? '未核验' }}
+                <span
+                  v-if="
+                    sourceVariant?.price != null &&
+                    current.orderable.price != null &&
+                    Number(sourceVariant.price) !== Number(current.orderable.price)
+                  "
+                  class="seller-risk-label"
+                >
+                  · 当前填写售价与计算售价不同，可点击“刷新来源价格库存”重新计算
+                </span>
               </p>
             </div>
             <template v-if="currentSpec"

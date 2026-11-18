@@ -1,4 +1,5 @@
 import copy
+from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
@@ -113,3 +114,40 @@ def test_local_edits_do_not_reprice_already_multiplied_values_and_resync_invalid
     fake.prices[0]['price'] = '70'
     sync_page(catalog, settings, 1, client=fake)
     assert client.post(f"/api/prelisting/batches/{batch['id']}/action", json={'action': 'confirm'}).status_code == 409
+
+
+@pytest.mark.parametrize('unit,shipping,base,expected', [
+    ('150', '13.72', '163.72', '229.21'),
+    ('163.72', '20', '183.72', '257.21'),
+    ('163.72', '0', '163.72', '229.21'),
+])
+def test_landed_price_times_14_survives_prepare_save_refresh_and_reopen(warehouse, unit, shipping, base, expected):
+    client,catalog,fake,settings=warehouse
+    fake.prices[0].update(price=unit,shippingFee=shipping)
+    sync_page(catalog,settings,1,client=fake)
+    source_before=catalog.export()
+    configuration=plan(client) | {'multiplier':'1.4'}
+    batch,_=create(client,configuration)
+    planned=next(i for i in batch['preview']['items'] if i['sku']=='W1')['variants'][0]
+    assert (planned['base'],planned['price'])==(base,expected)
+    assert planned['shipping_fee']==format(Decimal(shipping),'.2f')
+    url=f"/api/prelisting/batches/{batch['id']}/walmart"
+    response=client.post(url+'/prepare')
+    assert response.status_code==200,response.text
+    doc=response.json()
+    identities=[(r['source_sku'],r['platform_sku'],r['listing_id']) for r in doc['rows']]
+    for _ in range(3):
+        row=next(r for r in doc['rows'] if r['source_sku']=='W1')
+        assert row['orderable']['price']==float(expected)
+        saved=client.patch(url,json={k:doc[k] for k in ('revision','version','rows')})
+        assert saved.status_code==200,saved.text
+        refreshed=client.post(url+'/refresh-source',json={'revision':saved.json()['revision']})
+        assert refreshed.status_code==200,refreshed.text
+        reopened=client.get(url)
+        assert reopened.status_code==200,reopened.text
+        doc=reopened.json()
+        assert [(r['source_sku'],r['platform_sku'],r['listing_id']) for r in doc['rows']]==identities
+        assert next(r for r in doc['rows'] if r['source_sku']=='W1')['orderable']['price']==float(expected)
+        # The other SKU retains its own price basis and fee.
+        assert next(r for r in doc['rows'] if r['source_sku']=='W2')['orderable']['price']==97.06
+    assert catalog.export()==source_before
