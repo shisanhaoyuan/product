@@ -17,6 +17,7 @@ import ProductImage from '../components/ProductImage.vue';
 import StatusBadge from '../components/StatusBadge.vue';
 import PrelistingComposer from '../components/PrelistingComposer.vue';
 import { parseBatchIdentifiers, productSearch } from '../utils/batchSearch';
+import { filterGroups, selectedValues } from '../utils/filterSelection';
 import { useAuth } from '../composables/useAuth';
 const { auth } = useAuth();
 const canEdit = computed(
@@ -62,6 +63,7 @@ const filters = computed(() => {
     'store',
     'listed_store',
     'price_change',
+    'multi',
     'brand',
     'status',
     'date',
@@ -264,6 +266,25 @@ const tabs = computed(() =>
       ],
 );
 
+const multiFilters = computed(() => filterGroups(filters.value.get('multi') || ''));
+function filterValue(key: string) {
+  return multiFilters.value[key]?.length
+    ? JSON.stringify(multiFilters.value[key])
+    : filters.value.get(key) || '';
+}
+function changeMultiFilter(key: string, value: string) {
+  clearTimeout(searchTimer);
+  const groups = { ...multiFilters.value };
+  const values = selectedValues(value);
+  if (values.length) groups[key] = values;
+  else delete groups[key];
+  const query = Object.fromEntries(filters.value);
+  delete query[key];
+  delete query.page;
+  if (Object.keys(groups).length) query.multi = JSON.stringify(groups);
+  else delete query.multi;
+  return router.push({ path: libraryPath.value, query });
+}
 function changeFilter(key: string, value: string) {
   clearTimeout(searchTimer);
   const query = Object.fromEntries(filters.value);
@@ -468,54 +489,61 @@ onBeforeUnmount(() => {
         v-if="isGiga"
         label="筛选库存"
         title="按大建云仓 Seller 可售库存筛选；未返回库存不计入无库存"
-        :model-value="filters.get('inventory_status') || ''"
+        multiple
+        :model-value="filterValue('inventory_status')"
         :options="[
           { value: '', label: '全部库存状态' },
           { value: 'out_of_stock', label: '无库存（可售库存为 0）' },
         ]"
-        @update:model-value="changeFilter('inventory_status', $event)"
+        @update:model-value="changeMultiFilter('inventory_status', $event)"
       />
       <FilterSelect
         label="筛选卖家黑名单"
-        :model-value="filters.get('seller_status') || ''"
+        multiple
+        :model-value="filterValue('seller_status')"
         :options="[
           { value: '', label: '全部卖家状态' },
           { value: 'blocked', label: '命中卖家黑名单' },
           { value: 'unblocked', label: '未命中黑名单' },
         ]"
-        @update:model-value="changeFilter('seller_status', $event)"
+        @update:model-value="changeMultiFilter('seller_status', $event)"
       />
       <FilterSelect
         class="category-filter"
         label="筛选商品类目"
         title="按已记录的 Product Type 或供应商来源类目筛选；括号内数量为全库记录数"
-        :model-value="filters.get('category') || ''"
+        multiple
+        :model-value="filterValue('category')"
         :options="categoryOptions"
-        @update:model-value="changeFilter('category', $event)"
+        @update:model-value="changeMultiFilter('category', $event)"
       />
       <FilterSelect
         label="筛选店铺"
-        :model-value="filters.get('store') || ''"
+        multiple
+        :model-value="filterValue('store')"
         :options="storeOptions"
-        @update:model-value="changeFilter('store', $event)"
+        @update:model-value="changeMultiFilter('store', $event)"
       />
       <FilterSelect
         label="筛选品牌"
-        :model-value="filters.get('brand') || ''"
+        multiple
+        :model-value="filterValue('brand')"
         :options="brandOptions"
-        @update:model-value="changeFilter('brand', $event)"
+        @update:model-value="changeMultiFilter('brand', $event)"
       />
       <FilterSelect
         label="上架店铺（含预上架记录）"
-        :model-value="filters.get('listed_store') || ''"
+        multiple
+        :model-value="filterValue('listed_store')"
         :options="listedStoreOptions"
         searchable
         search-placeholder="搜索上架店铺"
-        @update:model-value="changeFilter('listed_store', $event)"
+        @update:model-value="changeMultiFilter('listed_store', $event)"
       />
       <FilterSelect
         label="来源价格涨跌"
-        :model-value="filters.get('price_change') || ''"
+        multiple
+        :model-value="filterValue('price_change')"
         :options="[
           { value: '', label: '全部价格变化' },
           { value: 'up', label: '涨价' },
@@ -523,13 +551,14 @@ onBeforeUnmount(() => {
           { value: 'unchanged', label: '未变化' },
           { value: 'unknown', label: '暂无可比记录' },
         ]"
-        @update:model-value="changeFilter('price_change', $event)"
+        @update:model-value="changeMultiFilter('price_change', $event)"
       />
       <FilterSelect
         label="筛选日期"
-        :model-value="filters.get('date') || ''"
+        multiple
+        :model-value="filterValue('date')"
         :options="dateOptions"
-        @update:model-value="changeFilter('date', $event)"
+        @update:model-value="changeMultiFilter('date', $event)"
       />
       <ListingCountFilter
         v-if="!isGiga"
@@ -549,8 +578,11 @@ onBeforeUnmount(() => {
       </button>
     </form>
     <p v-if="storeFilterError" class="error-box">上架店铺列表加载失败：{{ storeFilterError }}</p>
-    <p v-if="filters.get('listed_store') || filters.get('price_change')" class="batch-search-hint">
-      各筛选条件同时满足才会显示。上架店铺包含有效预上架及提交记录，不代表已经发布成功。
+    <p
+      v-if="filterValue('listed_store') || filterValue('price_change') || filters.get('multi')"
+      class="batch-search-hint"
+    >
+      同一筛选项可多选，匹配任一选中值即可；不同筛选项需同时满足。上架店铺包含有效预上架及提交记录，不代表已经发布成功。
       价格比较最近两次同
       SKU、同币种的来源单价（不含运费、倍率）；云仓使用同步或巡查记录，亚马逊使用来源采集记录。
       多变体只要有一个涨价或降价即可命中；全部可比较且相同才算未变化。

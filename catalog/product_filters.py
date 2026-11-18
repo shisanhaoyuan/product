@@ -1,4 +1,31 @@
 """Read-only product filters shared by pagination, export and batch selection."""
+import json
+import re
+
+
+def normalize_multi(value):
+    if not value:
+        return ''
+    try:
+        groups = json.loads(value)
+    except (ValueError, TypeError):
+        raise ValueError('多选筛选格式不正确') from None
+    allowed = {'store', 'brand', 'date', 'category', 'listed_store', 'price_change', 'seller_status', 'inventory_status'}
+    if not isinstance(groups, dict) or not set(groups).issubset(allowed):
+        raise ValueError('包含不支持的多选筛选项')
+    result = {}
+    for key, values in groups.items():
+        if not isinstance(values, list) or len(values) > 50 or any(not isinstance(v, str) or not v or len(v)>300 for v in values):
+            raise ValueError('每个筛选项最多选择50个有效值')
+        for v in values:
+            if key=='listed_store' and not re.fullmatch('[0-9]+', v):
+                raise ValueError('上架店铺筛选值无效')
+            enums = {'price_change': {'up','down','unchanged','unknown'}, 'seller_status': {'blocked','unblocked'}, 'inventory_status': {'out_of_stock'}}
+            if key in enums and v not in enums[key]:
+                raise ValueError('筛选值无效')
+        if values:
+            result[key] = list(dict.fromkeys(values))
+    return json.dumps(result, ensure_ascii=False, separators=(',', ':')) if result else ''
 
 
 def json_text(column, *path, postgres=False):

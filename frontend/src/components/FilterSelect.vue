@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import AppIcon from './AppIcon.vue';
+import { selectedValues, toggleValue } from '../utils/filterSelection';
 
 const props = defineProps<{
   modelValue: string;
@@ -9,6 +10,7 @@ const props = defineProps<{
   options: { value: string; label: string }[];
   searchable?: boolean;
   searchPlaceholder?: string;
+  multiple?: boolean;
 }>();
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>();
 const root = ref<HTMLDetailsElement>();
@@ -27,9 +29,22 @@ async function toggled() {
     searchInput.value?.focus();
   }
 }
-const current = computed(
-  () => props.options.find((item) => item.value === props.modelValue)?.label || props.label,
+const selected = computed(() =>
+  props.multiple ? selectedValues(props.modelValue) : [props.modelValue],
 );
+const current = computed(() => {
+  if (!props.multiple)
+    return props.options.find((item) => item.value === props.modelValue)?.label || props.label;
+  if (!selected.value.length)
+    return props.options.find((item) => item.value === '')?.label || props.label;
+  const names = selected.value.map(
+    (value) => props.options.find((item) => item.value === value)?.label || value,
+  );
+  return names.length === 1 ? names[0] : `${names[0]} 等 ${names.length} 项`;
+});
+function isSelected(value: string) {
+  return props.multiple && !value ? !selected.value.length : selected.value.includes(value);
+}
 
 function close(restoreFocus = false) {
   if (!root.value) return;
@@ -38,6 +53,10 @@ function close(restoreFocus = false) {
 }
 function choose(value: string) {
   if (props.disabled) return;
+  if (props.multiple) {
+    emit('update:modelValue', toggleValue(props.modelValue, value));
+    return;
+  }
   emit('update:modelValue', value);
   close(true);
 }
@@ -64,10 +83,20 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', outside));
       :aria-disabled="disabled"
       @click="disabled && $event.preventDefault()"
     >
-      <span>{{ current }}</span>
+      <span
+        :title="
+          multiple
+            ? selected
+                .map((value) => options.find((item) => item.value === value)?.label || value)
+                .join('、')
+            : current
+        "
+        >{{ current }}</span
+      >
       <AppIcon name="ChevronRight" />
     </summary>
     <div class="filter-select-options" role="group" :aria-label="label">
+      <p v-if="multiple" class="filter-select-hint">可多选，再次点击取消</p>
       <div v-if="searchable" class="filter-select-search">
         <input
           ref="searchInput"
@@ -84,11 +113,11 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', outside));
         :key="item.value"
         type="button"
         :disabled="disabled"
-        :aria-pressed="modelValue === item.value"
+        :aria-pressed="isSelected(item.value)"
         @click="choose(item.value)"
       >
         <span>{{ item.label }}</span>
-        <AppIcon v-if="modelValue === item.value" name="Check" />
+        <AppIcon v-if="isSelected(item.value)" name="Check" />
       </button>
       <p v-if="!filteredOptions.length" class="filter-select-empty">没有匹配结果，请更换关键词</p>
     </div>
@@ -196,5 +225,11 @@ summary:focus-visible {
   padding: 10px;
   color: #64758d;
   font-size: 13px;
+}
+.filter-select-hint {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: #64758d;
 }
 </style>

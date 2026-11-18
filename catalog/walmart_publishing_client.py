@@ -112,6 +112,18 @@ class WalmartSession:
     def item(self, sku):
         return self.call('GET', '/v3/items/' + quote(sku, safe=''), params={'productIdType': 'SKU'})
 
+    def require_scope(self, scope):
+        details = self.call('GET', '/v3/token/detail')
+        scopes = details.get('scopes')
+        if details.get('is_valid') is not True or not isinstance(scopes, dict) or scopes.get(scope) != 'full_access':
+            label = '价格' if scope == 'price' else '库存'
+            raise WalmartError(f'店铺缺少{label}（{scope}）完整写入权限，请更新授权')
+
+    def set_price(self, sku, value):
+        # Official single-item price API; no promotions, new feed or SKU changes.
+        return self.call('PUT', '/v3/price', json={'sku': sku, 'pricing': [{
+            'currentPriceType': 'BASE', 'currentPrice': {'currency': 'USD', 'amount': float(value)}}]})
+
     def set_inventory(self, sku, quantity, node):
         return self.call('PUT', '/v3/inventory', params={'sku': sku, 'shipNode':node},
                          json={'sku': sku, 'quantity': {'unit': 'EACH', 'amount': quantity}})

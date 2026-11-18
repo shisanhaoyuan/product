@@ -232,7 +232,7 @@ class Catalog:
             return counts
 
     def filter_sql(self, q="", store="", brand="", status="", date="", category="", seller_status="",
-                   listing_count_min=None, listing_count_max=None, source="", inventory_status="", identifiers="", listed_store="", price_change=""):
+                   listing_count_min=None, listing_count_max=None, source="", inventory_status="", identifiers="", listed_store="", price_change="", multi=""):
         clauses, args = ["1=1"], []
         if source:
             clauses.append("listings.product_id IN (SELECT id FROM products WHERE source=?)")
@@ -284,6 +284,15 @@ class Catalog:
                 if value is not None:
                     clauses.append(f'{count_sql}{operator}?')
                     args.append(value)
+        if multi:
+            from .product_filters import normalize_multi
+            for key, values in json.loads(normalize_multi(multi) or '{}').items():
+                choices = []
+                for value in values:
+                    condition, parameters = self.filter_sql(**{key: value})
+                    choices.append('(' + condition + ')')
+                    args.extend(parameters)
+                clauses.append('(' + ' OR '.join(choices) + ')')
         where = " AND ".join(clauses)
         if category:
             if category == 'missing' or category.startswith('type:'):
@@ -307,10 +316,10 @@ class Catalog:
         return query, args
 
     def find(self, q="", store="", brand="", status="", date="", page=1, page_size=24, category="", seller_status="", deduplicate=False,
-             listing_count_min=None, listing_count_max=None, source="", inventory_status="", identifiers="", listed_store="", price_change=""):
+             listing_count_min=None, listing_count_max=None, source="", inventory_status="", identifiers="", listed_store="", price_change="", multi=""):
         query, args = self.selection_sql(q=q,store=store,brand=brand,status=status,date=date,
                                          category=category,seller_status=seller_status,deduplicate=deduplicate,
-                                         listing_count_min=listing_count_min,listing_count_max=listing_count_max,source=source,inventory_status=inventory_status,identifiers=identifiers,listed_store=listed_store,price_change=price_change)
+                                         listing_count_min=listing_count_min,listing_count_max=listing_count_max,source=source,inventory_status=inventory_status,identifiers=identifiers,listed_store=listed_store,price_change=price_change,multi=multi)
         with self.connect() as db:
             read_snapshot(db)
             total = db.execute(f"SELECT COUNT(*) FROM ({query}) AS listings",args).fetchone()[0]

@@ -142,7 +142,7 @@ def create_app(database=None):
     def health():
         with catalog.connect() as db:
             db.execute('SELECT 1').fetchone()
-        return {'status':'ok','schema_version':20,
+        return {'status':'ok','schema_version':21,
                 'database':'postgresql' if catalog.postgres else 'sqlite',
                 'images':storage.backend if storage else 'sqlite'}
 
@@ -161,9 +161,16 @@ def create_app(database=None):
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
 
+    def multi_filters(multi: str = Query('', max_length=30000)):
+        from .product_filters import normalize_multi
+        try:
+            return normalize_multi(multi)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+
     @app.get('/api/products')
-    def products(q:str='',store:str='',brand:str='',status:str='',date:str='',page:int=Query(1,ge=1),page_size:int=Query(24,ge=1,le=100),category:str='',seller_status:str=Query('',pattern='^(blocked|unblocked)?$'),deduplicate:bool=False,counts:dict=Depends(listing_counts),source:Literal['', 'Amazon', 'GigaB2B']='',inventory_status:Literal['', 'out_of_stock']='',identifiers:str=Depends(batch_identifiers),listed_store:str=Query('',pattern='^([0-9]+)?$'),price_change:Literal['', 'up', 'down', 'unchanged', 'unknown']=''):
-        return catalog.find(q,store,brand,status,date,page,page_size,category=category,seller_status=seller_status,deduplicate=deduplicate,source=source,inventory_status=inventory_status,identifiers=identifiers,listed_store=listed_store,price_change=price_change,**counts)
+    def products(q:str='',store:str='',brand:str='',status:str='',date:str='',page:int=Query(1,ge=1),page_size:int=Query(24,ge=1,le=100),category:str='',seller_status:str=Query('',pattern='^(blocked|unblocked)?$'),deduplicate:bool=False,counts:dict=Depends(listing_counts),source:Literal['', 'Amazon', 'GigaB2B']='',inventory_status:Literal['', 'out_of_stock']='',identifiers:str=Depends(batch_identifiers),listed_store:str=Query('',pattern='^([0-9]+)?$'),price_change:Literal['', 'up', 'down', 'unchanged', 'unknown']='',multi:str=Depends(multi_filters)):
+        return catalog.find(q,store,brand,status,date,page,page_size,category=category,seller_status=seller_status,deduplicate=deduplicate,source=source,inventory_status=inventory_status,identifiers=identifiers,listed_store=listed_store,price_change=price_change,multi=multi,**counts)
 
     @app.get('/api/products/{listing_id}')
     def detail(listing_id:str):
@@ -208,7 +215,7 @@ def create_app(database=None):
                         headers={'Content-Disposition':'attachment; filename="catalog-backup.json"'})
 
     @app.get('/api/export.csv')
-    def export_csv(q:str='',store:str='',brand:str='',status:str='',date:str='',category:str='',seller_status:str=Query('',pattern='^(blocked|unblocked)?$'),counts:dict=Depends(listing_counts),source:Literal['', 'Amazon', 'GigaB2B']='',inventory_status:Literal['', 'out_of_stock']='',identifiers:str=Depends(batch_identifiers),listed_store:str=Query('',pattern='^([0-9]+)?$'),price_change:Literal['', 'up', 'down', 'unchanged', 'unknown']=''):
+    def export_csv(q:str='',store:str='',brand:str='',status:str='',date:str='',category:str='',seller_status:str=Query('',pattern='^(blocked|unblocked)?$'),counts:dict=Depends(listing_counts),source:Literal['', 'Amazon', 'GigaB2B']='',inventory_status:Literal['', 'out_of_stock']='',identifiers:str=Depends(batch_identifiers),listed_store:str=Query('',pattern='^([0-9]+)?$'),price_change:Literal['', 'up', 'down', 'unchanged', 'unknown']='',multi:str=Depends(multi_filters)):
         buffer=io.StringIO();writer=csv.writer(buffer)
         writer.writerow(['ASIN','商品SKU','平台SKU','店铺','品牌','商品来源','来源链接','商品卖家','标题','子变体数','保存确认','填写完整','证据类型','上传时间','商品类目','卖家黑名单原因'])
         page=1
@@ -216,7 +223,7 @@ def create_app(database=None):
             text='' if value is None else str(value)
             return "'"+text if text.lstrip().startswith(('=','+','-','@')) else text
         while True:
-            found=catalog.find(q,store,brand,status,date,page,100,category=category,seller_status=seller_status,source=source,inventory_status=inventory_status,identifiers=identifiers,listed_store=listed_store,price_change=price_change,**counts)
+            found=catalog.find(q,store,brand,status,date,page,100,category=category,seller_status=seller_status,source=source,inventory_status=inventory_status,identifiers=identifiers,listed_store=listed_store,price_change=price_change,multi=multi,**counts)
             for row in found['items']:
                 detail=catalog.get(row['id'])
                 writer.writerow([safe(v) for v in [row['asin'],row['sku'],detail['platform_sku'],row['store'],row['brand'],row['source'],

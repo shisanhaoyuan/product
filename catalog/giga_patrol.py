@@ -1,7 +1,7 @@
-"""Scheduled, source-only price/inventory refresh for existing GigaB2B SKUs.
+"""Scheduled price/inventory refresh and audited existing Walmart offer updates.
 
 Run with: python -m catalog.giga_patrol --env-file /etc/jiwu.env
-No product discovery, publishing, multiplier, inventory cap, or credential output.
+No product discovery, new item publication or credential output.
 """
 import argparse
 import hashlib
@@ -33,6 +33,8 @@ def initialize(db):
         PRIMARY KEY(run_id,listing_id))''')
     db.execute('CREATE INDEX IF NOT EXISTS giga_patrol_started ON giga_patrol_runs(namespace,started_at)')
     db.execute('INSERT INTO migrations VALUES(14) ON CONFLICT DO NOTHING')
+    from .giga_walmart_sync import initialize as initialize_actions
+    initialize_actions(db)
 
 
 def now():
@@ -100,16 +102,17 @@ def assert_lease(db, name, token):
         raise GigaError('巡查锁已失效，已停止写入，请重新巡查')
 
 
-def renew_lease(catalog, name, token):
+def renew_lease(catalog, name, token, seconds=180):
     with catalog.connect() as db:
         write_lock(db)
         assert_lease(db, name, token)
         db.execute('UPDATE integration_leases SET expires_at=? WHERE name=? AND token=?',
-                   (time.time()+180, name, token))
+                   (time.time()+seconds, name, token))
 
 
 def apply_batch(catalog, run_id, namespace, targets, price_rows, price_error,
                 stock_rows, stock_error, account_token, run_token):
+    from .giga_walmart_sync import amounts, evidence
     checked_at = now()
     with catalog.connect() as db:
         write_lock(db)
@@ -119,10 +122,13 @@ def apply_batch(catalog, run_id, namespace, targets, price_rows, price_error,
             listing_id, sku = target['id'], target['sku']
             existing = db.execute('SELECT * FROM listings WHERE id=?', (listing_id,)).fetchone()
             errors = []
+            data = {}
+            before_landed = None
             before = after = {}
             changed_price = changed_stock = False
             if existing:
                 data = json.loads(existing['data_json'])
+                before_landed = amounts(data)
                 before = values(data)
                 after = dict(before)
             if (not existing or existing['namespace'] != namespace or existing['sku'] != sku
@@ -182,6 +188,8 @@ def apply_batch(catalog, run_id, namespace, targets, price_rows, price_error,
             status = 'ok' if price_ok and stock_ok else 'partial' if price_ok or stock_ok else 'failed'
             db.execute('INSERT INTO giga_patrol_items VALUES(?,?,?,?,?,?,?,?)',
                        (run_id, listing_id, sku, checked_at, status, encode(before), encode(after), encode(errors)))
+            db.execute('INSERT INTO giga_patrol_evidence VALUES(?,?,?)',
+                       (run_id, listing_id, encode(evidence(data, price_ok, stock_ok, before_landed))))
             # Source write and its audit counters commit together.
             db.execute('''UPDATE giga_patrol_runs SET checked=checked+1,changed=changed+?,
                 failed=failed+?,price_changed=price_changed+?,stock_changed=stock_changed+? WHERE id=?''',
@@ -189,7 +197,7 @@ def apply_batch(catalog, run_id, namespace, targets, price_rows, price_error,
                         int(changed_price), int(changed_stock), run_id))
 
 
-def run_patrol(catalog, settings=None, client=None):
+def run_patrol(catalog, settings=None, client=None, *, publisher=None):
     settings = settings or GigaSettings()
     name = settings.namespace + '.patrol'
     with sync_lease(catalog, name) as run_token:
@@ -220,10 +228,15 @@ def run_patrol(catalog, settings=None, client=None):
                     stocks, stock_error = fetch_rows(client, 'stock', skus)
                     apply_batch(catalog, run_id, settings.namespace, batch, prices, price_error,
                                 stocks, stock_error, account_token, run_token)
+                    from .giga_walmart_sync import sync_batch
+                    sync_batch(catalog, run_id, settings.namespace, batch, account_token, run_token, publisher)
             with catalog.connect() as db:
                 write_lock(db)
                 row = db.execute('SELECT * FROM giga_patrol_runs WHERE id=?', (run_id,)).fetchone()
-                status = 'partial' if row['failed'] else 'completed'
+                from .giga_walmart_sync import counts
+                action_counts = counts(db, run_id)
+                incomplete = sum(action_counts.get(key, 0) for key in ('failed','pending','blocked','sending','queued'))
+                status = 'partial' if row['failed'] or incomplete else 'completed'
                 message = '没有属于当前 API 账号的已入库商品' if not targets else ''
                 db.execute('UPDATE giga_patrol_runs SET status=?,finished_at=?,message=? WHERE id=?',
                            (status, now(), message, run_id))
@@ -259,6 +272,8 @@ def timer_status():
 
 def visible_run(db, row):
     result = dict(row)
+    from .giga_walmart_sync import counts
+    result['actions'] = counts(db, result['id'])
     if result['status'] == 'running':
         lease = db.execute('SELECT expires_at FROM integration_leases WHERE name=?', (result['namespace'] + '.patrol',)).fetchone()
         if not lease or lease[0] <= time.time():
@@ -286,6 +301,9 @@ def patrol_routes(catalog):
             run = visible_run(db, run)
             rows = [dict(r) for r in db.execute('SELECT * FROM giga_patrol_items WHERE run_id=? ORDER BY sku,listing_id LIMIT 100 OFFSET ?',
                                                (run_id, (page-1)*100))]
+            for row in rows:
+                actions = db.execute('SELECT * FROM giga_patrol_actions WHERE run_id=? AND listing_id=? ORDER BY store_id,kind', (run_id, row['listing_id'])).fetchall()
+                row['actions'] = [json.loads(a['details_json']) | {'status': a['status'], 'updated_at': a['updated_at']} for a in actions]
         for row in rows:
             for key in ('before', 'after', 'errors'):
                 row[key] = json.loads(row.pop(key+'_json'))

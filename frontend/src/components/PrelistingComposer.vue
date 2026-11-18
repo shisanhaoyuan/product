@@ -285,6 +285,9 @@ async function create() {
   </dialog>
 </template>
 <style scoped>
+.composer-form {
+  align-items: start;
+}
 .composer-store-field {
   display: flex;
   flex-direction: column;
@@ -296,6 +299,15 @@ async function create() {
 }
 .composer-store-select {
   width: 100%;
+}
+/* Keep the menu inside the modal's layout so its scroll boundary cannot clip it. */
+.composer-store-select :deep(.filter-select-options) {
+  position: relative;
+  top: auto;
+  margin-top: 6px;
+  box-sizing: border-box;
+  max-height: min(280px, 40vh);
+  overscroll-behavior: contain;
 }
 .composer-store-select :deep(summary) {
   box-sizing: border-box;

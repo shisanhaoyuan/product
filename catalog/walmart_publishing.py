@@ -779,7 +779,10 @@ def publishing_routes(catalog):
                         claim=db.execute('SELECT * FROM walmart_listing_claims WHERE store_id=? AND platform_sku=?',(bound['store_id'],sku)).fetchone()
                         if claim and claim['batch_id']!=bid:
                             raise HTTPException(409,'该店铺 SKU 已由其他批次提交，禁止重复')
-                        chosen.append(row | {'stock':int(basis_variant['stock'])})
+                        frozen_row = row | {'stock':int(basis_variant['stock'])}
+                        if basis_item['source'] == 'GigaB2B':
+                            frozen_row['patrol_basis'] = dict(multiplier=basis['multiplier'], landed=basis_variant['base'])
+                        chosen.append(frozen_row)
                     payload={'MPItemFeedHeader':{'businessUnit':'WALMART_US','locale':'en','version':doc['version']},
                              'MPItem':[report['payloads'][sku] for sku in data.skus]}
                     if len(encoded(payload).encode())>20*1024*1024:

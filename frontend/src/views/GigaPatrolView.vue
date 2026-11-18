@@ -2,7 +2,27 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue';
 import { request } from '../api/client';
 import { errorMessage } from '../utils/display';
+interface Action {
+  id: string;
+  store_name: string;
+  platform_sku: string;
+  kind: string;
+  status: string;
+  multiplier: string | null;
+  source_price: string | null;
+  source_shipping: string | null;
+  source_stock: string | null;
+  landed: string | null;
+  target: string | null;
+  before: string | null;
+  after: string | null;
+  node: string | null;
+  message: string;
+  batch_id: string;
+  updated_at: string;
+}
 interface Run {
+  actions: Record<string, number>;
   id: string;
   started_at: string;
   finished_at: string;
@@ -29,6 +49,7 @@ interface Item {
   before: Values;
   after: Values;
   errors: string[];
+  actions: Action[];
 }
 interface Summary {
   configured: boolean;
@@ -47,9 +68,21 @@ const labels: Record<string, string> = {
   partial: '部分失败',
   failed: '巡查失败',
   interrupted: '巡查中断',
-  ok: '成功',
+  ok: '来源核验成功',
+  queued: '等待更新',
+  sending: '提交中／待回读',
+  verified: '已回读确认',
+  unchanged: '无需修改',
+  skipped: '未触发更新',
+  pending: '结果待确认',
+  blocked: '等待上次结果',
 };
 let controller: AbortController | undefined;
+const issues = (run: Run) =>
+  ['failed', 'pending', 'blocked', 'sending', 'queued'].reduce(
+    (n, key) => n + (run.actions?.[key] || 0),
+    0,
+  );
 const date = (v: string) => (v ? new Date(v).toLocaleString('zh-CN') : '—');
 const amount = (v: string | null | undefined, currency?: string | null) =>
   v == null ? '未知' : `${currency || ''} ${v}`.trim();
@@ -133,7 +166,7 @@ onBeforeUnmount(() => {
         启用每周巡查。页面打开或关闭不影响服务器定时任务。
       </p>
       <p class="subtitle">
-        更新原价、运费、币种、优惠价及可售库存；不乘倍率。失败项保留原值，手工编辑继续保留，最新来源值可在商品详情查看。
+        巡查来源价格和库存后，自动更新已上架的对应店铺商品：成本上涨时按（单价＋运费）×原上架倍率计算，仅上调售价；供应商明确无库存时清零。不重新上架，不自动降价或补库存。
       </p>
     </div>
     <div class="table-scroll">
@@ -145,7 +178,8 @@ onBeforeUnmount(() => {
             <th>已检查 / 总数</th>
             <th>价格变化</th>
             <th>库存变化</th>
-            <th>异常商品</th>
+            <th>来源异常</th>
+            <th>店铺更新 · 确认 / 待处理</th>
             <th></th>
           </tr>
         </thead>
@@ -157,6 +191,7 @@ onBeforeUnmount(() => {
             <td>{{ run.price_changed }}</td>
             <td>{{ run.stock_changed }}</td>
             <td>{{ run.failed }}</td>
+            <td>{{ run.actions?.verified || 0 }} / {{ issues(run) }}</td>
             <td><button class="btn small" @click="open(run)">查看明细</button></td>
           </tr>
         </tbody>
@@ -172,7 +207,8 @@ onBeforeUnmount(() => {
     <div class="section-body">
       <p v-if="selected.message" class="notice">{{ selected.message }}</p>
       <p class="subtitle">
-        变化按来源数据比较，不覆盖本地手工编辑。尚未检查
+        来源变化与店铺修改分别统计；店铺更新按“店铺 × SKU ×
+        价格或库存”计数。只有回读一致才显示已确认。尚未检查
         {{ selected.total - selected.checked }} 件；每页最多 100 件。
       </p>
     </div>
@@ -188,26 +224,88 @@ onBeforeUnmount(() => {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="item in items" :key="item.listing_id">
-            <td>
-              <RouterLink class="detail-link" :to="'/giga-product/' + item.listing_id">{{
-                item.sku
-              }}</RouterLink>
-            </td>
-            <td>
-              {{ amount(item.before.price, item.before.currency) }} →
-              {{ amount(item.after.price, item.after.currency) }}
-            </td>
-            <td>
-              {{ amount(item.before.shipping, item.before.currency) }} →
-              {{ amount(item.after.shipping, item.after.currency) }}
-            </td>
-            <td>{{ item.before.stock ?? '未知' }} → {{ item.after.stock ?? '未知' }}</td>
-            <td>
-              {{ labels[item.status] }}
-              <p v-for="reason in item.errors" :key="reason">{{ reason }}</p>
-            </td>
-          </tr>
+          <template v-for="item in items" :key="item.listing_id">
+            <tr>
+              <td>
+                <RouterLink class="detail-link" :to="'/giga-product/' + item.listing_id">{{
+                  item.sku
+                }}</RouterLink>
+              </td>
+              <td>
+                {{ amount(item.before.price, item.before.currency) }} →
+                {{ amount(item.after.price, item.after.currency) }}
+              </td>
+              <td>
+                {{ amount(item.before.shipping, item.before.currency) }} →
+                {{ amount(item.after.shipping, item.after.currency) }}
+              </td>
+              <td>{{ item.before.stock ?? '未知' }} → {{ item.after.stock ?? '未知' }}</td>
+              <td>
+                {{ labels[item.status] }}
+                <p v-for="reason in item.errors" :key="reason">{{ reason }}</p>
+              </td>
+            </tr>
+            <tr class="store-actions-row">
+              <td colspan="5">
+                <div v-if="item.actions?.length" class="store-actions">
+                  <article v-for="action in item.actions" :key="action.id" class="store-action">
+                    <header>
+                      <strong
+                        >{{ action.store_name }} ·
+                        {{ action.kind === 'price' ? '售价同步' : '库存清零' }}</strong
+                      >
+                      <span class="action-status" :class="action.status">{{
+                        labels[action.status] || action.status
+                      }}</span>
+                    </header>
+                    <p class="sku-line">
+                      平台 SKU：<code>{{ action.platform_sku }}</code
+                      ><span v-if="action.node"> · 仓库 {{ action.node }}</span>
+                    </p>
+                    <dl>
+                      <template v-if="action.kind === 'price'">
+                        <div>
+                          <dt>本次计算</dt>
+                          <dd>
+                            （{{ action.source_price ?? '未知' }} ＋
+                            {{ action.source_shipping ?? '未知' }}）×
+                            {{ action.multiplier ?? '未知' }}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>目标售价（USD）</dt>
+                          <dd>{{ action.target ?? '未触发' }}</dd>
+                        </div>
+                      </template>
+                      <template v-else>
+                        <div>
+                          <dt>供应商可售库存</dt>
+                          <dd>{{ action.source_stock ?? '未知' }}</dd>
+                        </div>
+                        <div>
+                          <dt>目标库存</dt>
+                          <dd>{{ action.target ?? '未触发' }}</dd>
+                        </div>
+                      </template>
+                      <div>
+                        <dt>沃尔玛修改前</dt>
+                        <dd>{{ action.before ?? '未读取' }}</dd>
+                      </div>
+                      <div>
+                        <dt>沃尔玛回读值</dt>
+                        <dd>{{ action.after ?? '未确认' }}</dd>
+                      </div>
+                    </dl>
+                    <p class="action-message">{{ action.message }}</p>
+                    <footer>{{ date(action.updated_at) }}</footer>
+                  </article>
+                </div>
+                <p v-else class="no-store-actions">
+                  本条记录没有店铺更新任务（无已确认上架的对应商品，或为旧版巡查记录）。
+                </p>
+              </td>
+            </tr>
+          </template>
         </tbody>
       </table>
     </div>
@@ -227,5 +325,85 @@ onBeforeUnmount(() => {
 <style scoped>
 .patrol-details {
   margin-top: 24px;
+}
+.store-actions-row > td {
+  padding: 0 16px 22px;
+  background: #f7f9fb;
+}
+.store-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
+  gap: 12px;
+  padding-top: 12px;
+  white-space: normal;
+}
+.store-action {
+  padding: 16px;
+  background: #fff;
+  border: 1px solid #dce4eb;
+  border-radius: 12px;
+  font-size: 14px;
+}
+.store-action header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.action-status {
+  border-radius: 16px;
+  background: #edf2f7;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.action-status.verified,
+.action-status.unchanged {
+  color: #176341;
+  background: #e8f5ed;
+}
+.action-status.pending,
+.action-status.sending,
+.action-status.blocked,
+.action-status.queued {
+  color: #86530e;
+  background: #fff3d9;
+}
+.action-status.failed {
+  color: #a32727;
+  background: #ffeded;
+}
+.sku-line,
+.store-action footer {
+  color: #64748b;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.store-action dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 16px 0;
+}
+.store-action dt {
+  font-size: 12px;
+  color: #64748b;
+  margin-bottom: 4px;
+}
+.store-action dd {
+  margin: 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.action-message {
+  line-height: 1.6;
+  margin-bottom: 10px;
+}
+.no-store-actions {
+  color: #64748b;
+  font-size: 13px;
+  margin: 12px 0 0;
+  white-space: normal;
 }
 </style>

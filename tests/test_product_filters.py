@@ -109,3 +109,28 @@ def test_missing_child_history_cannot_be_reported_as_unchanged(tmp_path):
                         json.dumps({'basis_price':'20','currency':'USD'})))
     assert ids(c,price_change='unchanged')==set()
     assert ids(c,price_change='unknown')=={item.sku}
+
+
+def test_multi_filters_or_within_group_and_between_groups(warehouse):
+    c,catalog,_,_=warehouse
+    b,_=create(c,plan(c));sid=str(b['preview']['store']['id'])
+    new_prices(catalog,{'W1':80,'W2':60})
+    multi=json.dumps({'price_change':['up','down'],'listed_store':[sid,'999999']})
+    assert ids(c,multi=multi)=={'W1','W2'}
+    assert ids(c,multi=multi,q='W1')=={'W1'}
+    page=c.get('/api/products',params={'multi':multi,'page_size':1}).json()
+    assert page['total']==2 and len(page['items'])==1
+    second=c.get('/api/products',params={'multi':multi,'page_size':1,'page':2}).json()
+    assert page['items'][0]['id']!=second['items'][0]['id']
+    csv=c.get('/api/export.csv',params={'multi':multi,'q':'W1'}).text
+    assert 'W1' in csv and 'W2' not in csv
+    data=PlanInput.model_validate(plan(c) | {'filters':{'multi':multi,'q':'W1'}})
+    with catalog.connect() as db:
+        assert [r['sku'] for r in selected_rows(catalog,db,data)]==['W1']
+    assert ids(c,multi=json.dumps({'price_change':['down'],'listed_store':[sid]}))=={'W2'}
+    assert ids(c,multi=json.dumps({'price_change':['up','down'],'listed_store':['999999']}))==set()
+    date=catalog.export()[0]['uploaded_at'][:10]
+    assert ids(c,multi=json.dumps({'date':[date,'1999-01-01']}))=={'W1','W2'}
+    for invalid in ({'source':['Amazon']},{'date':'today'},{'price_change':['invalid']},{'date':['x']*51}):
+        assert c.get('/api/products',params={'multi':json.dumps(invalid)}).status_code==422
+        assert c.get('/api/export.csv',params={'multi':json.dumps(invalid)}).status_code==422
