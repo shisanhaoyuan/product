@@ -57,20 +57,77 @@ const selected = ref<string[]>([]),
   confirmDialog = ref<HTMLDialogElement>(),
   confirmation = ref('');
 const optionalQuery = ref('');
-const showAllOptional = ref(false);
+const activeOptional = ref<Set<string>>(new Set());
 const zoomDialog = ref<HTMLDialogElement>();
 const zoomUrl = ref('');
 const imagePickerOpen = ref(false);
 const optionalMatches = (key: string) =>
-  `${key} ${doc.value?.labels[key] || ''} ${visibleProperties.value[key]?.title || ''}`
+  `${key} ${doc.value?.labels[key] || ''} ${visibleProperties.value[key]?.title || ''} ${currentSpec.value?.sections.orderable.properties?.[key]?.title || ''}`
     .toLowerCase()
-    .includes(optionalQuery.value.toLowerCase());
-function showOptional(key: string, section: 'visible' | 'orderable') {
+    .includes(optionalQuery.value.trim().toLowerCase());
+type OptionalAttribute = {
+  key: string;
+  section: 'visible' | 'orderable';
+  schema: JsonSchema;
+  recommended: boolean;
+};
+const optionalAttributes = computed<OptionalAttribute[]>(() => {
+  const visible = optionalKeys.value.map((key) => ({
+    key,
+    section: 'visible' as const,
+    schema: visibleProperties.value[key],
+    recommended: /@group=Recommended/i.test(visibleProperties.value[key]?.comments || ''),
+  }));
+  const orderable = optionalOrderableKeys.value.map((key) => ({
+    key,
+    section: 'orderable' as const,
+    schema: currentSpec.value?.sections.orderable.properties?.[key] || {},
+    recommended: /@group=Recommended/i.test(
+      currentSpec.value?.sections.orderable.properties?.[key]?.comments || '',
+    ),
+  }));
+  return [...visible, ...orderable];
+});
+const recommendedAttributes = computed(() =>
+  optionalAttributes.value.filter(
+    (item) =>
+      item.recommended &&
+      (optionalMatches(item.key) || optionalIsSelected(item)),
+  ),
+);
+const otherOptionalAttributes = computed(() =>
+  optionalAttributes.value.filter(
+    (item) =>
+      !item.recommended &&
+      (optionalMatches(item.key) || optionalIsSelected(item)),
+  ),
+);
+function optionalId(item: OptionalAttribute) {
+  return `${item.section}.${item.key}`;
+}
+function optionalIsSelected(item: OptionalAttribute) {
   return (
-    optionalMatches(key) &&
-    (showAllOptional.value || !!optionalQuery.value || current.value?.[section][key] !== undefined)
+    current.value?.[item.section][item.key] !== undefined ||
+    activeOptional.value.has(optionalId(item))
   );
 }
+function toggleOptional(item: OptionalAttribute) {
+  if (locked.value || fixedOrigin(item.key, item.schema)) return;
+  const next = new Set(activeOptional.value);
+  const id = optionalId(item);
+  if (optionalIsSelected(item)) {
+    next.delete(id);
+    update(item.section, item.key, undefined);
+  } else next.add(id);
+  activeOptional.value = next;
+}
+function addOptionalGroup(items: OptionalAttribute[]) {
+  activeOptional.value = new Set([
+    ...activeOptional.value,
+    ...items.map(optionalId),
+  ]);
+}
+watch(activeSku, () => (activeOptional.value = new Set()));
 const photos = computed(() =>
   [
     current.value?.visible.mainImageUrl,
@@ -79,7 +136,7 @@ const photos = computed(() =>
 );
 function setPhotos(urls: string[]) {
   update('visible', 'mainImageUrl', urls[0]);
-  update('visible', 'productSecondaryImageURL', [...new Set(urls)].slice(1, 8));
+  update('visible', 'productSecondaryImageURL', [...new Set(urls)].slice(1));
 }
 function enlarge(url: string) {
   zoomUrl.value = url;
@@ -99,6 +156,7 @@ const serialized = () =>
   doc.value ? JSON.stringify({ version: doc.value.version, rows: doc.value.rows }) : '';
 const dirty = computed(() => !!doc.value && serialized() !== saved.value);
 const current = computed(() => doc.value?.rows.find((r) => r.platform_sku === activeSku.value));
+watch(() => current.value?.product_type, () => (activeOptional.value = new Set()));
 const generation = ref<GenerationJob | null>(null);
 const aiReady = ref(false);
 const codePoolOpen = ref(false);
@@ -432,9 +490,7 @@ function fieldIssues(key: string, section = 'Visible') {
 function update(section: 'visible' | 'orderable', key: string, value: unknown) {
   if (!current.value) return;
   if (section === 'visible' && key === 'productSecondaryImageURL' && Array.isArray(value)) {
-    value = [...new Set(value)]
-      .filter((u) => u !== current.value?.visible.mainImageUrl)
-      .slice(0, current.value.visible.mainImageUrl ? 7 : 8);
+    value = [...new Set(value)].filter((u) => u !== current.value?.visible.mainImageUrl);
   }
   if (value === undefined || value === '') delete current.value[section][key];
   else current.value[section][key] = value;
@@ -461,6 +517,7 @@ async function changeType() {
   });
 }
 watch(activeSku, async () => {
+  imagePickerOpen.value = false;
   tab.value = 'basic';
   typeQuery.value = '';
   if (!generating.value && current.value?.product_type && !specs.value[current.value.product_type])
@@ -553,6 +610,7 @@ async function jump(issue: Issue) {
   ) {
     tab.value = 'optional';
     optionalQuery.value = '';
+    addOptionalGroup(optionalAttributes.value.filter((item) => segments.includes(item.key)));
   } else if (
     issue.path === 'product_type' ||
     issue.path === 'identification' ||
@@ -585,15 +643,6 @@ async function upload(e: Event) {
   await run(async () => {
     const target = current.value;
     if (!target) return;
-    const count = [
-      target.visible.mainImageUrl,
-      ...((target.visible.productSecondaryImageURL as string[]) || []),
-    ].filter(Boolean).length;
-    if (files.length > 8 - count) {
-      throw new Error(
-        `刊登图片最多8张，当前还可添加${Math.max(0, 8 - count)}张，请减少选择或先删除图片。`,
-      );
-    }
     for (const file of files) {
       const { url } = await api.uploadImage(target.listing_id, undefined, file);
       if (!target.visible.mainImageUrl) target.visible.mainImageUrl = url;
@@ -1005,7 +1054,7 @@ onBeforeUnmount(() => {
             <button
               v-for="[key, label] in [
                 ['basic', '商品刊登资料'],
-                ['optional', '选填属性'],
+                ['optional', '选择属性'],
                 ['results', '处理结果'],
               ]"
               :key="key"
@@ -1267,25 +1316,28 @@ onBeforeUnmount(() => {
             <div class="listing-subheading">
               <h4>商品图片</h4>
               <p>
-                {{ photos.length }} / 8 张 · 第一张为主图，可点击放大。优先白底商品图、尺寸参数图。
+                已选 {{ photos.length }} 张 · 默认优选 8 张，可自由增减。第一张为主图，点击可放大。
               </p>
-              <label v-if="!locked" class="btn small"
-                >本地添加图片<input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  hidden
+              <div v-if="!locked" class="listing-image-actions">
+                <label class="btn listing-image-action upload-action" :class="{ disabled: busy }">
+                  <AppIcon name="Upload" />本地添加图片
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    hidden
+                    :disabled="busy"
+                    @change="upload"
+                  />
+                </label>
+                <button
+                  class="btn listing-image-action edit-action"
                   :disabled="busy"
-                  @change="upload"
-              /></label>
-              <button
-                v-if="!locked"
-                class="btn small"
-                :disabled="photos.length >= 8"
-                @click="imagePickerOpen = true"
-              >
-                ＋ 添加附图
-              </button>
+                  @click="imagePickerOpen = true"
+                >
+                  <AppIcon name="LayoutGrid" />编辑图片
+                </button>
+              </div>
             </div>
             <div class="listing-photo-gallery" data-listing-path="visible.mainImageUrl">
               <figure v-for="(url, i) in photos" :key="url + i" class="listing-photo-card">
@@ -1357,7 +1409,7 @@ onBeforeUnmount(() => {
             </p>
             <template v-else
               ><div class="listing-subheading">
-                <h3>{{ tab === 'basic' ? '该类目必填属性' : '该类目选填属性' }}</h3>
+                <h3>{{ tab === 'basic' ? '该类目必填属性' : '选择商品属性' }}</h3>
                 <p>
                   单位、数值及选项均以沃尔玛当前规格为准。原产国（实质性转变）按用户规则固定为
                   China（中国），保存时自动应用，不由 AI 改写。
@@ -1367,20 +1419,83 @@ onBeforeUnmount(() => {
                 <input
                   v-model="optionalQuery"
                   class="listing-optional-search"
-                  placeholder="搜索属性名称，添加需要的信息"
+                  placeholder="搜索属性名称 / 中文含义，选择要补充的商品信息"
                   aria-label="搜索选填属性"
                 />
-                <label class="listing-toggle"
-                  ><input v-model="showAllOptional" type="checkbox" />显示全部选填项</label
-                >
               </div>
-              <p v-if="tab === 'optional' && !optionalQuery && !showAllOptional" class="muted">
-                当前显示已填写项；搜索名称或勾选“显示全部”可添加更多属性。
-              </p>
+              <template v-if="tab === 'optional'">
+                <div class="optional-attribute-group">
+                  <div class="optional-attribute-heading">
+                    <div>
+                      <h4>推荐属性</h4>
+                      <p>沃尔玛建议补充的信息，有助于商品搜索和浏览。点击加号添加填写框。</p>
+                    </div>
+                    <button
+                      v-if="recommendedAttributes.length"
+                      class="optional-add-all"
+                      type="button"
+                      :disabled="locked || recommendedAttributes.every(optionalIsSelected)"
+                      @click="addOptionalGroup(recommendedAttributes)"
+                    >{{ recommendedAttributes.every(optionalIsSelected) ? '已全部添加' : '添加全部' }}</button>
+                  </div>
+                  <div v-if="recommendedAttributes.length" class="optional-attribute-chips">
+                    <button
+                      v-for="item in recommendedAttributes"
+                      :key="optionalId(item)"
+                      type="button"
+                      class="optional-attribute-chip"
+                      :class="{ selected: optionalIsSelected(item) }"
+                      :disabled="locked || fixedOrigin(item.key, item.schema)"
+                      :aria-pressed="optionalIsSelected(item)"
+                      @click="toggleOptional(item)"
+                    ><span class="optional-chip-icon">{{ optionalIsSelected(item) ? '✓' : '+' }}</span>
+                      <span>{{ doc.labels[item.key] || item.schema.title || item.key }}</span>
+                      <small v-if="item.schema.title && item.schema.title !== doc.labels[item.key]">{{ item.schema.title }}</small>
+                    </button>
+                  </div>
+                  <p v-else class="muted">当前类目没有单独标记的推荐属性。</p>
+                </div>
+                <div class="optional-attribute-group">
+                  <div class="optional-attribute-heading">
+                    <div>
+                      <h4>其他选填属性</h4>
+                      <p>按商品实际情况补充；中文名称帮助理解字段，提交值仍遵循沃尔玛要求。</p>
+                    </div>
+                    <button
+                      v-if="otherOptionalAttributes.length"
+                      class="optional-add-all"
+                      type="button"
+                      :disabled="locked || otherOptionalAttributes.every(optionalIsSelected)"
+                      @click="addOptionalGroup(otherOptionalAttributes)"
+                    >{{ otherOptionalAttributes.every(optionalIsSelected) ? '已全部添加' : '添加全部' }}</button>
+                  </div>
+                  <div v-if="otherOptionalAttributes.length" class="optional-attribute-chips">
+                    <button
+                      v-for="item in otherOptionalAttributes"
+                      :key="optionalId(item)"
+                      type="button"
+                      class="optional-attribute-chip"
+                      :class="{ selected: optionalIsSelected(item) }"
+                      :disabled="locked || fixedOrigin(item.key, item.schema)"
+                      :aria-pressed="optionalIsSelected(item)"
+                      @click="toggleOptional(item)"
+                    ><span class="optional-chip-icon">{{ optionalIsSelected(item) ? '✓' : '+' }}</span>
+                      <span>{{ doc.labels[item.key] || item.schema.title || item.key }}</span>
+                      <small v-if="item.schema.title && item.schema.title !== doc.labels[item.key]">{{ item.schema.title }}</small>
+                    </button>
+                  </div>
+                  <p v-else class="muted">没有匹配的其他选填属性。</p>
+                </div>
+                <div class="optional-selected-fields">
+                  <h4>已选择的属性 <span>{{ optionalAttributes.filter(optionalIsSelected).length }}</span></h4>
+                  <p class="muted">再次点击已选标签可移除属性及已填内容，修改会自动保存。未填写的空白框不会提交。</p>
+                  <p v-if="!optionalAttributes.some(optionalIsSelected)" class="notice">从上方选择需要的属性，填写框会显示在这里。</p>
+                </div>
+              </template>
               <ListingSchemaField
                 v-for="key in tab === 'basic'
                   ? mandatoryKeys
-                  : optionalKeys.filter((k) => showOptional(k, 'visible'))"
+                  : optionalKeys.filter((k) => optionalAttributes.some((item) => item.section === 'visible' && item.key === k && optionalIsSelected(item)))"
                 :key="key"
                 :name="key"
                 :schema="visibleProperties[key]"
@@ -1394,7 +1509,7 @@ onBeforeUnmount(() => {
               <template v-if="tab === 'optional'"
                 ><div class="listing-subheading"><h4>选填履约信息</h4></div>
                 <ListingSchemaField
-                  v-for="key in optionalOrderableKeys.filter((k) => showOptional(k, 'orderable'))"
+                  v-for="key in optionalOrderableKeys.filter((k) => optionalAttributes.some((item) => item.section === 'orderable' && item.key === k && optionalIsSelected(item)))"
                   :key="key"
                   :name="key"
                   :schema="currentSpec.sections.orderable.properties![key]"
@@ -1607,15 +1722,16 @@ onBeforeUnmount(() => {
         <ProductImage :src="zoomUrl" image-class="listing-full-image" />
       </dialog>
       <ListingImagePicker
-        v-if="imagePickerOpen && current"
+        v-if="imagePickerOpen && current && !locked"
+        :key="current.platform_sku"
         :listing-id="current.listing_id"
         :sku="current.source_sku"
         :existing="photos"
         :source-images="sourceVariant?.content?.images || []"
         @close="imagePickerOpen = false"
-        @add="
+        @apply="
           (urls) => {
-            setPhotos([...photos, ...urls]);
+            setPhotos(urls);
             imagePickerOpen = false;
           }
         "

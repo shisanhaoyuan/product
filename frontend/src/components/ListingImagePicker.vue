@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { catalogApi } from '../api/client';
 import { errorMessage } from '../utils/display';
 import ProductImage from './ProductImage.vue';
@@ -10,25 +10,32 @@ const props = defineProps<{
   existing: string[];
   sourceImages: string[];
 }>();
-const emit = defineEmits<{ close: []; add: [urls: string[]] }>();
+const emit = defineEmits<{ close: []; apply: [urls: string[]] }>();
 const dialog = ref<HTMLDialogElement>();
-const candidates = ref<string[]>([...new Set(props.sourceImages)]);
-const selected = ref<string[]>([]);
+const candidates = ref<string[]>([...new Set([...props.existing, ...props.sourceImages])]);
+const selected = ref<string[]>([...new Set(props.existing)]);
 const loading = ref(true),
   error = ref('');
-const remaining = computed(() => Math.max(0, 8 - props.existing.length));
 const available = computed(() => [...new Set(candidates.value)].filter(Boolean));
+const allSelected = computed(
+  () => available.value.length > 0 && available.value.every((url) => selected.value.includes(url)),
+);
+function selectAll() {
+  selected.value = [...new Set([...selected.value, ...available.value])];
+}
 function apply() {
-  emit(
-    'add',
-    selected.value.filter((url) => !props.existing.includes(url)).slice(0, remaining.value),
-  );
+  emit('apply', [...selected.value]);
   emit('close');
 }
+let live = true;
+onBeforeUnmount(() => {
+  live = false;
+});
 onMounted(async () => {
   dialog.value?.showModal();
   try {
     const product = await catalogApi.product(props.listingId);
+    if (!live) return;
     const matches = product.variants.filter((v) => v.sku === props.sku);
     const record = product.variants.length
       ? matches.length === 1
@@ -46,11 +53,11 @@ onMounted(async () => {
 });
 </script>
 <template>
-  <dialog ref="dialog" class="listing-picker" aria-label="选择商品附图" @close="emit('close')">
+  <dialog ref="dialog" class="listing-picker" aria-label="编辑商品图片" @close="emit('close')">
     <header>
       <div>
-        <h3>选择商品附图</h3>
-        <p>{{ sku }} · 已选 {{ selected.length }} 张，还可添加 {{ remaining }} 张</p>
+        <h3>编辑商品图片</h3>
+        <p>{{ sku }} · 已选 {{ selected.length }} 张 · 点击可选择或取消，不限数量</p>
       </div>
       <button class="icon-btn" aria-label="关闭图片选择" @click="emit('close')">
         <AppIcon name="X" />
@@ -61,31 +68,39 @@ onMounted(async () => {
     <p v-if="!loading && !available.length" class="notice">
       该 SKU 暂无来源图片，请关闭后使用“本地添加图片”。
     </p>
+    <p class="picker-hint">
+      第一张选中的图片为主图；取消主图后，下一张自动成为主图。修改后点击“应用选择”保存。
+    </p>
+    <div class="picker-selection-actions">
+      <button class="btn" :disabled="!available.length || allSelected" @click="selectAll">
+        <AppIcon name="Check" />全选图片
+      </button>
+      <button class="btn" :disabled="!selected.length" @click="selected = []">取消全选</button>
+      <span>已选 {{ selected.length }} / 共 {{ available.length }} 张</span>
+    </div>
     <div class="picker-grid">
-      <label
-        v-for="(url, i) in available"
-        :key="url"
-        :class="{ chosen: selected.includes(url) || existing.includes(url) }"
-      >
+      <label v-for="(url, i) in available" :key="url" :class="{ chosen: selected.includes(url) }">
         <ProductImage :src="url" image-class="picker-image" />
         <span
           ><input
-            v-if="!existing.includes(url)"
             v-model="selected"
             type="checkbox"
             :value="url"
-            :disabled="!selected.includes(url) && selected.length >= remaining"
             :aria-label="'选择来源图片 ' + (i + 1)"
           />
-          {{ existing.includes(url) ? '已添加' : '图片 ' + (i + 1) }}</span
+          {{
+            selected[0] === url
+              ? '主图'
+              : selected.includes(url)
+                ? '已选 · ' + (selected.indexOf(url) + 1)
+                : '图片 ' + (i + 1)
+          }}</span
         >
       </label>
     </div>
     <footer>
       <button class="btn" @click="emit('close')">取消</button
-      ><button class="btn primary" :disabled="!selected.length" @click="apply">
-        添加选中图片（{{ selected.length }}）
-      </button>
+      ><button class="btn primary" @click="apply">应用选择（{{ selected.length }}）</button>
     </footer>
   </dialog>
 </template>
@@ -121,6 +136,34 @@ header .icon-btn {
   background: #e3ebf3;
   border-radius: 12px;
   flex-shrink: 0;
+}
+.picker-hint {
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #e7eef5;
+  color: #46627b;
+  line-height: 1.6;
+}
+.picker-selection-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 4px 0 8px;
+}
+.picker-selection-actions .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: #e4edf5;
+  color: #34546e;
+  border-color: #bdcfde;
+  padding: 10px 16px;
+  font-size: 14px;
+}
+.picker-selection-actions span {
+  color: #64748b;
+  font-size: 13px;
 }
 .picker-grid {
   display: grid;

@@ -313,6 +313,8 @@ def default_rows(preview):
                            mainImageUrl=images[0] if images else '')
             if len(images) > 1:
                 visible['productSecondaryImageURL'] = images[1:]
+            from .listing_content import image_policy
+            image_policy(visible, default_selection=True)
             normalize_content(visible)
             result.append(dict(platform_sku=v['platform_sku'], listing_id=item['listing_id'],source_sku=v['sku'],
                 product_type='',fulfillment_center_id='', identification=dict(mode='identifier',type=code_type,value=code,submission_id=''),
@@ -471,7 +473,7 @@ def check_rows(db, doc, session, binding_row, skus=None):
                 errors.append(dict(path='visible.mainImageUrl',message=str(exc)))
         results[sku] = dict(valid=not errors,errors=errors)
     from .listing_prerequisites import resource_digest
-    return dict(feedback_policy='publication_feedback_v1',content_policy='images8_copy_rebuild_origin_v2',title_policy='brand_prefix_v1',feedback_digest=fingerprint(latest_results(db,doc['batch_id'])),resources_digest=resource_digest(db,binding_row),id=uuid.uuid4().hex,revision=doc['revision'],at=int(time.time()),binding_revision=binding_row['revision'],
+    return dict(feedback_policy='publication_feedback_v1',content_policy='default8_manual_images_copy_origin_v3',title_policy='brand_prefix_v1',feedback_digest=fingerprint(latest_results(db,doc['batch_id'])),resources_digest=resource_digest(db,binding_row),id=uuid.uuid4().hex,revision=doc['revision'],at=int(time.time()),binding_revision=binding_row['revision'],
                 partner_id=binding_row['partner_id'],rows=results,schema_digests=schema_digests,payloads=payloads,
                 valid_count=sum(r['valid'] for r in results.values()))
 

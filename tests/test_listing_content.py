@@ -48,7 +48,7 @@ def test_image_selection_prefers_white_hero_and_parameter_photo_from_full_galler
     normalize(row['visible']);assert row==before
 
 
-def test_image_limit_save_reopen_identity_and_locked_submitted_rows(publishing):
+def test_manual_images_save_reopen_without_truncation_or_identity_changes(publishing):
     c,catalog,_,_,b,base,_=publishing
     doc=ready(publishing);original=catalog.export();before=copy.deepcopy(doc['rows'])
     for row in doc['rows']:
@@ -58,7 +58,7 @@ def test_image_limit_save_reopen_identity_and_locked_submitted_rows(publishing):
     assert response.status_code==200,response.text
     saved=response.json()
     for old,row in zip(before,saved['rows']):
-        assert len(image_urls(row['visible']))==8
+        assert len(image_urls(row['visible']))==25
         assert text(row['visible']['shortDescription'])=='Features:\n1. Width 24.5 inches.\n2. Blue finish.'
         for key in ('listing_id','platform_sku','source_sku','identification','orderable'):
             assert row[key]==old[key]
@@ -227,3 +227,62 @@ def test_bed_cleanup_and_fixed_origin_survive_save_reopen_without_other_changes(
     with catalog.connect() as db:
         events=db.execute("SELECT details_json FROM walmart_listing_events WHERE action='edit'").fetchall()
         assert any('user_authorized_rule' in e[0] for e in events)
+
+
+def test_default_selection_is_eight_but_normalization_preserves_manual_gallery():
+    from catalog.walmart_publishing import default_rows
+    urls = [f'https://example.com/photo-{i}.jpg' for i in range(30)]
+    preview = dict(brand='Brand', items=[dict(listing_id='L', variants=[dict(
+        sku='W1', platform_sku='MY17AB123C', content=dict(images=urls), price='20')])])
+    row = default_rows(preview)[0]
+    assert image_urls(row['visible']) == urls[:8]
+    row['visible']['productSecondaryImageURL'] = urls[1:]
+    expected = copy.deepcopy(row)
+    for _ in range(3):
+        normalize(row['visible'])
+        assert row == expected
+    report = select_listing_images(row, urls, {}, [])
+    assert report['state'] == 'manual_selection'
+    assert image_urls(row['visible']) == urls
+
+
+def test_clear_all_images_and_reselect_does_not_restore_deleted_main():
+    from catalog.listing_content import image_policy
+    visible = dict(mainImageUrl='old', productSecondaryImageURL=['old', 'next', 'next'])
+    image_policy(visible)
+    assert image_urls(visible) == ['old', 'next']
+    visible.pop('mainImageUrl')
+    visible['productSecondaryImageURL'] = []
+    normalize(visible)
+    assert image_urls(visible) == []
+    visible['mainImageUrl'] = 'new'
+    normalize(visible)
+    assert image_urls(visible) == ['new']
+
+
+def test_extended_gallery_save_validation_and_template_reuse(publishing):
+    from test_listing_templates import target
+    from test_prelisting import create
+    from test_walmart_publishing import PT
+    from catalog.walmart_listing_schema import sections
+    c, catalog, _, _, _, base, remote = publishing
+    props = sections(remote.schema, PT)['visible']['properties']
+    props['productSecondaryImageURL'] = dict(type='array', items={'type': 'string', 'format': 'uri'}, maxItems=30)
+    doc = ready(publishing)
+    urls = [f'https://example.com/gallery-{i}.jpg' for i in range(25)]
+    for row in doc['rows']:
+        row['visible']['mainImageUrl'] = urls[0]
+        row['visible']['productSecondaryImageURL'] = urls[1:]
+    saved = c.patch(base, json={k: doc[k] for k in ('revision','version','rows')}).json()
+    assert all(image_urls(r['visible']) == urls for r in saved['rows'])
+    reopened = c.get(base).json()
+    assert all(image_urls(r['visible']) == urls for r in reopened['rows'])
+    validated = c.post(base+'/validate', json={'revision':saved['revision']}).json()
+    assert validated['validation']['valid_count'] == 2
+    with catalog.connect() as db:
+        report = json.loads(db.execute('SELECT validation_json FROM walmart_listing_documents WHERE batch_id=?', (base.split('/')[-2],)).fetchone()[0])
+    for payload in report['payloads'].values():
+        assert payload['Visible'][PT]['productSecondaryImageURL'] == urls[1:]
+    clone, _ = create(c, target(publishing))
+    copied = c.get(f"/api/prelisting/batches/{clone['id']}/walmart").json()
+    assert all(image_urls(r['visible']) == urls for r in copied['rows'])

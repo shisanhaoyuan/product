@@ -530,7 +530,7 @@ def fill_row(row, schema, facts, ai, provenance):
         if row['visible'].get(field)!=before_content.get(field):
             provenance['visible.'+field]=dict(kind='user_rule',value=row['visible'].get(field),previous_value=before_content.get(field),
                 refs=[r for r in ('content.copy','detail.description','content.attributes','detail.attributes') if r in facts] if field=='shortDescription' else [],
-                reason='用户规则：从同 SKU 来源整理参数并整体覆盖描述，不追加旧编号；描述与卖点去重，刊登最多8张图')
+                reason='用户规则：从同 SKU 来源整理参数并整体覆盖描述，不追加旧编号；描述与卖点去重，默认优选8张图，手动选择数量不限')
     # A later conditional pass may have filled a previously missing field.
     problems = [p for p in problems if '原产国固定规则' in p['message'] or not p['path'] or
                 empty(row.get(p['path'].split('.')[0], {}).get(p['path'].split('.')[-1]))]

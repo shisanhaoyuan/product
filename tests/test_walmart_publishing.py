@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from catalog.app import create_app
 from catalog.giga import sync_page
 from catalog.prelisting import encoded
-from catalog.walmart_listing_schema import DEFAULT_VERSION, identifier_errors, normalize_spec, schema_errors, sections
+from catalog.walmart_listing_schema import DEFAULT_VERSION, LABELS, identifier_errors, normalize_spec, schema_errors, sections
 from catalog.walmart_publishing_client import WalmartPublishingClient
 from test_giga import settings
 from test_giga_prelisting import warehouse, plan
@@ -368,6 +368,14 @@ def test_real_official_sofa_schema_nested_units_precision_and_required_fields():
     errors=schema_errors(schema,item,DEFAULT_VERSION)
     assert any('运输重量' in e['message'] for e in errors)
     assert not any(e['path'].endswith('.price') for e in errors) # Exact decimal validation, not floating-point modulo.
+
+
+def test_optional_listing_attributes_have_employee_friendly_chinese_labels():
+    assert LABELS['arm_height'] == '扶手高度'
+    assert LABELS['maximumLoadWeight'] == '最大承重'
+    assert LABELS['product_package_dimensions_and_weight'] == '产品包装尺寸和重量'
+    assert LABELS['externalProductIdentifier'] == '外部产品标识'
+    assert LABELS['MustShipAlone'] == '是否必须单独运输'
 
 
 def test_submission_rejection_is_retryable_and_never_exposes_secrets(publishing):

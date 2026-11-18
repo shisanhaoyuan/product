@@ -1,4 +1,4 @@
-"""SKU-local listing copy/layout and image limits, independent of ERP automation.
+"""SKU-local listing copy/layout and image normalization, independent of ERP automation.
 
 Description policy follows digit-emperor-listing / description_format.py, with
 an explicit exception: independent Key Features have priority over description.
@@ -8,7 +8,7 @@ import re
 import unicodedata
 from html.parser import HTMLParser
 
-MAX_IMAGES = 8
+DEFAULT_IMAGE_COUNT = 8
 HEADINGS = r'Features?|Key Features|Product Information|Specifications?|Product Description'
 FORBIDDEN = re.compile(
     r'warrant(?:y|ies)|manufacturer|\b(?:Amazon|ASIN|SKU|UPC(?:[- ]?[AE])?|EAN(?:[- ]?(?:8|13))?|'
@@ -242,8 +242,10 @@ def image_urls(visible):
                               if isinstance(u, str) and u.strip()))
 
 
-def image_policy(visible):
-    urls = image_urls(visible)[:MAX_IMAGES]
+def image_policy(visible, *, default_selection=False):
+    urls = image_urls(visible)
+    if default_selection:
+        urls = urls[:DEFAULT_IMAGE_COUNT]
     if urls:
         visible['mainImageUrl'] = urls[0]
     if 'productSecondaryImageURL' in visible or len(urls) > 1:

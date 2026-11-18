@@ -203,6 +203,9 @@ def image_evidence(catalog,row,variant,ai,schema=None):
 def select_listing_images(row, urls, digests, observations):
     """Only rank actual current-SKU images; observations are never field values."""
     from .listing_content import image_policy, image_urls
+    # An expanded gallery is an explicit user selection, not an automatic default.
+    if len(image_urls(row['visible'])) > 8:
+        return dict(state='manual_selection', selected=image_urls(row['visible']), reason='保留用户扩展选择的图片')
     roles={}
     for observation in observations:
         if observation.get('attribute')!='listingImageRole' or observation.get('value') not in ('white_background','dimensions','other'):
@@ -212,7 +215,7 @@ def select_listing_images(row, urls, digests, observations):
         for digest in observation.get('images',[]):
             roles[digest]=observation['value']
     if not roles:
-        image_policy(row['visible'])
+        image_policy(row['visible'], default_selection=True)
         return dict(state='source_order',selected=image_urls(row['visible']),reason='没有可靠图片分类，保留来源顺序')
     # Deduplicate identical bytes, keep a white product hero and reserve a parameter image.
     unique=[];seen=set()
@@ -226,7 +229,7 @@ def select_listing_images(row, urls, digests, observations):
     ranked=list(dict.fromkeys(hero+dimensions+white+unique))[:8]
     row['visible']['mainImageUrl']=ranked[0] if ranked else ''
     row['visible']['productSecondaryImageURL']=ranked[1:]
-    return dict(state='classified',selected=ranked,roles=roles,reason='白底主图优先，保留参数图，再补其他商品图；最多8张')
+    return dict(state='classified',selected=ranked,roles=roles,reason='白底主图优先，保留参数图，再补其他商品图；默认优选8张，可手动编辑')
 
 
 def stable_feed_row(db,row):
