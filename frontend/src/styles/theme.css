@@ -66,7 +66,7 @@
   .header-inner {
     gap: 12px !important;
   }
-  .top-nav a {
+  .top-nav :is(a, .nav-trigger) {
     padding-inline: 7px !important;
   }
   .header-status {
@@ -209,7 +209,7 @@ select {
   align-self: stretch;
   gap: 5px;
 }
-.top-nav a {
+.top-nav :is(a, .nav-trigger) {
   position: relative;
   display: flex;
   align-items: center;
@@ -222,16 +222,16 @@ select {
   color: #6b7e96;
   border-radius: 5px;
 }
-.top-nav a:hover {
+.top-nav :is(a, .nav-trigger):hover {
   background: #e3ebf6;
   color: #496e9b;
 }
-.top-nav a.active {
+.top-nav :is(a, .nav-trigger).active {
   background: #dfe9f6;
   color: #3d6599;
   font-weight: 600;
 }
-.top-nav a.active::after {
+.top-nav :is(a, .nav-trigger).active::after {
   content: '';
   position: absolute;
   bottom: -16px;
@@ -1930,7 +1930,7 @@ h3 {
   .header-inner {
     gap: 24px;
   }
-  .top-nav a {
+  .top-nav :is(a, .nav-trigger) {
     padding: 10px;
     font-size: 12px;
     gap: 6px;
@@ -2005,13 +2005,13 @@ h3 {
     gap: 4px;
     min-height: 45px;
   }
-  .top-nav a {
+  .top-nav :is(a, .nav-trigger) {
     margin: 0;
     flex: 1;
     border-radius: 5px 5px 0 0;
     gap: 7px;
   }
-  .top-nav a.active::after {
+  .top-nav :is(a, .nav-trigger).active::after {
     bottom: 0;
     left: 12px;
     right: 12px;
@@ -2048,7 +2048,7 @@ h3 {
     padding-top: 12px;
     gap: 9px 10px;
   }
-  .top-nav a {
+  .top-nav :is(a, .nav-trigger) {
     padding: 11px 5px;
     font-size: 11px;
     gap: 6px;
@@ -2236,7 +2236,7 @@ h3 {
     height: auto;
     padding-bottom: 8px;
   }
-  .top-nav a {
+  .top-nav :is(a, .nav-trigger) {
     font-size: 10px;
     gap: 5px;
   }

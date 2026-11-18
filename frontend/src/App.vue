@@ -2,6 +2,7 @@
 import { computed, onErrorCaptured, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import AppIcon from './components/AppIcon.vue';
+import NavigationDropdown from './components/NavigationDropdown.vue';
 import { useCatalog } from './composables/useCatalog';
 import { useAuth } from './composables/useAuth';
 import { request } from './api/client';
@@ -18,9 +19,12 @@ async function logout() {
 const route = useRoute();
 const { stats } = useCatalog();
 const fatalError = ref('');
-const navigation = [
+// Add future product sources here to keep their navigation under one entry.
+const catalogSources = [
   { path: '/products', name: '亚马逊商品库', icon: 'LayoutGrid' },
   { path: '/giga-products', name: '大建云仓', icon: 'Package' },
+];
+const navigation = [
   { path: '/prelisting', name: '预上架', icon: 'Upload' },
   { path: '/walmart-review', name: '审核进度', icon: 'ScanLine' },
   { path: '/listing-stores', name: '店铺管理', icon: 'Store' },
@@ -42,8 +46,10 @@ const current = computed(() =>
           ? '店铺管理 · 店铺资料'
           : route.path === '/giga-patrol'
             ? '云仓价格与库存巡查'
-            : navigation.find((item) => item.path === route.path)?.name || '商品库',
+            : [...catalogSources, ...navigation].find((item) => item.path === route.path)?.name ||
+              '商品库',
 );
+const activeCatalogPath = computed(() => catalogSources.find((item) => active(item.path))?.path);
 function active(path: string) {
   if (path === '/prelisting') return route.path.startsWith('/prelisting');
   if (path === '/listing-stores')
@@ -74,6 +80,16 @@ onErrorCaptured((error) => {
         class="top-nav"
         aria-label="主导航"
       >
+        <NavigationDropdown
+          label="商品库"
+          :items="
+            catalogSources.map((item) => ({
+              ...item,
+              count: item.path === '/products' ? stats?.listings : undefined,
+            }))
+          "
+          :active-path="activeCatalogPath"
+        />
         <RouterLink
           v-for="item in navigation"
           :key="item.path"
@@ -81,8 +97,8 @@ onErrorCaptured((error) => {
           :class="{ active: active(item.path) }"
           :title="item.name"
           ><span class="nav-icon"><AppIcon :name="item.icon" /></span><span>{{ item.name }}</span
-          ><span v-if="item.path === '/products' || item.path === '/review'" class="nav-count">{{
-            item.path === '/products' ? (stats?.listings ?? '—') : (stats?.review ?? '—')
+          ><span v-if="item.path === '/review'" class="nav-count">{{
+            stats?.review ?? '—'
           }}</span></RouterLink
         >
       </nav>
