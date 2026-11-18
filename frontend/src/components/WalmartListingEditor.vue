@@ -1656,7 +1656,7 @@ onBeforeUnmount(() => {
     <ListingProductDetails
       v-if="detailRow"
       :listing-id="detailRow.listing_id"
-      :row="detailRow"
+      :row="doc?.rows.find((row) => row.platform_sku === detailRow?.platform_sku) || detailRow"
       @close="detailRow = undefined"
     />
     <ListingPreparationSettings

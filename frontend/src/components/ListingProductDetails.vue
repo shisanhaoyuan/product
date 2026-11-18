@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, useId, watch } from 'vue';
 import { catalogApi } from '../api/client';
 import type { ProductDetail } from '../api/types';
 import type { ListingRow } from '../api/publishing';
@@ -14,6 +14,8 @@ const props = defineProps<{ listingId: string; row?: ListingRow }>();
 const emit = defineEmits<{ close: [] }>();
 const titleId = useId();
 const dialog = ref<HTMLDialogElement>();
+const anchor = ref<HTMLElement>();
+const windowHost = shallowRef<HTMLElement | string>('body');
 const {
   style: windowStyle,
   dragging,
@@ -77,32 +79,28 @@ watch(
   },
   { immediate: true },
 );
-onMounted(() => dialog.value?.showModal());
+onMounted(async () => {
+  // Stay inside an existing modal preview's active subtree, if there is one.
+  windowHost.value = anchor.value?.closest<HTMLDialogElement>('dialog[open]') || document.body;
+  await nextTick();
+  dialog.value?.show();
+});
 onBeforeUnmount(() => {
   requestId++;
 });
-function closeBackdrop(event: MouseEvent) {
-  if (event.target !== dialog.value || !dialog.value) return;
-  const box = dialog.value.getBoundingClientRect();
-  if (
-    event.clientX < box.left ||
-    event.clientX > box.right ||
-    event.clientY < box.top ||
-    event.clientY > box.bottom
-  )
-    dialog.value.close();
-}
 </script>
 <template>
-  <Teleport to="body">
+  <span ref="anchor" hidden />
+  <Teleport :to="windowHost">
     <dialog
       ref="dialog"
       class="product-info-dialog"
       :style="windowStyle"
       :class="{ resizing }"
       :aria-labelledby="titleId"
+      aria-modal="false"
       @close="emit('close')"
-      @click="closeBackdrop"
+      @keydown.esc.stop.prevent="dialog?.close()"
     >
       <div
         v-for="edge in edges"
@@ -131,7 +129,12 @@ function closeBackdrop(event: MouseEvent) {
           <span class="drag-hint">拖动移动 · 边框缩放 · 双击复原</span>
           <h2 :id="titleId">{{ title }}</h2>
         </div>
-        <button class="icon-btn" aria-label="关闭商品档案" autofocus @click="dialog?.close()">
+        <button
+          class="product-info-close"
+          aria-label="关闭商品档案"
+          autofocus
+          @click="dialog?.close()"
+        >
           <AppIcon name="X" />
         </button>
       </header>
@@ -235,7 +238,7 @@ function closeBackdrop(event: MouseEvent) {
         </template>
       </div>
       <footer>
-        <span class="muted">关闭小窗可继续填写上架资料</span>
+        <span class="muted">可保持小窗打开，继续填写后方上架资料</span>
         <button class="btn small" @click="reset()">恢复默认大小</button>
         <a
           v-if="product"
@@ -253,21 +256,25 @@ function closeBackdrop(event: MouseEvent) {
 </template>
 <style scoped>
 .product-info-dialog {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  z-index: 80;
   width: min(960px, 94vw);
+  height: fit-content;
   container-type: inline-size;
   max-height: 90vh;
   padding: 0;
   border: 1px solid #dce5ed;
   border-radius: 18px;
   color: #253d50;
+  background: #fff;
+  box-shadow: 0 16px 54px #28435c24;
   overflow: hidden;
 }
 .product-info-dialog[open] {
   display: flex;
   flex-direction: column;
-}
-.product-info-dialog::backdrop {
-  background: #22384b66;
 }
 header {
   display: flex;
@@ -290,8 +297,33 @@ header.dragging {
   color: #75889a;
   font-size: 12px;
 }
-header .icon-btn {
+.product-info-close {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
   flex-shrink: 0;
+  border: 1px solid #cbd9e5;
+  border-radius: 12px;
+  background: #e4edf5;
+  color: #38546d;
+  cursor: pointer;
+  transition:
+    background 150ms ease,
+    border-color 150ms ease;
+}
+.product-info-close:hover {
+  background: #d6e4f0;
+  border-color: #adc4d7;
+}
+.product-info-close:focus-visible {
+  outline: 2px solid #7597b5;
+  outline-offset: 3px;
+}
+.product-info-close :deep(svg) {
+  width: 18px;
+  height: 18px;
 }
 h2 {
   font-size: 20px;
