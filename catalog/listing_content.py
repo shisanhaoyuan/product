@@ -39,7 +39,7 @@ class Text(HTMLParser):
         if not hidden and tag in ('p', 'li', 'div', 'tr', 'h1', 'h2', 'h3', 'h4'):
             self.parts.append('\n')
         if tag in ('td', 'th'):
-            self.parts.append(' ')
+            self.parts.append('\t')
 
     def handle_data(self, value):
         if not self.hidden or not self.hidden[-1]:
@@ -57,7 +57,7 @@ def key(value):
 
 
 def sentences(value):
-    value = text(value)
+    value = strip_numbering(text(value))
     protected = {}
 
     def keep(match):
@@ -66,8 +66,8 @@ def sentences(value):
         return token
 
     value = re.sub(r'(?i)\b(?:e\.g\.|i\.e\.|U\.S\.(?:A\.)?|Mr\.|Mrs\.|Dr\.|No\.|vs\.|approx\.|in\.|ft\.|oz\.|lb\.|lbs\.|cm\.|mm\.)|\d+\.\d+|https?://\S+|\b\w+\.(?:com|net|org)\b', keep, value)
-    # Explicit numbering, including legacy "1.Point"; never a decimal.
-    value = re.sub(r'(?m)(?:^|(?<=\s))\d{1,2}[.)](?!\d)\s*(?=[A-Z\u4e00-\u9fff])', '\n', value)
+    # Inline point markers, including lowercase prose. Decimals stay protected.
+    value = re.sub(r'(?<=\s)\d+[.)](?!\d)\s*(?=\S)', '\n', value)
     value = re.sub(r'(?i)(?:^|\n)\s*(?:'+HEADINGS+r')\s*:\s*', '\n', value)
     parts = re.split(r'\n+|(?<=[。！？!?])\s*|(?<=\.)(?=\s|[A-Z])\s*', value)
     result = []
@@ -75,6 +75,7 @@ def sentences(value):
         for token, original in protected.items():
             part = part.replace(token, original)
         part = re.sub(r'\s+', ' ', part).strip(' \t•')
+        part = strip_numbering(part)
         if part and key(part):
             result.append(part)
     return result
@@ -105,41 +106,96 @@ def copy_policy(visible):
         description_policy(visible, field, seen)
 
 
-def description_policy(visible, field, seen):
-    description = visible.get(field, '')
-    raw = re.sub(r'(?im)^\s*#{1,6}\s*', '', text(description))
+def strip_numbering(value):
+    # Strip only a line's explicit list prefixes. A decimal such as 78.19 is a value.
+    value = re.sub(r'(?m)^\s*[-*•]\s+', '', value.replace('\\.', '.'))
+    previous = None
+    while previous != value:
+        previous = value
+        value = re.sub(r'(?m)^\s*\d+[.)](?!\d)[ \t]*', '', value)
+    return value.strip()
+
+
+PARAMETER_LABELS = {
+    'product type', 'size', 'color', 'main color', 'material', 'material (main)',
+    'main material', 'overall product dimension', 'overall product dimensions',
+    'product dimensions', 'package number', 'package contents', 'number of packages',
+    'weight', 'capacity', 'style', 'use case', 'place of origin', 'bed size',
+    'bed frame material', 'bed type', 'box spring requirements', 'wood tone',
+}
+
+
+def description_sections(value):
+    raw = re.sub(r'(?im)^\s*#{1,6}\s*', '', text(value))
     raw = re.sub(r'\*\*([^*]+)\*\*', r'\1', raw)
     raw = re.sub(r'(?i)(?<!\w)('+HEADINGS+r')\s*:', r'\n\1:\n', raw)
+    lines = [strip_numbering(line) for line in raw.splitlines()]
+    lines = [line for line in lines if line]
     sections = {'Features': [], 'Product Information': []}
     heading = 'Features'
-    for line in raw.splitlines():
-        match = re.fullmatch(r'\s*('+HEADINGS+r')\s*:\s*', line, re.I)
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        index += 1
+        match = re.fullmatch(r'\s*('+HEADINGS+r')\s*:?\s*', line, re.I)
         if match:
             heading = 'Product Information' if re.search(r'information|specification', match[1], re.I) else 'Features'
             continue
-        # Structured specifications may be separated by semicolons, not arbitrary commas.
+        # HTML table cells carry an explicit boundary; never pair unrelated free text.
+        cells = [cell.strip() for cell in line.split('\t') if cell.strip()]
+        if len(cells) == 2:
+            sections['Product Information'].append(cells[0].rstrip(':')+': '+cells[1])
+            continue
+        label = line.rstrip(':').strip().casefold()
+        if label in PARAMETER_LABELS and index < len(lines):
+            following = lines[index]
+            if (following.rstrip(':').casefold() not in PARAMETER_LABELS
+                    and not re.fullmatch(HEADINGS+r'\s*:', following, re.I)):
+                sections['Product Information'].append(line.rstrip(':')+': '+following)
+                index += 1
+                continue
         for part in sentences(line.replace('; ', '\n') if heading == 'Product Information' else line):
+            if not re.fullmatch(HEADINGS+r'\s*:?\s*', part, re.I):
+                sections[heading].append(part)
+    return sections
+
+
+def render_sections(sections, seen):
+    output = []
+    for title, values in sections.items():
+        kept = []
+        for part in values:
             alternatives = fingerprints(part)
-            if FORBIDDEN.search(part) or seen.intersection(alternatives):
+            if not alternatives or FORBIDDEN.search(part) or seen.intersection(alternatives):
                 continue
             seen.update(alternatives)
-            sections[heading].append(part)
+            kept.append(part)
+        if kept:
+            output.append('<p><strong>'+title+':</strong></p>\n' + '\n'.join(
+                f'<p>{i}. {html.escape(point)}</p>' for i, point in enumerate(kept, 1)))
+    return '\n'.join(output)
+
+
+def description_policy(visible, field, seen):
+    description = visible.get(field, '')
+    sections = description_sections(description)
     points = [p for values in sections.values() for p in values]
-    if not points:
+    rendered = render_sections(sections, seen)
+    if not rendered:
         if description:
             visible[field] = ''
+    elif len(points) == 1 and points[0] == text(description) and '\n' not in description:
         return
-    # Retain a single already readable line; numbered sections are used for multiple points.
-    if len(points) == 1 and points[0] == text(description) and '\n' not in description:
-        return
-    visible[field] = '\n'.join(
-        '<p><strong>'+title+':</strong></p>\n' + '\n'.join(
-            f'<p>{i}. {html.escape(point)}</p>' for i, point in enumerate(values, 1))
-        for title, values in sections.items() if values)
+    else:
+        visible[field] = rendered
 
 
 def source_specifications(visible, facts):
-    """Append only verified same-SKU specifications, never generated estimates."""
+    """Rebuild from this SKU's source snapshot, never append to generated output."""
+    source_copy = facts.get('content.copy') or {}
+    source_description = source_copy.get('description') or facts.get('detail.description')
+    # Some imports have only attributes. Keep existing prose but rebuild its specs.
+    sections = description_sections(source_description if source_description is not None else visible.get('shortDescription', ''))
     attributes = facts.get('content.attributes') or facts.get('detail.attributes') or {}
     attributes = dict(attributes) if isinstance(attributes, dict) else {}
     for field, label in (('mainColor', 'Color'), ('mainMaterial', 'Material'), ('placeOfOrigin', 'Place of Origin')):
@@ -152,18 +208,32 @@ def source_specifications(visible, facts):
         unit = facts.get('detail.assembledWeightUnit' if field.endswith('Weight') else 'detail.assembledLengthUnit')
         if value not in (None, '') and unit:
             attributes.setdefault(label, f'{value} {unit}')
-    description = visible.get('shortDescription', '')
-    existing = {key(p) for p in sentences(description)}
-    additions = []
+    specifications = {}
+    unkeyed = []
+    for part in sections['Product Information']:
+        if ':' in part:
+            specifications[key(part.split(':', 1)[0])] = part
+        else:
+            unkeyed.append(part)
     for label, value in attributes.items():
         if not isinstance(value, (str, int, float)) or isinstance(value, bool) or not str(value).strip():
             continue
         point = f'{label}: {value}'
-        if not FORBIDDEN.search(point) and key(point) not in existing:
-            additions.append(point)
-    if additions:
-        visible['shortDescription'] = description + '<p><strong>Product Information:</strong></p>' + ''.join(
-            '<p>'+html.escape(p)+'</p>' for p in additions)
+        if not FORBIDDEN.search(point):
+            specifications[key(label)] = point
+    sections['Product Information'] = unkeyed + list(specifications.values())
+    # Replace source brands after rebuilding, not before: the snapshot is immutable.
+    from .listing_templates import replace_brand
+    brands = facts.get('source_brands', []) + [facts.get('source_brand', '')]
+    for title, values in sections.items():
+        sections[title] = [replace_brand(p, brands, visible.get('brand', '')) for p in values]
+    seen = set()
+    for feature in visible.get('keyFeatures', []):
+        for part in sentences(feature):
+            seen.update(fingerprints(part))
+    description = render_sections(sections, seen)
+    if description or 'shortDescription' in visible:
+        visible['shortDescription'] = description
 
 
 def image_urls(visible):

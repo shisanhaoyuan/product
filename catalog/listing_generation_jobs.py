@@ -197,11 +197,14 @@ def run_job(catalog, publisher, jid, ai):
                 write_lock(db);stored,_=checked_context(db,job)
                 if latest_results(db,job['batch_id']).get(sku,{}).get('status','unsubmitted') not in EDITABLE:
                     raise ListingAIError('商品已开始提交，停止写入生成资料')
-                title_changes=normalize_titles(db,[updated],basis,{})
+                title_changes=normalize_titles(db,[updated],basis,{},stored['version'])
                 if title_changes:
                     change=title_changes[0]
-                    report['rows'][sku].setdefault('fields',{})['visible.productName']=dict(kind='user_rule',
-                        value=change['after'],previous_value=change['before'],refs=[],reason='用户指定：目标品牌置于标题开头，移除已识别品牌')
+                    fields=report['rows'][sku].setdefault('fields',{})
+                    if change['before']!=change['after']:
+                        fields['visible.productName']=dict(kind='user_rule',
+                            value=change['after'],previous_value=change['before'],refs=[],reason='用户指定：目标品牌置于标题开头，移除已识别品牌')
+                    fields.update(change['origin_rule'])
                 live_rows=json.loads(stored['rows_json'])
                 for n,value in enumerate(live_rows):
                     if value['platform_sku']==sku:

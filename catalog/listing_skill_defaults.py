@@ -1,7 +1,8 @@
 """Schema-bounded defaults explicitly authorized by the user's listing Skill.
 
 These are business rules, never supplier evidence or model confidence scores.
-Only missing values are filled; actual enum values and existing quantities win.
+Ordinary defaults fill missing values. The fixed China origin rule is an
+explicit exception, applied separately within the actual schema.
 """
 import copy
 import json
@@ -114,3 +115,30 @@ def length_fallback(key, schema, current):
         return None
     value.update(unit=unit, measure=22)
     return adapt(schema, value)
+
+
+ORIGIN_KEY = 'countryoforiginsubstantialtransformation'
+
+
+def fixed_origin(key, schema):
+    return name(key, schema) == ORIGIN_KEY
+
+
+def enforce_origin(row, spec, audit=None):
+    """User-selected listing origin; never overwrite the supplier source facts."""
+    errors = []
+    for section in ('visible', 'orderable'):
+        for key, shape in spec.get(section, {}).get('properties', {}).items():
+            if not fixed_origin(key, shape):
+                continue
+            value = adapt(shape, 'China')
+            path = section+'.'+key
+            if value is None:
+                errors.append(dict(path=path, message='原产国固定规则需要 China，但当前沃尔玛字段不接受此选项'))
+                continue
+            previous = row[section].get(key)
+            row[section][key] = value
+            if audit is not None:
+                audit[path] = dict(kind='user_rule', value=value, previous_value=previous, refs=[],
+                    reason='user_authorized_rule：原产国（实质性转变）固定 China，覆盖旧值；不是供应商来源事实，不由 AI 推测')
+    return errors

@@ -93,7 +93,7 @@ python validation/frontend_state_check.py
 
 ## AI 刊登资料闭环维护
 
-规则版本 v7，当前数据库迁移20。核心模块为 `listing_generation_jobs.py`（任务）、`listing_repair.py`（3轮受限修复）、`listing_prerequisites.py`（真实编码及店铺前提）、`listing_source_evidence.py`（同 SKU 补采）、`listing_vision.py`（受控图片与证据）和 `listing_result_worker.py`（只读轮询与修复草稿）。资料校验复用 `walmart_publishing.validate_document`，禁止另设“AI 完成就视为通过”的路径。
+规则版本 v8，当前数据库迁移20。核心模块为 `listing_generation_jobs.py`（任务）、`listing_repair.py`（3轮受限修复）、`listing_prerequisites.py`（真实编码及店铺前提）、`listing_source_evidence.py`（同 SKU 补采）、`listing_vision.py`（受控图片与证据）和 `listing_result_worker.py`（只读轮询与修复草稿）。资料校验复用 `walmart_publishing.validate_document`，禁止另设“AI 完成就视为通过”的路径。
 
 校验不设固定10分钟过期，来源/资料/店铺/Schema/前提/平台反馈改变后失效。保留人工改动及改后恢复的锁定记录；AI 不改价格、库存、SKU、ASIN、编码、品牌、图片及法律证明字段。真实编码归属与唯一分配必须在事务锁内操作。后台任务不得调用提交接口或库存 PUT；原管理员失权后暂停。后台修复只排草稿，仍需用户确认提交。
 
@@ -130,3 +130,10 @@ python validation/frontend_state_check.py
 2026-11-17 商品展示与刊登资料：商品列表、详情与刊登编辑器展示本系统的店铺批次及逐 SKU 发布状态；ERP 来源店铺不算 Walmart 已发布，取消未提交草稿不显示，真实提交历史保留。预上架缩略图可打开当前 SKU 刊登资料及来源档案。刊登最多8张图（主图+7附图），原始图库保留；生成时识别同 SKU 全图库中最多32张，按真实图片摘要去重，白底图作主图、参数图优先保留，低置信度或识图失败保留来源顺序并记录。前端拒绝超额上传，后端生成、模板复制、保存和校验统一限额；已提交锁定行不改。
 
 商品描述参考 digit-emperor-listing Skill 与原 description_format.py：只用当前 SKU 已核验规格，Features / Product Information 分区编号，HTML 段落实际换行，保留小数、尺寸、单位和缩写；清理厂家、商家、保修、型号、条码、ASIN、排名及评价条款。独立卖点优先，描述去掉与卖点逐句重复的内容，规格按同 SKU 来源补齐，事实不足不复制标题凑数。规则执行在 Python 层，已有可编辑批次重新打开/保存/生成/校验时应用，保留修订及修改前值，价格、库存、条码和 SKU 身份不变。
+
+
+## 2026-11-18 描述幂等与固定原产国
+
+`listing_content.py` 解析旧列表前缀（含转义编号），独立清除无正文的编号；保留数字开头的尺寸和数量，HTML 表格按单元格分界配对参数。`source_specifications` 每次从同 SKU 冻结来源重建并整体替换描述，按参数名覆盖已有规格，再与独立卖点去重。保存流程只规范化现有文案，不反复追加来源文本。回归测试覆盖损坏床商品文案、20次重建与规范化、保存后重开以及非目标字段不变。
+
+`listing_skill_defaults.enforce_origin` 对实际 Schema 的原产国（实质性转变）固定填 China，是高于来源和已有值的用户规则；其余 Skill 默认仍只补缺项。`fill_row`、编辑保存、准备及校验共用；`listing_repair` 排除该字段，前端禁用人工选择并解释规则。没有 China 选项时校验失败，不伪造枚举，不更改来源产地和已提交行。审计保留原值、规则类型及来源区别。内容校验策略升级为 `images8_copy_rebuild_origin_v2`，旧报告需重新校验；生成规则v8避免复用旧任务缓存。没有数据库结构变更。

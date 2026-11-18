@@ -6,6 +6,7 @@ from .listing_ai_client import ListingAIError
 from .listing_generation import (PROTECTED,CONTENT_FIELDS,BLOCKED,RULES,empty,candidate_value,
     fact_reference_exists,summarize_generation_issues,semantic_patch_error,ranked_action)
 from .walmart_listing_schema import sections
+from .listing_skill_defaults import fixed_origin
 
 MAX_REPAIR_ROUNDS=3
 FORBIDDEN=PROTECTED | {'brand','mainImageUrl','productSecondaryImageURL'}
@@ -49,7 +50,7 @@ def repair_fields(row,schema,issues,audit):
             continue
         section,key=path.split('.',1)
         props=spec[section].get('properties',{})
-        if key in FORBIDDEN or key not in props or BLOCKED.search(key):
+        if key in FORBIDDEN or key not in props or BLOCKED.search(key) or fixed_origin(key,props[key]):
             continue
         current=row[section].get(key);previous=audit.get(path,{})
         if previous.get('manual_locked'):

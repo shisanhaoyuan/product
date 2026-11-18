@@ -21,6 +21,12 @@ import ListingSchemaField from './ListingSchemaField.vue';
 import ProductImage from './ProductImage.vue';
 import ListingProductDetails from './ListingProductDetails.vue';
 import ProductStoreHistory from './ProductStoreHistory.vue';
+function fixedOrigin(key: string, schema?: JsonSchema) {
+  const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return [key, schema?.title || ''].some(
+    (value) => normalize(value) === 'countryoforiginsubstantialtransformation',
+  );
+}
 const detailRow = ref<ListingRow>();
 import AppIcon from './AppIcon.vue';
 import ListingPreparationSettings from './ListingPreparationSettings.vue';
@@ -1191,6 +1197,7 @@ onBeforeUnmount(() => {
             />
             <div class="listing-subheading">
               <h4>价格与履约</h4>
+              <p>原产国（实质性转变）固定 China（中国），按用户规则填写，非来源核验结论。</p>
               <p>
                 倍率 ×{{ doc.basis.multiplier }} · 已核验计价基准 {{ money(sourceVariant?.base) }} ·
                 目标库存 {{ sourceVariant?.stock ?? '未核验' }}
@@ -1204,7 +1211,9 @@ onBeforeUnmount(() => {
                 :schema="currentSpec.sections.orderable.properties![key]"
                 :labels="doc.labels"
                 :model-value="current.orderable[key]"
-                :disabled="locked"
+                :disabled="
+                  locked || fixedOrigin(key, currentSpec.sections.orderable.properties![key])
+                "
                 :required="requiredOrderable.includes(key)"
                 :path="'orderable.' + key"
                 :issues="dirty ? [] : fieldIssues(key, 'Orderable')"
@@ -1298,7 +1307,10 @@ onBeforeUnmount(() => {
             <template v-else
               ><div class="listing-subheading">
                 <h3>{{ tab === 'basic' ? '该类目必填属性' : '该类目选填属性' }}</h3>
-                <p>单位、数值及选项均以沃尔玛当前规格为准。</p>
+                <p>
+                  单位、数值及选项均以沃尔玛当前规格为准。原产国（实质性转变）按用户规则固定为
+                  China（中国），保存时自动应用，不由 AI 改写。
+                </p>
               </div>
               <div v-if="tab === 'optional'" class="listing-inline-controls">
                 <input
@@ -1323,7 +1335,7 @@ onBeforeUnmount(() => {
                 :schema="visibleProperties[key]"
                 :labels="doc.labels"
                 :model-value="current.visible[key]"
-                :disabled="locked"
+                :disabled="locked || fixedOrigin(key, visibleProperties[key])"
                 :required="required.includes(key)"
                 :path="'visible.' + key"
                 :issues="dirty ? [] : fieldIssues(key)"
@@ -1337,7 +1349,9 @@ onBeforeUnmount(() => {
                   :schema="currentSpec.sections.orderable.properties![key]"
                   :labels="doc.labels"
                   :model-value="current.orderable[key]"
-                  :disabled="locked"
+                  :disabled="
+                    locked || fixedOrigin(key, currentSpec.sections.orderable.properties![key])
+                  "
                   :path="'orderable.' + key"
                   :issues="dirty ? [] : fieldIssues(key, 'Orderable')"
                   @update:model-value="update('orderable', key, $event)"

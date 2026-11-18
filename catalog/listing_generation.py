@@ -10,9 +10,9 @@ from jsonschema import Draft7Validator
 from .listing_ai_client import ListingAIError
 from .listing_titles import branded_title, source_brands
 from .walmart_listing_schema import plain, sections, feed_item, schema_errors, identifier_errors, precise_validator
-from .listing_skill_defaults import has_default, skill_default, length_fallback
+from .listing_skill_defaults import has_default, skill_default, length_fallback, fixed_origin, enforce_origin
 
-RULES_VERSION = 'listing-generation-v7'
+RULES_VERSION = 'listing-generation-v8'
 RULES = Path(__file__).with_name('listing_generation_rules.md').read_text()
 BLOCKED = re.compile(r'prop.?65|warranty|certif|nrtl|chemical|origin|warning|exempt|gtin|upc|ean|model|partnumber', re.I)
 PROTECTED = {'sku','productIdentifiers','inventory','price','msrp','SkuUpdate','ProductIdUpdate','fulfillmentCenterID'}
@@ -400,7 +400,7 @@ def fill_row(row, schema, facts, ai, provenance):
                     provenance[section+'.'+key] = dict(kind='schema_cleanup',value=None,previous_value=value,
                         refs=[],reason='当前商品类型不接受此旧字段，原值保留在审计中')
     prepare_copy(row,facts,provenance)
-    problems = []
+    problems = enforce_origin(row,spec,provenance)
     attempted = set()
     for turn in range(3):
         missing = {}
@@ -411,7 +411,7 @@ def fill_row(row, schema, facts, ai, provenance):
             if section == 'visible':
                 needed |= {'productName','brand','shortDescription','keyFeatures','mainImageUrl'}
             for key in sorted(needed):
-                if key in PROTECTED or key not in props:
+                if key in PROTECTED or key not in props or fixed_origin(key,props[key]):
                     continue
                 field = section + '.' + key
                 current = row[section].get(key)
@@ -510,7 +510,7 @@ def fill_row(row, schema, facts, ai, provenance):
     for section in ('visible','orderable'):
         props = spec[section].get('properties', {})
         for key in required_keys(spec[section],row[section]):
-            if key in PROTECTED or key not in props:
+            if key in PROTECTED or key not in props or fixed_origin(key,props[key]):
                 continue
             current = row[section].get(key)
             if current is not None and candidate_value(props[key],current) is not None and not empty(current):
@@ -529,10 +529,10 @@ def fill_row(row, schema, facts, ai, provenance):
     for field in ('shortDescription','longDescription','keyFeatures','mainImageUrl','productSecondaryImageURL'):
         if row['visible'].get(field)!=before_content.get(field):
             provenance['visible.'+field]=dict(kind='user_rule',value=row['visible'].get(field),previous_value=before_content.get(field),
-                refs=[r for r in ('content.attributes','detail.attributes') if r in facts] if field=='shortDescription' else [],
-                reason='用户规则：同 SKU 已核验规格补充，描述与卖点逐句去重分区编号，刊登最多8张图')
+                refs=[r for r in ('content.copy','detail.description','content.attributes','detail.attributes') if r in facts] if field=='shortDescription' else [],
+                reason='用户规则：从同 SKU 来源整理参数并整体覆盖描述，不追加旧编号；描述与卖点去重，刊登最多8张图')
     # A later conditional pass may have filled a previously missing field.
-    problems = [p for p in problems if not p['path'] or
+    problems = [p for p in problems if '原产国固定规则' in p['message'] or not p['path'] or
                 empty(row.get(p['path'].split('.')[0], {}).get(p['path'].split('.')[-1]))]
     return row, problems
 

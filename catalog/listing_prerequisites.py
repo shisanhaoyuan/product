@@ -110,7 +110,7 @@ def identifier_ownership_errors(db,doc,row,item):
 
 
 def validation_current(db, doc, bound, report):
-    if (not report or report.get('content_policy')!='images8_copy_sections_v1' or report.get('title_policy')!='brand_prefix_v1' or report.get('revision')!=doc['revision']
+    if (not report or report.get('content_policy')!='images8_copy_rebuild_origin_v2' or report.get('title_policy')!='brand_prefix_v1' or report.get('revision')!=doc['revision']
             or not bound or bound['status']!='verified' or not bound['encrypted_credentials']
             or report.get('binding_revision')!=bound['revision'] or report.get('partner_id')!=bound['partner_id']
             or report.get('resources_digest')!=resource_digest(db,bound)):

@@ -116,7 +116,7 @@ def test_net_content_real_units_and_preserved_quantities(units,current,expected)
     assert skill_default('shippingWeight',field,None,{})[0] is None
 
 
-def test_source_wins_and_existing_partial_values_legal_yes_and_ids_are_protected():
+def test_fixed_origin_overrides_source_but_other_values_and_ids_are_protected():
     row=listing();row['visible'].update(isProp65WarningRequired='Yes',
         assembledProductHeight={'measure':38,'unit':'in'})
     schema=spec();props=sections(schema,PT)['visible']['properties']
@@ -125,7 +125,9 @@ def test_source_wins_and_existing_partial_values_legal_yes_and_ids_are_protected
     row['visible']['netContent']={'unit':'Each','measure':8}
     facts={'detail.placeOfOrigin':'Vietnam','content.copy':{'title':'Chair'}}
     audit={};result,issues=fill_row(row,schema,facts,Offline(),audit)
-    assert result['visible']['countryOfOriginSubstantialTransformation']=='Vietnam'
+    assert result['visible']['countryOfOriginSubstantialTransformation']=='China'
+    assert audit['visible.countryOfOriginSubstantialTransformation']['kind']=='user_rule'
+    assert facts['detail.placeOfOrigin']=='Vietnam'
     assert result['visible']['isProp65WarningRequired']=='Yes'
     assert result['visible']['assembledProductHeight']==row['visible']['assembledProductHeight']
     assert result['visible']['netContent']=={'unit':'Case','measure':8}
@@ -175,3 +177,23 @@ def test_known_source_height_with_decimal_precision_wins_over_skill_fallback():
     audit={};result,_=fill_row(listing(),schema,facts,Offline(),audit)
     assert result['visible']['assembledProductHeight']=={'measure':32.3,'unit':'in'}
     assert audit['visible.assembledProductHeight']['kind']=='source'
+
+
+def test_fixed_origin_replaces_existing_value_and_never_asks_ai_even_if_unsupported():
+    from catalog.listing_repair import repair_fields
+    row=listing();field='countryOfOriginSubstantialTransformation'
+    row['visible'][field]='Vietnam'
+    schema=spec();props=sections(schema,PT)['visible']['properties']
+    props[field]={'type':'string','enum':['China','Vietnam']}
+    facts={'detail.placeOfOrigin':'Vietnam'}
+    audit={};result,issues=fill_row(row,schema,facts,Offline(),audit)
+    assert result['visible'][field]=='China'
+    assert audit['visible.'+field]['previous_value']=='Vietnam'
+    assert audit['visible.'+field]['refs']==[]
+    again,_=fill_row(result,schema,facts,Offline(),{})
+    assert again==result
+    props[field]['enum']=['Vietnam']
+    result,issues=fill_row(row,schema,facts,Offline(),{})
+    assert result['visible'][field]=='Vietnam'
+    assert any(i['path']=='visible.'+field and '不接受' in i['message'] for i in issues)
+    assert 'visible.'+field not in repair_fields(result,schema,issues,{'visible.'+field:dict(kind='source',value='Vietnam')})

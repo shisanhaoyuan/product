@@ -456,17 +456,24 @@ def check_rows(db, doc, session, binding_row, skus=None):
                 entry, validation_schema = feed_item(stable_feed_row(db,row),schema,doc['version'],os.environ.get('CATALOG_PUBLIC_ORIGIN',''),exemption=exempt,
                     stock=int(variant['stock']) if str(variant.get('stock')) in ('0','10') else None)
                 errors.extend(schema_errors(validation_schema,entry,doc['version']))
+                from .listing_skill_defaults import enforce_origin
+                origin_check=copy.deepcopy(row)
+                errors.extend(enforce_origin(origin_check,sections(schema,row['product_type'])))
+                for section in ('visible','orderable'):
+                    for key,value in origin_check[section].items():
+                        if value!=row[section].get(key):
+                            errors.append(dict(path=section+'.'+key,message='原产国须按用户固定规则填写 China，请重新保存资料'))
                 payloads[sku] = entry
             except (ValueError,VaultError) as exc:
                 errors.append(dict(path='visible.mainImageUrl',message=str(exc)))
         results[sku] = dict(valid=not errors,errors=errors)
     from .listing_prerequisites import resource_digest
-    return dict(content_policy='images8_copy_sections_v1',title_policy='brand_prefix_v1',feedback_digest=fingerprint(latest_results(db,doc['batch_id'])),resources_digest=resource_digest(db,binding_row),id=uuid.uuid4().hex,revision=doc['revision'],at=int(time.time()),binding_revision=binding_row['revision'],
+    return dict(content_policy='images8_copy_rebuild_origin_v2',title_policy='brand_prefix_v1',feedback_digest=fingerprint(latest_results(db,doc['batch_id'])),resources_digest=resource_digest(db,binding_row),id=uuid.uuid4().hex,revision=doc['revision'],at=int(time.time()),binding_revision=binding_row['revision'],
                 partner_id=binding_row['partner_id'],rows=results,schema_digests=schema_digests,payloads=payloads,
                 valid_count=sum(r['valid'] for r in results.values()))
 
 
-def normalize_titles(db, rows, basis, latest):
+def normalize_titles(db, rows, basis, latest, version=None):
     changes=[]
     for row in rows:
         if latest.get(row['platform_sku'],{}).get('status','unsubmitted') not in EDITABLE:
@@ -474,6 +481,14 @@ def normalize_titles(db, rows, basis, latest):
         source=db.execute('SELECT data_json FROM current_listings WHERE id=?',(row['listing_id'],)).fetchone()
         brands=source_brands(json.loads(source[0])) if source else []
         old_content=copy.deepcopy(row['visible'])
+        old_orderable=copy.deepcopy(row['orderable'])
+        origin_audit={}
+        if version:
+            bound=db.execute('SELECT * FROM walmart_accounts WHERE store_id=?',(basis['store']['id'],)).fetchone()
+            schema=cache_value(db,bound,'spec',version,row['product_type']) if bound else None
+            if schema:
+                from .listing_skill_defaults import enforce_origin
+                enforce_origin(row,sections(schema,row['product_type']),origin_audit)
         from .listing_templates import replace_brand
         for field in ('shortDescription','longDescription','keyFeatures'):
             if field in row['visible']:
@@ -483,9 +498,10 @@ def normalize_titles(db, rows, basis, latest):
         title=branded_title(previous,basis['brand'],brands)
         if title!=previous:
             row['visible']['productName']=title
-        if row['visible']!=old_content:
+        if row['visible']!=old_content or row['orderable']!=old_orderable:
             changes.append(dict(platform_sku=row['platform_sku'],before=previous,after=title,
-                content_before=old_content,content_after=copy.deepcopy(row['visible'])))
+                content_before=old_content,content_after=copy.deepcopy(row['visible']),
+                orderable_before=old_orderable,orderable_after=copy.deepcopy(row['orderable']),origin_rule=origin_audit))
     return changes
 
 
@@ -493,7 +509,7 @@ def normalize_document_titles(db, doc):
     """Caller holds write lock. Explicit user rule also applies to existing drafts."""
     basis=unchanged_sources(db,doc)
     rows=json.loads(doc['rows_json'])
-    changes=normalize_titles(db,rows,basis,latest_results(db,doc['batch_id']))
+    changes=normalize_titles(db,rows,basis,latest_results(db,doc['batch_id']),doc['version'])
     if changes:
         db.execute('UPDATE walmart_listing_documents SET rows_json=?,revision=revision+1,validation_json=?,updated_at=? WHERE batch_id=?',
             (encoded(rows),'{}',now(),doc['batch_id']))
@@ -593,7 +609,7 @@ def publishing_routes(catalog):
                     raise HTTPException(409,'正在处理、结果未知或已成功的商品不能修改；请先查询处理结果')
                 if any(k in r['orderable'] for k in ('sku','productIdentifiers','inventory','SkuUpdate','ProductIdUpdate')) or any(k in r['extra'] for k in ('Visible','Orderable')):
                     raise HTTPException(422,'店铺 SKU 和商品编码只能通过专用字段设置')
-            normalize_titles(db,rows,json.loads(doc['basis_json']),latest)
+            rule_changes=normalize_titles(db,rows,json.loads(doc['basis_json']),latest,data.version)
             if data.version!=doc['version'] and latest:
                 raise HTTPException(409,'已有提交记录的批次不能切换规格版本，请保留原版本')
             raw=encoded(rows)
@@ -602,7 +618,7 @@ def publishing_routes(catalog):
             if raw!=doc['rows_json'] or data.version!=doc['version']:
                 db.execute('UPDATE walmart_listing_documents SET revision=revision+1,version=?,rows_json=?,validation_json=?,updated_at=? WHERE batch_id=?',
                     (data.version,raw,'{}',now(),bid))
-                event(db,bid,request,'edit',{'revision':doc['revision']+1,'before':old,'after':rows})
+                event(db,bid,request,'edit',{'revision':doc['revision']+1,'before':old,'after':rows,'rule_changes':rule_changes})
             return public_document(db,bid)
 
     @router.post('/refresh-source')
