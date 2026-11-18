@@ -35,14 +35,36 @@ def json_text(column, *path, postgres=False):
 
 
 def store_clause(postgres):
-    store_id = json_text('b.preview_json', 'store', 'id', postgres=postgres)
+    """Only the current SKU claim's API-confirmed publication counts as listed.
+
+    A feed ID/SUCCESS ingestion or a draft alone is not publication. Keep row,
+    outcome, claim and partner identities aligned, including multi-product feeds.
+    """
+    if postgres:
+        rows = 'jsonb_array_elements(a.rows_json::jsonb) AS submitted(value)'
+        outcomes = 'jsonb_each(a.results_json::jsonb) AS outcome(key,value)'
+    else:
+        rows = 'json_each(a.rows_json) AS submitted'
+        outcomes = 'json_each(a.results_json) AS outcome'
+    def field(column, name):
+        return json_text(column, name, postgres=postgres)
     return f'''EXISTS (
-        SELECT 1 FROM listings related JOIN prelisting_items i ON i.listing_id=related.id
-        JOIN prelisting_batches b ON b.id=i.batch_id
-        WHERE related.product_id=listings.product_id AND {store_id}=?
-        AND ((b.status!='cancelled' AND NOT EXISTS
-            (SELECT 1 FROM prelisting_batch_trash t WHERE t.batch_id=b.id))
-            OR EXISTS (SELECT 1 FROM walmart_listing_attempts a WHERE a.batch_id=b.id)))'''
+        SELECT 1 FROM listings related
+        JOIN prelisting_items i ON i.listing_id=related.id
+        JOIN walmart_listing_attempts a ON a.batch_id=i.batch_id
+        JOIN walmart_listing_claims claim ON claim.attempt_id=a.id
+            AND claim.batch_id=a.batch_id AND claim.store_id=a.store_id
+        JOIN walmart_accounts account ON account.store_id=a.store_id
+            AND account.partner_id=a.partner_id
+        CROSS JOIN {rows}
+        CROSS JOIN {outcomes}
+        WHERE related.product_id=listings.product_id AND CAST(a.store_id AS TEXT)=?
+            AND a.feed_id<>''
+            AND {field('submitted.value', 'listing_id')}=related.id
+            AND {field('submitted.value', 'platform_sku')}=claim.platform_sku
+            AND outcome.key=claim.platform_sku
+            AND {field('outcome.value', 'status')}='published'
+            AND {field('outcome.value', 'published_status')}='PUBLISHED')'''
 
 
 def price_clause(direction, postgres):

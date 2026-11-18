@@ -1,6 +1,8 @@
 import json
 import uuid
 
+import pytest
+
 from catalog.models import ImportBundle
 from catalog.prelisting import selected_rows, PlanInput
 from test_giga import settings
@@ -31,11 +33,21 @@ def new_prices(catalog, values):
     catalog.ingest(ImportBundle(namespace=catalog.export()[0]['namespace'],label='later',listings=rows))
 
 
-def test_giga_price_filters_combine_store_search_export_and_selection(warehouse):
-    c,catalog,_,_=warehouse
-    b,_=create(c,plan(c))
+def publish(env):
+    c, _, _, _, _, base, _ = env
+    attempt = send(env, ready(env))
+    response = c.post(base + f"/attempts/{attempt['id']}/refresh")
+    assert response.status_code == 200, response.text
+    assert all(r['published_status'] == 'PUBLISHED' for r in response.json()['results'].values())
+    return attempt
+
+
+def test_giga_price_filters_combine_store_search_export_and_selection(publishing):
+    c,catalog,_,_,b,_,_=publishing
+    publish(publishing)
     sid=str(b['preview']['store']['id'])
-    assert ids(c,price_change='unknown')=={'W1','W2'}
+    # Publishing fixture refreshes W2's UPC, producing two equal price observations.
+    assert ids(c,price_change='unknown')=={'W1'}
     new_prices(catalog,{'W1':80,'W2':60})
     assert ids(c,price_change='up')=={'W1'}
     assert ids(c,price_change='down')=={'W2'}
@@ -50,13 +62,11 @@ def test_giga_price_filters_combine_store_search_export_and_selection(warehouse)
     with catalog.connect() as db:
         selected=selected_rows(catalog,db,data)
     assert [r['sku'] for r in selected]==['W1']
-    c.post(f"/api/prelisting/batches/{b['id']}/action",json={'action':'cancel'})
-    assert ids(c,listed_store=sid)==set()
 
 
-def test_actual_submission_keeps_store_history_even_if_batch_cancelled(publishing):
+def test_confirmed_publication_survives_local_batch_cancellation(publishing):
     c,catalog,_,_,b,_,_=publishing
-    send(publishing,ready(publishing))
+    publish(publishing)
     with catalog.connect() as db:
         db.execute("UPDATE prelisting_batches SET status='cancelled' WHERE id=?",(b['id'],))
     assert ids(c,listed_store=str(b['preview']['store']['id']))=={'W1','W2'}
@@ -111,9 +121,10 @@ def test_missing_child_history_cannot_be_reported_as_unchanged(tmp_path):
     assert ids(c,price_change='unknown')=={item.sku}
 
 
-def test_multi_filters_or_within_group_and_between_groups(warehouse):
-    c,catalog,_,_=warehouse
-    b,_=create(c,plan(c));sid=str(b['preview']['store']['id'])
+def test_multi_filters_or_within_group_and_between_groups(publishing):
+    c,catalog,_,_,b,_,_=publishing
+    publish(publishing)
+    sid=str(b['preview']['store']['id'])
     new_prices(catalog,{'W1':80,'W2':60})
     multi=json.dumps({'price_change':['up','down'],'listed_store':[sid,'999999']})
     assert ids(c,multi=multi)=={'W1','W2'}
@@ -134,3 +145,99 @@ def test_multi_filters_or_within_group_and_between_groups(warehouse):
     for invalid in ({'source':['Amazon']},{'date':'today'},{'price_change':['invalid']},{'date':['x']*51}):
         assert c.get('/api/products',params={'multi':json.dumps(invalid)}).status_code==422
         assert c.get('/api/export.csv',params={'multi':json.dumps(invalid)}).status_code==422
+
+
+def test_store_filter_excludes_drafts_submission_and_requires_matching_api_feedback(publishing):
+    c, catalog, _, _, batch, base, remote = publishing
+    sid = str(batch['preview']['store']['id'])
+    assert ids(c, listed_store=sid) == set()  # Prepared local draft.
+    doc = ready(publishing)
+    assert ids(c, listed_store=sid) == set()  # Local validation is not publication.
+    attempt = send(publishing, doc)
+    assert ids(c, listed_store=sid) == set()  # feedId alone is not publication.
+    first = doc['rows'][0]
+    other = doc['rows'][1]
+    remote.item_status[other['platform_sku']] = 'DATA_ERROR'
+    response = c.post(base + f"/attempts/{attempt['id']}/refresh")
+    assert response.status_code == 200, response.text
+    assert ids(c, listed_store=sid) == {first['source_sku']}
+    exported = c.get('/api/export.csv', params={'listed_store': sid}).text
+    assert first['source_sku'] in exported and other['source_sku'] not in exported
+    query = PlanInput.model_validate(plan(c) | {'filters': {'listed_store': sid}})
+    with catalog.connect() as db:
+        assert {r['sku'] for r in selected_rows(catalog, db, query)} == {first['source_sku']}
+    remote.item_override = 'WRONG-SKU'
+    response = c.post(base + f"/attempts/{attempt['id']}/refresh")
+    assert response.status_code == 200, response.text
+    assert ids(c, listed_store=sid) == set()  # New failed readback supersedes success.
+
+
+@pytest.mark.parametrize('status,published_status', [
+    ('processing', ''), ('sending', ''), ('unknown', ''), ('failed', ''),
+    ('rejected', ''), ('unpublished', 'UNPUBLISHED'), ('stock_pending', ''),
+    ('ingested', ''), ('success', ''), ('published', ''), ('published', 'UNPUBLISHED'),
+])
+def test_store_filter_rejects_nonpublication_results(publishing, status, published_status):
+    c, catalog, _, _, batch, _, _ = publishing
+    attempt = publish(publishing)
+    with catalog.connect() as db:
+        row = db.execute('SELECT results_json FROM walmart_listing_attempts WHERE id=?', (attempt['id'],)).fetchone()
+        outcomes = json.loads(row[0])
+        for outcome in outcomes.values():
+            outcome.update(status=status, published_status=published_status)
+        db.execute('UPDATE walmart_listing_attempts SET results_json=? WHERE id=?', (json.dumps(outcomes), attempt['id']))
+    assert ids(c, listed_store=str(batch['preview']['store']['id'])) == set()
+
+
+@pytest.mark.parametrize('change', ['new_claim', 'other_partner', 'mismatched_row', 'missing_feed'])
+def test_old_or_mismatched_publication_does_not_match_store(publishing, change):
+    c, catalog, _, _, batch, _, _ = publishing
+    attempt = publish(publishing)
+    sid = str(batch['preview']['store']['id'])
+    with catalog.connect() as db:
+        if change == 'other_partner':
+            db.execute("UPDATE walmart_accounts SET partner_id='different' WHERE store_id=?", (int(sid),))
+        elif change == 'mismatched_row':
+            row = db.execute('SELECT rows_json FROM walmart_listing_attempts WHERE id=?', (attempt['id'],)).fetchone()
+            submitted = json.loads(row[0])
+            for value in submitted: value['platform_sku'] = 'other'
+            db.execute('UPDATE walmart_listing_attempts SET rows_json=? WHERE id=?', (json.dumps(submitted), attempt['id']))
+        elif change == 'missing_feed':
+            db.execute("UPDATE walmart_listing_attempts SET feed_id='' WHERE id=?", (attempt['id'],))
+        else:
+            old = dict(db.execute('SELECT * FROM walmart_listing_attempts WHERE id=?', (attempt['id'],)).fetchone())
+            old.update(id=uuid.uuid4().hex, request_key=uuid.uuid4().hex, feed_id='new-feed', state='processing', results_json='{}')
+            db.execute('INSERT INTO walmart_listing_attempts (' + ','.join(old) + ') VALUES (' + ','.join('?' for _ in old) + ')', list(old.values()))
+            db.execute('UPDATE walmart_listing_claims SET attempt_id=? WHERE attempt_id=?', (old['id'], attempt['id']))
+    assert ids(c, listed_store=sid) == set()
+
+
+def test_draft_in_second_store_does_not_inherit_first_store_publication(publishing):
+    c, _, _, _, batch, _, _ = publishing
+    publish(publishing)
+    first_store = str(batch['preview']['store']['id'])
+    second_store = next(s for s in c.get('/api/listing-stores').json() if s['name'] == 'MYZ-L-18')
+    create(c, plan(c, store_id=second_store['id']))
+    assert ids(c, listed_store=first_store) == {'W1', 'W2'}
+    assert ids(c, listed_store=str(second_store['id'])) == set()
+    assert ids(c, multi=json.dumps({'listed_store': [first_store, str(second_store['id'])]})) == {'W1', 'W2'}
+
+
+def test_new_unpublished_api_response_removes_previous_match(publishing):
+    import httpx
+    c, _, _, _, batch, base, remote = publishing
+    attempt = publish(publishing)
+    sid = str(batch['preview']['store']['id'])
+    assert ids(c, listed_store=sid) == {'W1', 'W2'}
+    original = remote.handler
+    def handler(request):
+        if request.url.path.startswith('/v3/items/'):
+            return httpx.Response(200, json={'ItemResponse': [{
+                'sku': request.url.path.rsplit('/', 1)[-1], 'publishedStatus': 'UNPUBLISHED',
+                'unpublishedReasons': {'reason': ['Not currently published']}}]})
+        return original(request)
+    from catalog.walmart_publishing_client import WalmartPublishingClient
+    c.app.state.walmart_publisher = WalmartPublishingClient(httpx.MockTransport(handler))
+    response = c.post(base + f"/attempts/{attempt['id']}/refresh")
+    assert response.status_code == 200, response.text
+    assert ids(c, listed_store=sid) == set()

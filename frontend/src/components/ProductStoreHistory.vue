@@ -16,7 +16,7 @@ const labels: Record<string, string> = {
 </script>
 <template>
   <div class="store-history" @click.stop>
-    <strong>店铺上架记录</strong>
+    <strong>店铺处理记录（含预上架）</strong>
     <span v-if="!entries?.length" class="muted">暂无记录</span>
     <details v-else>
       <summary>{{ [...new Set(entries.map((e) => e.store_name))].join('、') }}</summary>
