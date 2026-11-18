@@ -981,27 +981,32 @@
 }
 .listing-photo-card figcaption {
   min-height: 44px;
-  padding: 6px 9px;
+  padding: 6px 7px;
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 4px;
   font-size: 13px;
   background: #f2f6fa;
 }
 .listing-photo-card figcaption > span {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1 1 auto;
   margin-right: auto;
   white-space: nowrap;
+  text-overflow: ellipsis;
   color: #40566b;
   font-weight: 600;
 }
 .listing-photo-card .listing-photo-make-main {
-  min-height: 31px;
-  padding: 0 10px;
+  flex: 0 0 auto;
+  min-height: 29px;
+  padding: 0 7px;
   border: 1px solid #c4d3e1;
   border-radius: 9px;
   background: #fff;
   color: #526f8e;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -1013,9 +1018,9 @@
 .listing-photo-card .listing-photo-remove {
   display: inline-grid;
   place-items: center;
-  flex: 0 0 31px;
-  width: 31px;
-  height: 31px;
+  flex: 0 0 29px;
+  width: 29px;
+  height: 29px;
   padding: 0;
   border: 1px solid #d6e0e9;
   border-radius: 9px;
