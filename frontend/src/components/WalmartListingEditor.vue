@@ -134,9 +134,29 @@ const photos = computed(() =>
     ...((current.value?.visible.productSecondaryImageURL as string[]) || []),
   ].filter((url): url is string => typeof url === 'string' && !!url),
 );
+const draggingPhotoIndex = ref<number | null>(null);
 function setPhotos(urls: string[]) {
   update('visible', 'mainImageUrl', urls[0]);
   update('visible', 'productSecondaryImageURL', [...new Set(urls)].slice(1));
+}
+function reorderPhoto(from: number, to: number) {
+  if (from === to || from < 0 || to < 0 || from >= photos.value.length || to >= photos.value.length)
+    return;
+  const reordered = [...photos.value];
+  const [photo] = reordered.splice(from, 1);
+  reordered.splice(to, 0, photo);
+  setPhotos(reordered);
+}
+function startPhotoDrag(event: DragEvent, index: number) {
+  if (locked.value) return;
+  draggingPhotoIndex.value = index;
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', String(index));
+  }
+}
+function finishPhotoDrag() {
+  draggingPhotoIndex.value = null;
 }
 function enlarge(url: string) {
   zoomUrl.value = url;
@@ -1316,7 +1336,7 @@ onBeforeUnmount(() => {
             <div class="listing-subheading">
               <h4>商品图片</h4>
               <p>
-                已选 {{ photos.length }} 张 · 默认优选 8 张，可自由增减。第一张为主图，点击可放大。
+                已选 {{ photos.length }} 张 · 默认优选 8 张，可自由增减。拖动图片可调整顺序，第一张为主图。
               </p>
               <div v-if="!locked" class="listing-image-actions">
                 <label class="btn listing-image-action upload-action" :class="{ disabled: busy }">
@@ -1340,7 +1360,17 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <div class="listing-photo-gallery" data-listing-path="visible.mainImageUrl">
-              <figure v-for="(url, i) in photos" :key="url + i" class="listing-photo-card">
+              <figure
+                v-for="(url, i) in photos"
+                :key="url + i"
+                class="listing-photo-card"
+                :class="{ 'is-dragging': draggingPhotoIndex === i, 'is-drop-target': draggingPhotoIndex !== null && draggingPhotoIndex !== i }"
+                :draggable="!locked"
+                @dragstart="startPhotoDrag($event, i)"
+                @dragover.prevent
+                @drop.prevent="draggingPhotoIndex !== null && reorderPhoto(draggingPhotoIndex, i); finishPhotoDrag()"
+                @dragend="finishPhotoDrag"
+              >
                 <button
                   class="listing-photo-zoom"
                   :aria-label="'放大图片 ' + (i + 1)"

@@ -879,6 +879,27 @@
   border: 1px solid var(--listing-line);
   border-radius: 10px;
   overflow: hidden;
+  transition:
+    opacity 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    transform 140ms ease;
+}
+.listing-photo-card[draggable='true'] {
+  cursor: grab;
+}
+.listing-photo-card[draggable='true']:active {
+  cursor: grabbing;
+}
+.listing-photo-card.is-dragging {
+  opacity: 0.42;
+  transform: scale(0.97);
+}
+.listing-photo-card.is-drop-target {
+  border-color: #88a5be;
+}
+.listing-photo-card.is-drop-target:hover {
+  box-shadow: 0 0 0 2px #88a5be55;
 }
 .listing-photo-zoom {
   display: block;
