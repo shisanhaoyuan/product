@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import AppIcon from './AppIcon.vue';
 
 const props = defineProps<{
@@ -7,9 +7,26 @@ const props = defineProps<{
   disabled?: boolean;
   label: string;
   options: { value: string; label: string }[];
+  searchable?: boolean;
+  searchPlaceholder?: string;
 }>();
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>();
 const root = ref<HTMLDetailsElement>();
+const searchInput = ref<HTMLInputElement>();
+const query = ref('');
+const filteredOptions = computed(() => {
+  const keyword = query.value.trim().toLocaleLowerCase();
+  return props.searchable && keyword
+    ? props.options.filter((item) => item.label.toLocaleLowerCase().includes(keyword))
+    : props.options;
+});
+async function toggled() {
+  query.value = '';
+  if (root.value?.open && props.searchable) {
+    await nextTick();
+    searchInput.value?.focus();
+  }
+}
 const current = computed(
   () => props.options.find((item) => item.value === props.modelValue)?.label || props.label,
 );
@@ -40,6 +57,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', outside));
     class="filter-select"
     @focusout="leave"
     @keydown.esc.prevent.stop="close(true)"
+    @toggle="toggled"
   >
     <summary
       :aria-label="`${label}：${current}`"
@@ -50,8 +68,19 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', outside));
       <AppIcon name="ChevronRight" />
     </summary>
     <div class="filter-select-options" role="group" :aria-label="label">
+      <div v-if="searchable" class="filter-select-search">
+        <input
+          ref="searchInput"
+          v-model="query"
+          type="search"
+          :aria-label="'搜索' + label"
+          :placeholder="searchPlaceholder || '输入关键词搜索'"
+          :disabled="disabled"
+          @keydown.enter.prevent="filteredOptions.length === 1 && choose(filteredOptions[0]!.value)"
+        />
+      </div>
       <button
-        v-for="item in options"
+        v-for="item in filteredOptions"
         :key="item.value"
         type="button"
         :disabled="disabled"
@@ -61,6 +90,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', outside));
         <span>{{ item.label }}</span>
         <AppIcon v-if="modelValue === item.value" name="Check" />
       </button>
+      <p v-if="!filteredOptions.length" class="filter-select-empty">没有匹配结果，请更换关键词</p>
     </div>
   </details>
 </template>
@@ -146,5 +176,25 @@ summary:focus-visible {
 .filter-select-options button[aria-pressed='true'] {
   background: var(--accent-soft);
   color: var(--accent);
+}
+.filter-select-search {
+  position: sticky;
+  top: -5px;
+  padding: 5px 0 8px;
+  background: #fff;
+}
+.filter-select-search input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: inherit;
+}
+.filter-select-empty {
+  padding: 10px;
+  color: #64758d;
+  font-size: 13px;
 }
 </style>

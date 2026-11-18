@@ -232,7 +232,7 @@ class Catalog:
             return counts
 
     def filter_sql(self, q="", store="", brand="", status="", date="", category="", seller_status="",
-                   listing_count_min=None, listing_count_max=None, source="", inventory_status="", identifiers=""):
+                   listing_count_min=None, listing_count_max=None, source="", inventory_status="", identifiers="", listed_store="", price_change=""):
         clauses, args = ["1=1"], []
         if source:
             clauses.append("listings.product_id IN (SELECT id FROM products WHERE source=?)")
@@ -246,6 +246,13 @@ class Catalog:
             else:
                 path = '$.source_facts.giga.inventory.sellerInventoryInfo.sellerAvailableInventory'
                 clauses.append(f"json_type(data_json,'{path}')='integer' AND json_extract(data_json,'{path}')=0")
+        if listed_store:
+            from .product_filters import store_clause
+            clauses.append(store_clause(self.postgres))
+            args.append(str(listed_store))
+        if price_change in {'up', 'down', 'unchanged', 'unknown'}:
+            from .product_filters import price_clause
+            clauses.append(price_clause(price_change, self.postgres))
         if q:
             clauses.append(f"{'strpos' if self.postgres else 'instr'}(search_text,?)>0"); args.append(q.casefold())
         batch_clause, batch_args = identifier_sql(identifiers, self.postgres)
@@ -300,10 +307,10 @@ class Catalog:
         return query, args
 
     def find(self, q="", store="", brand="", status="", date="", page=1, page_size=24, category="", seller_status="", deduplicate=False,
-             listing_count_min=None, listing_count_max=None, source="", inventory_status="", identifiers=""):
+             listing_count_min=None, listing_count_max=None, source="", inventory_status="", identifiers="", listed_store="", price_change=""):
         query, args = self.selection_sql(q=q,store=store,brand=brand,status=status,date=date,
                                          category=category,seller_status=seller_status,deduplicate=deduplicate,
-                                         listing_count_min=listing_count_min,listing_count_max=listing_count_max,source=source,inventory_status=inventory_status,identifiers=identifiers)
+                                         listing_count_min=listing_count_min,listing_count_max=listing_count_max,source=source,inventory_status=inventory_status,identifiers=identifiers,listed_store=listed_store,price_change=price_change)
         with self.connect() as db:
             read_snapshot(db)
             total = db.execute(f"SELECT COUNT(*) FROM ({query}) AS listings",args).fetchone()[0]

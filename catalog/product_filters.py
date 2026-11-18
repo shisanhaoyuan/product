@@ -1,0 +1,86 @@
+"""Read-only product filters shared by pagination, export and batch selection."""
+
+
+def json_text(column, *path, postgres=False):
+    if postgres:
+        return f"({column}::jsonb #>> '{{{','.join(path)}}}')"
+    return f"CAST(json_extract({column},'$.{'.'.join(path)}') AS TEXT)"
+
+
+def store_clause(postgres):
+    store_id = json_text('b.preview_json', 'store', 'id', postgres=postgres)
+    return f'''EXISTS (
+        SELECT 1 FROM listings related JOIN prelisting_items i ON i.listing_id=related.id
+        JOIN prelisting_batches b ON b.id=i.batch_id
+        WHERE related.product_id=listings.product_id AND {store_id}=?
+        AND ((b.status!='cancelled' AND NOT EXISTS
+            (SELECT 1 FROM prelisting_batch_trash t WHERE t.batch_id=b.id))
+            OR EXISTS (SELECT 1 FROM walmart_listing_attempts a WHERE a.batch_id=b.id)))'''
+
+
+def price_clause(direction, postgres):
+    """Latest source-price comparison per SKU, never ERP/multiplied selling prices.
+
+    Giga snapshots include imports/syncs; patrol before/after includes unchanged runs.
+    Amazon uses captured source offers, partitioned by both child SKU and ASIN.
+    """
+    def field(col, *path):
+        return json_text(col, *path, postgres=postgres)
+    def number(col):
+        if postgres:
+            return f"CASE WHEN {col} ~ '^[0-9]+([.][0-9]+)?$' THEN CAST({col} AS NUMERIC) END"
+        return f"""CASE WHEN {col}!='' AND {col} NOT GLOB '*[^0-9.]*'
+            AND {col} GLOB '[0-9]*' AND {col} NOT LIKE '%.%.%'
+            AND substr({col},-1)!='.' THEN CAST({col} AS NUMERIC) END"""
+    comparator = {'up': "SUM(CASE WHEN delta>0 THEN 1 ELSE 0 END)>0",
+                  'down': "SUM(CASE WHEN delta<0 THEN 1 ELSE 0 END)>0",
+                  'unchanged': 'COUNT(delta)=COUNT(*) AND MAX(delta)=0 AND MIN(delta)=0',
+                  'unknown': 'COUNT(delta)<COUNT(*)'}[direction]
+    query = f'''WITH source_observations AS (
+        SELECT s.listing_id,'' AS target,s.observed_at AS at,CAST(s.id AS TEXT) AS tie,
+            COALESCE({field('s.data_json','source_facts','price')},{field('s.data_json','price')}) AS price,
+            {field('s.data_json','source_facts','currency')} AS currency
+        FROM snapshots s JOIN listings l ON l.id=s.listing_id JOIN products p ON p.id=l.product_id
+        WHERE p.source='GigaB2B'
+        UNION ALL
+        SELECT c.listing_id,c.variant_sku || ':' || c.asin,c.captured_at,c.id,
+            COALESCE({field('c.data_json','basis_price')},{field('c.data_json','price')}),
+            {field('c.data_json','currency')}
+        FROM source_captures c JOIN listings l ON l.id=c.listing_id JOIN products p ON p.id=l.product_id
+        WHERE p.source='Amazon' AND (c.variant_sku='' AND c.asin=p.asin
+            AND NOT EXISTS (SELECT 1 FROM variants v WHERE v.listing_id=c.listing_id) OR EXISTS (
+            SELECT 1 FROM variants v WHERE v.listing_id=c.listing_id AND v.sku=c.variant_sku AND v.asin=c.asin))
+    ), paired AS (
+        SELECT *,LAG(price) OVER (PARTITION BY listing_id,target ORDER BY at,tie) AS old_price,
+            LAG(currency) OVER (PARTITION BY listing_id,target ORDER BY at,tie) AS old_currency
+        FROM source_observations
+    ), comparisons AS (
+        SELECT listing_id,target,at,tie,price,currency,old_price,old_currency,0 AS priority FROM paired
+        UNION ALL
+        SELECT listing_id,'',checked_at,run_id,
+            {field('after_json','price')},{field('after_json','currency')},
+            {field('before_json','price')},{field('before_json','currency')},1
+        FROM giga_patrol_items WHERE status='ok'
+    ), ranked AS (
+        SELECT *,ROW_NUMBER() OVER (PARTITION BY listing_id,target ORDER BY at DESC,priority DESC,tie DESC) AS n
+        FROM comparisons
+    ), deltas AS (
+        SELECT listing_id,target,CASE WHEN currency=old_currency AND currency!=''
+            THEN ({number('price')})-({number('old_price')}) END AS delta
+        FROM ranked WHERE n=1
+    ), expected AS (
+        SELECT l.id AS listing_id,CASE WHEN p.source='GigaB2B' THEN '' ELSE ':' || p.asin END AS target
+        FROM listings l JOIN products p ON p.id=l.product_id
+        WHERE p.source='GigaB2B' OR NOT EXISTS (SELECT 1 FROM variants v WHERE v.listing_id=l.id)
+        UNION ALL
+        SELECT v.listing_id,v.sku || ':' || v.asin FROM variants v
+        JOIN listings l ON l.id=v.listing_id JOIN products p ON p.id=l.product_id WHERE p.source='Amazon'
+    ), complete_deltas AS (
+        SELECT e.listing_id,d.delta FROM expected e LEFT JOIN deltas d
+            ON d.listing_id=e.listing_id AND d.target=e.target
+    ) '''
+    if direction == 'unknown':
+        query += "SELECT id FROM listings WHERE id NOT IN (SELECT listing_id FROM complete_deltas GROUP BY listing_id HAVING COUNT(delta)=COUNT(*))"
+    else:
+        query += f'SELECT listing_id FROM complete_deltas GROUP BY listing_id HAVING {comparator}'
+    return f'listings.id IN ({query})'

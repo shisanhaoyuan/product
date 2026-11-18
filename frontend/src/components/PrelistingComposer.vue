@@ -11,6 +11,7 @@ import type {
 import { errorMessage } from '../utils/display';
 import PrelistingPreview from './PrelistingPreview.vue';
 import AppIcon from './AppIcon.vue';
+import FilterSelect from './FilterSelect.vue';
 const props = defineProps<{ selection: PrelistingSelection; count: number; source?: string }>();
 const emit = defineEmits<{ close: []; created: [id: string] }>();
 const dialog = ref<HTMLDialogElement>();
@@ -24,6 +25,15 @@ const busy = ref(false),
 const templates = ref<TemplateOptions['items']>([]);
 const selectedTemplates = ref<Record<string, string>>({});
 const templatesLoading = ref(false);
+const storeOptions = computed(() =>
+  stores.value
+    .filter((store) => store.active)
+    .map((store) => ({
+      value: String(store.id),
+      label:
+        store.name + (store.marketplace_name !== store.name ? ' · ' + store.marketplace_name : ''),
+    })),
+);
 let templateController: AbortController | undefined;
 let submitted: PlanInput | undefined;
 let requestKey = '';
@@ -182,14 +192,18 @@ async function create() {
     </div>
     <div class="composer-body">
       <form id="prelisting-settings" class="plan-form composer-form" @submit.prevent="calculate">
-        <label
-          >上架店铺<select v-model="storeId" required :disabled="busy">
-            <option value="" disabled>选择目标店铺</option>
-            <option v-for="s in stores.filter((s) => s.active)" :key="s.id" :value="String(s.id)">
-              {{ s.name }}{{ s.marketplace_name !== s.name ? ' · ' + s.marketplace_name : '' }}
-            </option>
-          </select></label
-        >
+        <div class="composer-store-field">
+          <span>上架店铺</span>
+          <FilterSelect
+            v-model="storeId"
+            class="composer-store-select"
+            label="选择目标店铺"
+            :options="storeOptions"
+            :disabled="busy"
+            searchable
+            search-placeholder="搜索店铺名称，例如 MYZ、21"
+          />
+        </div>
         <label
           >品牌<input
             v-model="brand"
@@ -270,3 +284,33 @@ async function create() {
     </div>
   </dialog>
 </template>
+<style scoped>
+.composer-store-field {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  color: #506078;
+  font-size: 12px;
+  font-weight: 550;
+}
+.composer-store-select {
+  width: 100%;
+}
+.composer-store-select :deep(summary) {
+  box-sizing: border-box;
+  height: 44px;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--ink);
+}
+.composer-store-select :deep(.filter-select-options button) {
+  font-size: 14px;
+  min-height: 40px;
+}
+@media (max-width: 600px) {
+  .composer-store-field {
+    grid-column: 1 / -1;
+  }
+}
+</style>

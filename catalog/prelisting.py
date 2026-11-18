@@ -110,6 +110,8 @@ class Filters(StrictInput):
     q: str = Field(default='', max_length=300)
     identifiers: str = Field(default='', max_length=6000)
     inventory_status: Literal['', 'out_of_stock'] = ''
+    listed_store: str = Field(default='', pattern='^([0-9]+)?$')
+    price_change: Literal['', 'up', 'down', 'unchanged', 'unknown'] = ''
     store: str = Field(default='', max_length=100)
     brand: str = Field(default='', max_length=100)
     status: Literal['', 'complete', 'review', 'saved', 'unconfirmed', 'reopened', 'snapshot'] = ''

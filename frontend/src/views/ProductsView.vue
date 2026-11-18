@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import ProductStoreHistory from '../components/ProductStoreHistory.vue';
 import GigaQuickFacts from '../components/GigaQuickFacts.vue';
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { catalogApi } from '../api/client';
-import type { ProductPage, PrelistingSelection } from '../api/types';
+import type { ProductPage, PrelistingSelection, ListingStore } from '../api/types';
+import { prelistingApi } from '../api/prelisting';
 import { useCatalog } from '../composables/useCatalog';
 import { errorMessage, priceRange, productStatus } from '../utils/display';
 import AppIcon from '../components/AppIcon.vue';
@@ -36,6 +37,15 @@ const libraryName = computed(() => (isGiga.value ? '大建云仓商品库' : '�
 const { stats, refreshStats } = useCatalog(source);
 const detailPath = (id: string) => (isGiga.value ? '/giga-product/' : '/product/') + id;
 const data = ref<ProductPage>();
+const listingStores = ref<ListingStore[]>([]);
+const storeFilterError = ref('');
+onMounted(async () => {
+  try {
+    listingStores.value = await prelistingApi.stores();
+  } catch (e) {
+    storeFilterError.value = errorMessage(e);
+  }
+});
 const loading = ref(true),
   error = ref(''),
   search = ref('');
@@ -50,6 +60,8 @@ const filters = computed(() => {
     'q',
     'identifiers',
     'store',
+    'listed_store',
+    'price_change',
     'brand',
     'status',
     'date',
@@ -86,6 +98,14 @@ const categoryOptions = computed(() => {
 const storeOptions = computed(() => [
   { value: '', label: '全部来源店铺' },
   ...(stats.value?.stores.map((item) => ({ value: item.store, label: item.store })) || []),
+]);
+const listedStoreOptions = computed(() => [
+  { value: '', label: '全部上架店铺' },
+  ...listingStores.value.map((store) => ({
+    value: String(store.id),
+    label:
+      store.name + (store.marketplace_name !== store.name ? ' · ' + store.marketplace_name : ''),
+  })),
 ]);
 const brandOptions = computed(() => [
   { value: '', label: '全部品牌' },
@@ -486,6 +506,26 @@ onBeforeUnmount(() => {
         @update:model-value="changeFilter('brand', $event)"
       />
       <FilterSelect
+        label="上架店铺（含预上架记录）"
+        :model-value="filters.get('listed_store') || ''"
+        :options="listedStoreOptions"
+        searchable
+        search-placeholder="搜索上架店铺"
+        @update:model-value="changeFilter('listed_store', $event)"
+      />
+      <FilterSelect
+        label="来源价格涨跌"
+        :model-value="filters.get('price_change') || ''"
+        :options="[
+          { value: '', label: '全部价格变化' },
+          { value: 'up', label: '涨价' },
+          { value: 'down', label: '降价' },
+          { value: 'unchanged', label: '未变化' },
+          { value: 'unknown', label: '暂无可比记录' },
+        ]"
+        @update:model-value="changeFilter('price_change', $event)"
+      />
+      <FilterSelect
         label="筛选日期"
         :model-value="filters.get('date') || ''"
         :options="dateOptions"
@@ -508,6 +548,13 @@ onBeforeUnmount(() => {
         <AppIcon name="RotateCcw" />
       </button>
     </form>
+    <p v-if="storeFilterError" class="error-box">上架店铺列表加载失败：{{ storeFilterError }}</p>
+    <p v-if="filters.get('listed_store') || filters.get('price_change')" class="batch-search-hint">
+      各筛选条件同时满足才会显示。上架店铺包含有效预上架及提交记录，不代表已经发布成功。
+      价格比较最近两次同
+      SKU、同币种的来源单价（不含运费、倍率）；云仓使用同步或巡查记录，亚马逊使用来源采集记录。
+      多变体只要有一个涨价或降价即可命中；全部可比较且相同才算未变化。
+    </p>
     <p v-if="batchSearchCount" class="batch-search-hint" role="status">
       已按 {{ batchSearchCount }} 个 SKU / ASIN 精确搜索 · 自动去重，命中子变体时显示所属商品
     </p>
