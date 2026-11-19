@@ -58,7 +58,9 @@ defineProps<{ preview: PrelistingPreview }>();
       <p v-for="issue in item.errors" :key="issue" class="seller-risk-label">{{ issue }}</p>
       <p v-for="warning in item.warnings" :key="warning" class="subtitle">{{ warning }}</p>
       <p v-if="isSupplier(item.source)" class="subtitle">
-        计算规则：（来源商品单价 ＋ 配送运费）× {{ preview.multiplier }}，结果保留两位小数。
+        计算规则：{{
+          item.source === 'Saleyee' ? '采购价（不另加运费）' : '（来源商品单价 ＋ 配送运费）'
+        }}× {{ preview.multiplier }}，结果保留两位小数。
       </p>
       <div class="table-scroll">
         <table class="data-table">

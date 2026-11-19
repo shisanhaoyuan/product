@@ -257,7 +257,7 @@ async function create() {
         <p class="composer-hint">
           {{
             source === 'Saleyee'
-              ? '赛盈商品价＋已填写运费'
+              ? '赛盈采购价（不另加运费）'
               : source === 'GigaB2B'
                 ? '来源普通单价＋物流费（含打包）'
                 : '基准价格'

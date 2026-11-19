@@ -36,6 +36,7 @@ interface SaleyeeFacts {
   shipping?: string | null;
   inventory?: number;
   selected_offer?: Offer;
+  available_offers?: Offer[];
   warehouses?: Warehouse[];
   warnings?: string[];
   import_warnings?: string[];
@@ -46,12 +47,11 @@ const raw = computed(() => facts.value.saleyee || {});
 const offers = computed(() => raw.value.price?.WarehousePriceList || []);
 const warehouses = computed(() => facts.value.warehouses || []);
 const choice = ref('');
-const shipping = ref(facts.value.shipping ?? '');
+const selectableOffers = computed(() => facts.value.available_offers || []);
 watch(
   () => props.product,
   () => {
     choice.value = '';
-    shipping.value = facts.value.shipping ?? '';
   },
 );
 const attributes = computed(() => props.product.fields['Saleyee attributes'] || {});
@@ -79,7 +79,7 @@ async function refresh() {
   busy.value = true;
   error.value = '';
   const offer =
-    choice.value === '' ? facts.value.selected_offer : offers.value[Number(choice.value)];
+    choice.value === '' ? facts.value.selected_offer : selectableOffers.value[Number(choice.value)];
   try {
     await request(
       `/api/integrations/saleyee/products/${encodeURIComponent(props.product.id)}/refresh`,
@@ -90,7 +90,6 @@ async function refresh() {
           warehouse: offer?.StockCode || '',
           logistics: offer?.LogisticsProductCode || '',
           quote_site: offer?.Store || '',
-          shipping: shipping.value === '' ? null : shipping.value,
         }),
       },
     );
@@ -111,7 +110,7 @@ async function refresh() {
     <div class="section-body saleyee-facts">
       <div class="saleyee-metrics">
         <div>
-          <small>计价基准 · USD</small><strong>{{ money(facts.price) }}</strong>
+          <small>采购价 · USD</small><strong>{{ money(facts.price) }}</strong>
         </div>
         <div>
           <small>对应仓库可用库存</small
@@ -119,12 +118,15 @@ async function refresh() {
             facts.inventory ?? '待选择报价'
           }}</strong>
         </div>
-        <div>
-          <small>单独填写运费 · USD</small
-          ><strong>{{ facts.shipping != null ? money(facts.shipping) : '待填写' }}</strong>
-        </div>
+        <div><small>采购配送</small><strong>不另加运费</strong></div>
       </div>
-      <p v-for="warning in [...(facts.warnings || []), ...(facts.import_warnings || [])]" :key="warning" class="notice">{{ warning }}</p>
+      <p
+        v-for="warning in [...(facts.warnings || []), ...(facts.import_warnings || [])]"
+        :key="warning"
+        class="notice"
+      >
+        {{ warning }}
+      </p>
       <div class="table-scroll">
         <table>
           <thead>
@@ -177,28 +179,16 @@ async function refresh() {
       </div>
       <div v-if="canEdit" class="saleyee-selection">
         <label
-          >选择美国 USD 报价<select v-model="choice" :disabled="busy" @change="shipping = ''">
+          >选择美国 USD 报价<select v-model="choice" :disabled="busy">
             <option value="">沿用当前选择 / 自动匹配唯一报价</option>
-            <template v-for="(offer, i) in offers" :key="i"
-              ><option
-                v-if="offer.CurrencyCode === 'USD' && offer.ReceiveCountryCode === 'US'"
-                :value="String(i)"
-              >
+            <template v-for="(offer, i) in selectableOffers" :key="i"
+              ><option :value="String(i)">
                 {{ offer.Store }} / {{ offer.StockCode }} ·
                 {{ offer.LogisticsProductName || offer.LogisticsProductCode }} ·
-                {{ money(offer.OriginalPrice || offer.SellingPrice) }}
+                {{ money(offer.SellingPrice ?? offer.OriginalPrice) }}
               </option></template
             >
           </select></label
-        ><label
-          >此报价的运费（USD）<input
-            v-model="shipping"
-            type="number"
-            min="0"
-            max="100000"
-            step="0.01"
-            :disabled="busy"
-            placeholder="确认免运费填 0" /></label
         ><button class="btn primary" :disabled="busy" @click="refresh">
           {{ busy ? '正在同步…' : '刷新价格库存与商品资料' }}
         </button>

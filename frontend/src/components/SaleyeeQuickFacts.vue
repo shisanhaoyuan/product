@@ -7,8 +7,8 @@ defineProps<{ summary?: SaleyeeSummary | null }>();
   <div v-if="summary" class="saleyee-quick">
     <span :class="{ empty: summary.inventory === 0 }"
       >库存 {{ summary.inventory ?? '待选仓库' }}</span
-    ><span>运费 {{ summary.shipping === null ? '待填写' : money(summary.shipping) }}</span
-    ><span>含运费 {{ summary.landed === null ? '待确认' : money(summary.landed) }}</span>
+    ><span>不另加运费</span
+    ><span>采购价 {{ summary.landed === null ? '待确认' : money(summary.landed) }}</span>
   </div>
 </template>
 <style scoped>

@@ -206,16 +206,46 @@ def index_rows(rows, expected=None):
     return result
 
 
+def quote_is_us(entry, detail, inventories):
+    """A missing destination can use explicit country evidence for this warehouse.
+
+    Currency, names and warehouse codes alone are not country evidence. An
+    explicit destination always wins; never replace a non-US destination.
+    """
+    destination = str(entry.get('ReceiveCountryCode') or '').strip().upper()
+    if destination:
+        return destination == 'US'
+    site, warehouse = entry.get('Store'), entry.get('StockCode')
+    if not site or not warehouse:
+        return False
+    countries = set()
+    for region in inventories:
+        if region.get('site') == site and region.get('StockCode') == warehouse:
+            countries.update(str(v.get('StockCountryCode') or '').strip().upper()
+                             for v in region.get('StockItemList') or [])
+    # Detail addresses lack site identity; require the detail's site/warehouse mapping.
+    if any(v.get('SiteHosts') == site and warehouse in (v.get('WarehouseCodeList') or [])
+           for v in detail.get('ProductSiteModelList') or []):
+        countries.update(str(v.get('StockCountryCode') or '').strip().upper()
+                         for v in detail.get('ProductSendAddressList') or []
+                         if v.get('WarehouseCode') == warehouse)
+    countries.discard('')
+    return countries == {'US'}
+
+
 def summarize(detail, price, stock, options):
     warnings = []
-    offers = []
+    inventories = [dict(site=site.get('SiteHosts'), **region)
+                   for site in stock.get('ProductInventorySiteList') or []
+                   for region in site.get('ProductInventoryList') or []]
+    available_offers, offers = [], []
     for entry in price.get('WarehousePriceList') or []:
         if not isinstance(entry, dict):
             raise SaleyeeError('赛盈仓库价格格式异常')
         currency = str(entry.get('CurrencyCode') or '').upper()
-        # Do not infer country from warehouse names; select only explicit US quotes.
-        if currency != 'USD' or str(entry.get('ReceiveCountryCode') or '').upper() != 'US':
+        if currency != 'USD' or not quote_is_us(entry, detail, inventories):
             continue
+        available_offers.append(entry)
         if options.quote_site and entry.get('Store') != options.quote_site:
             continue
         if options.warehouse and entry.get('StockCode') != options.warehouse:
@@ -226,28 +256,24 @@ def summarize(detail, price, stock, options):
     selected = offers[0] if len(offers) == 1 else None
     original = amount(selected.get('OriginalPrice')) if selected else None
     selling = amount(selected.get('SellingPrice')) if selected else None
-    base = original if original is not None and Decimal(original) > 0 else selling
-    inventories = []
-    for site in stock.get('ProductInventorySiteList') or []:
-        for region in site.get('ProductInventoryList') or []:
-            inventories.append(dict(site=site.get('SiteHosts'), **region))
+    # Purchase price is the current selling price, not the struck-through original.
+    base = selling if selling is not None else original
     matches = [v for v in inventories if selected and v.get('StockCode') == selected.get('StockCode')
                and v.get('site') == selected.get('Store')]
     quantity = matches[0].get('Qty') if len(matches) == 1 else None
     if quantity is not None and (type(quantity) is not int or quantity < 0):
         raise SaleyeeError('赛盈可用库存不是非负整数')
     if not selected:
-        warnings.append('请选择唯一的美国仓库及物流报价；缺少美国收货国家标识的报价不能自动选用')
+        warnings.append('请选择唯一的美国仓库及物流报价；收货国家为空时须有同站点、同仓库的美国发货地址')
     if quantity is None:
         warnings.append('没有找到与报价同站点、同仓库的可用库存')
-    shipping = amount(options.shipping)
-    if shipping is None:
-        warnings.append('接口不含运费，请填写此报价的配送运费；确认免运费时填写 0')
+    # Saleyee purchase prices require no additional freight. Ignore legacy estimates.
+    shipping = '0'
     return dict(price=base, selling_price=selling, original_price=original,
                 currency='USD' if selected else '', inventory=quantity,
-                shipping=shipping, shipping_origin='manual' if shipping is not None else 'unknown',
-                landed=format(Decimal(base) + Decimal(shipping), 'f') if base is not None and shipping is not None else None,
-                selected_offer=selected, offers=offers, warehouses=inventories, warnings=warnings)
+                shipping=shipping, shipping_origin='no_additional_shipping', landed=base,
+                selected_offer=selected, offers=offers, available_offers=available_offers,
+                warehouses=inventories, warnings=warnings)
 
 
 def source_link(value):
@@ -363,15 +389,7 @@ def sync_page(catalog, settings, options, actor_id=None, client=None):
                 saved = ((json.loads(old[0]).get('source_facts') or {}).get('saleyee') or {}).get('options', {}) if old else {}
                 explicit = options.model_dump(mode='json', exclude_unset=True)
                 effective = SyncInput(**(saved | explicit))
-                # A manual shipping estimate belongs to exactly one selected quote.
-                if any(k in explicit and explicit[k] != saved.get(k, '') for k in ('warehouse','logistics','quote_site')) and 'shipping' not in explicit:
-                    effective.shipping = None
-                if old and effective.shipping is not None and 'shipping' not in explicit:
-                    prior_offer = (json.loads(old[0]).get('source_facts') or {}).get('selected_offer') or {}
-                    next_offer = summarize(details[sku], prices[sku], stocks[sku], effective)['selected_offer'] or {}
-                    keys = ('Store','StockCode','LogisticsProductCode','ReceiveCountryCode','CurrencyCode')
-                    if any(prior_offer.get(k) != next_offer.get(k) for k in keys):
-                        effective.shipping = None
+                effective.shipping = Decimal('0')
                 item = listing_from_api(sku, details[sku], prices[sku], stocks[sku], effective, settings.namespace, now)
                 listings.append(item)
                 if old:

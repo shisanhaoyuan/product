@@ -85,7 +85,10 @@ onBeforeUnmount(() => {
       <span>{{ config?.configured ? '已填写 V2 凭证' : '待配置' }}</span>
     </div>
     <div class="section-body saleyee-integration">
-      <p>同步商品详情、图片、仓库报价与可用库存。凭证已填写不代表接口验证通过。同账号、同 SKU 重复同步自动更新，保留编辑记录。</p>
+      <p>
+        同步商品详情、图片、仓库报价与可用库存。凭证已填写不代表接口验证通过。同账号、同 SKU
+        重复同步自动更新，保留编辑记录。
+      </p>
       <p v-if="!config?.configured" class="notice">
         管理员需配置服务器的 CATALOG_SALEYEE_ACCESS_TOKEN 和固定账号标识
         CATALOG_SALEYEE_ACCOUNT。令牌不在网页中显示。
@@ -113,8 +116,8 @@ onBeforeUnmount(() => {
         /></label>
       </div>
       <small
-        >接口报价不含运费。同步后在商品档案选择报价、填写对应运费，预上架按（商品价＋运费）×倍率计算。确认免运费时可填
-        0。</small
+        >赛盈采购无需另加运费，预上架按采购价 ×
+        倍率计算。多条报价时，请在商品档案选择对应仓库与物流。</small
       >
       <div class="actions">
         <RouterLink class="btn" to="/saleyee-products">打开赛盈商品库</RouterLink

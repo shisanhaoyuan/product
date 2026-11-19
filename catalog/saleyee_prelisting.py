@@ -20,7 +20,7 @@ def prepare(item, source, multiplier):
     base = info['landed'] if valid else None
     final = None
     if base is None or Decimal(base) <= 0:
-        errors.append('缺少 USD 商品价或已填写运费，不能计算上架售价')
+        errors.append('缺少有效的 USD 采购价，不能计算上架售价')
     else:
         final = format((Decimal(base)*multiplier).quantize(Decimal('.01'),rounding=ROUND_HALF_UP),'f')
     quantity = info['inventory'] if valid else None
@@ -44,5 +44,5 @@ def prepare(item, source, multiplier):
     variant = dict(sku=item['sku'],asin='',current_price=item['price'],stock=inventory,
         source_stock=quantity,unit_price=info['price'],shipping_fee=info['shipping'],currency=info['currency'],
         base=base,landed=base,original=None,price=final,error='；'.join(errors),content=content,
-        source_facts=source['source_facts'],price_rule='saleyee_price_plus_shipping_v1')
-    return [variant],errors,['价格与库存取同站点、同仓库的赛盈 API 快照；按本批次倍率计算']
+        source_facts=source['source_facts'],price_rule='saleyee_purchase_price_v2')
+    return [variant],errors,['价格与库存取同站点、同仓库的赛盈 API 快照；采购价直接乘本批次倍率，不另加运费']

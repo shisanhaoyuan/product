@@ -83,7 +83,7 @@ def test_import_isolation_deduplication_and_price_stock_join(tmp_path,settings,m
     p=c.find(source='Saleyee')['items'][0];d=c.get(p['id'])
     assert d['images'][0].endswith('main.jpg')
     assert d['seller']=='' and d['asin']=='' and d['variants']==[]
-    assert d['source_facts']['landed']=='69.33' and d['stock']=='25'
+    assert d['source_facts']['landed']=='60' and d['stock']=='25'
     assert d['source_facts']['saleyee']['detail']['MapGroupList']
     assert sync_page(c,settings,SyncInput(),client=f)['unchanged']==2
     monkeypatch.setenv('CATALOG_SALEYEE_ACCESS_TOKEN','rotated-token')
@@ -132,18 +132,18 @@ def test_prelisting_multiplier_and_stock(qty,expected,settings):
     f=FakeClient(('S1',));f.stock[0]['ProductInventorySiteList'][0]['ProductInventoryList'][0]['Qty']=qty
     item=listing_from_api('S1',f.details[0],f.prices[0],f.stock[0],SyncInput(shipping='2.33'),settings.namespace,'2026-11-19T00:00:00+00:00').model_dump()
     rows,errors,_=prepare(item,item,Decimal('1.4'))
-    assert rows[0]['price']=='97.06' and rows[0]['stock']==expected
+    assert rows[0]['price']=='84.00' and rows[0]['stock']==expected
     assert bool(errors)==(qty is None or qty<10)
     assert rows[0]['content']['shipping_weight']==''
 
 
-def test_ambiguous_quotes_unknown_shipping_and_warehouse_mismatch(settings):
+def test_ambiguous_quotes_and_warehouse_mismatch(settings):
     f=FakeClient(('S1',));d,p,s=f.details[0],f.prices[0],f.stock[0]
-    assert summarize(d,p,s,SyncInput())['landed'] is None
-    assert summarize(d,p,s,SyncInput(shipping='0'))['landed']=='67'
+    assert summarize(d,p,s,SyncInput())['landed']=='60'
+    assert summarize(d,p,s,SyncInput(shipping='0'))['landed']=='60'
     p['WarehousePriceList'].append(p['WarehousePriceList'][0]|dict(LogisticsProductCode='L2'))
     assert summarize(d,p,s,SyncInput(shipping='0'))['price'] is None
-    assert summarize(d,p,s,SyncInput(logistics='L1',shipping='0'))['landed']=='67'
+    assert summarize(d,p,s,SyncInput(logistics='L1',shipping='0'))['landed']=='60'
     s['ProductInventorySiteList'][0]['SiteHosts']='UK'
     assert summarize(d,p,s,SyncInput(logistics='L1',shipping='0'))['inventory'] is None
 
@@ -155,9 +155,9 @@ def test_refresh_options_permissions_and_unknown_filter(tmp_path,settings,monkey
     url=f'/api/integrations/saleyee/products/{pid}/refresh'
     r=client.post(url,json={'shipping':'2.33','warehouse':'US-W','logistics':'L1','quote_site':'US'})
     assert r.status_code==200,r.text
-    assert r.json()['source_facts']['landed']=='69.33'
+    assert r.json()['source_facts']['landed']=='60'
     sync_page(c,settings,SyncInput(),client=f)
-    assert c.get(pid)['source_facts']['shipping']=='2.33'
+    assert c.get(pid)['source_facts']['shipping']=='0'
     assert client.post(url,json={'skus':['OTHER']}).status_code==422
     assert client.post(url,json={'shipping':'-1'}).status_code==422
     assert c.find(source='Saleyee',inventory_status='out_of_stock')['total']==0
@@ -209,7 +209,7 @@ def test_saleyee_through_walmart_submission_and_review(tmp_path,settings,vault):
     assert doc['validation']['valid_count']==1,json.dumps(doc['validation'],ensure_ascii=False)
     attempt=send(env,doc)
     assert attempt['feed_id'] and len(remote.posts)==1
-    assert list(remote.feeds.values())[0]['MPItem'][0]['Orderable']['price']==97.06
+    assert list(remote.feeds.values())[0]['MPItem'][0]['Orderable']['price']==84.00
     # Replaying the same SKU with another request key must not submit a second feed.
     from test_walmart_publishing import submission
     assert c.post(base+'/submit',json=submission(doc)).status_code==409
@@ -230,21 +230,21 @@ def test_distribution_restrictions_block_prelisting(settings,changes):
     assert prepare(item,item,Decimal('1.4'))[1]
 
 
-def test_manual_shipping_never_follows_changed_quote(tmp_path,settings):
+def test_legacy_shipping_is_ignored_even_after_quote_changes(tmp_path,settings):
     c=Catalog(tmp_path/'quotes.db');f=FakeClient(('S1',))
     sync_page(c,settings,SyncInput(shipping='9.99'),client=f)
     f.prices[0]['WarehousePriceList'][0]['LogisticsProductCode']='CHANGED'
     sync_page(c,settings,SyncInput(),client=f)
     item=c.get(c.find()['items'][0]['id'])
-    assert item['source_facts']['shipping'] is None
-    assert item['source_facts']['landed'] is None
+    assert item['source_facts']['shipping']=='0'
+    assert item['source_facts']['landed']=='60'
 
 
-def test_shipping_absence_blocks_walmart_validation(tmp_path,settings,vault):
+def test_no_manual_shipping_required_for_prelisting(tmp_path,settings,vault):
     app=create_app(tmp_path/'shipping.db');c=TestClient(app);f=FakeClient(('S1',))
     sync_page(app.state.catalog,settings,SyncInput(),client=f)
     b,_=create(c,inputs(c,filters={'source':'Saleyee'}))
-    assert b['preview']['ready_count']==0
+    assert b['preview']['ready_count']==1
     Remote().install(app);bind(c,b['preview']['store']['id'])
     remote=PublisherRemote();app.state.walmart_publisher=WalmartPublishingClient(httpx.MockTransport(remote.handler))
     base=f"/api/prelisting/batches/{b['id']}/walmart"
@@ -254,7 +254,7 @@ def test_shipping_absence_blocks_walmart_validation(tmp_path,settings,vault):
     assert validation.status_code==200,validation.text
     doc=validation.json()
     assert doc['validation']['valid_count']==0 and not remote.posts
-    assert any('运费' in e['message'] for row in doc['validation']['rows'].values() for e in row['errors'])
+    assert not any('运费' in e['message'] for row in doc['validation']['rows'].values() for e in row['errors'])
 
 
 @pytest.mark.parametrize('operation,payload,expected',[
@@ -316,7 +316,7 @@ def test_source_link_normalization_preserves_raw_and_never_changes_sku(tmp_path,
     assert row['source_url']==expected and row['sku']=='65567143'
     assert row['source_facts']['saleyee']['detail']['Url']==value
     assert bool(row['source_facts']['import_warnings'])==bool(value and not expected)
-    assert row['stock']=='25' and row['price']=='67'
+    assert row['stock']=='25' and row['price']=='60'
     assert sync_page(c,settings,SyncInput(),client=f)['unchanged']==1
 
 
@@ -328,3 +328,83 @@ def test_unusable_source_link_does_not_block_prelisting(tmp_path,settings):
     assert r.status_code==200,r.text
     assert r.json()['ready_count']==1
     assert r.json()['items'][0]['variants'][0]['content']['source_url']==''
+
+
+def actual_quote_fixture():
+    """Reduced, non-sensitive fields from SKU 65567143's rendered API record."""
+    f = FakeClient(('65567143',))
+    f.details[0].update(
+        ProductSiteModelList=[dict(SiteHosts='www.saleyee.com', WarehouseCodeList=['SZ0001'])],
+        ProductSendAddressList=[dict(WarehouseCode='SZ0001', StockCountryCode='US')])
+    f.prices[0]['WarehousePriceList'] = [dict(Store='www.saleyee.com', StockCode='SZ0001',
+        LogisticsProductCode='GP97372', ReceiveCountryCode=None, CurrencyCode='USD',
+        OriginalPrice='134.77', SellingPrice='134.77')]
+    f.stock[0]['ProductInventorySiteList'] = [dict(SiteHosts='www.saleyee.com',
+        ProductInventoryList=[dict(StockCode='SZ0001', Qty=90,
+            StockItemList=[dict(StockCountryCode='US', Qty=90)])])]
+    return f
+
+
+def test_actual_null_destination_quote_price_inventory_refresh_and_prelisting(tmp_path, settings, monkeypatch):
+    app=create_app(tmp_path/'actual.db'); catalog=app.state.catalog; client=TestClient(app)
+    f=actual_quote_fixture()
+    # Simulate an old import where the missing destination excluded the price.
+    old=listing_from_api('65567143', f.details[0], f.prices[0], f.stock[0], SyncInput(),
+                         settings.namespace, '2026-11-19T00:00:00+00:00')
+    old.price=None; old.stock=None
+    old.source_facts.update(price=None, inventory=None, landed=None, shipping='9.99', currency='')
+    catalog.ingest(ImportBundle(namespace=settings.namespace, label='legacy', listings=[old]))
+    pid=catalog.find(source='Saleyee')['items'][0]['id']
+    monkeypatch.setattr('catalog.saleyee.SaleyeeClient', lambda _: f)
+    response=client.post(f'/api/integrations/saleyee/products/{pid}/refresh', json={})
+    assert response.status_code==200, response.text
+    item=response.json()
+    assert item['price']=='134.77' and item['stock']=='90'
+    assert item['source_facts']['shipping']=='0' and item['source_facts']['warnings']==[]
+    assert len(item['source_facts']['available_offers'])==1
+    card=catalog.find(source='Saleyee')['items'][0]
+    assert card['prices']==['134.77'] and card['saleyee_summary']['inventory']==90
+    batch,_=create(client, inputs(client, filters={'source':'Saleyee'}, multiplier='1.4'))
+    variant=batch['preview']['items'][0]['variants'][0]
+    assert variant['price']=='188.68' and variant['stock']=='10'
+    assert variant['shipping_fee']=='0'
+    assert sync_page(catalog,settings,SyncInput(),client=f)['unchanged']==1
+
+
+@pytest.mark.parametrize('mode', ['other_site','other_warehouse','no_country','conflict','explicit_ca','eur'])
+def test_null_destination_does_not_guess_country(mode):
+    f=actual_quote_fixture(); d,p,s=f.details[0],f.prices[0],f.stock[0]
+    region=s['ProductInventorySiteList'][0]
+    # No detail mapping: only correctly matched stock evidence may resolve country.
+    d.pop('ProductSiteModelList')
+    if mode=='other_site': region['SiteHosts']='other.saleyee.com'
+    if mode=='other_warehouse': region['ProductInventoryList'][0]['StockCode']='OTHER'
+    if mode=='no_country': region['ProductInventoryList'][0]['StockItemList']=[]
+    if mode=='conflict': region['ProductInventoryList'][0]['StockItemList'].append(dict(StockCountryCode='CA'))
+    if mode=='explicit_ca': p['WarehousePriceList'][0]['ReceiveCountryCode']='CA'
+    if mode=='eur': p['WarehousePriceList'][0]['CurrencyCode']='EUR'
+    info=summarize(d,p,s,SyncInput())
+    assert info['price'] is None and info['inventory'] is None and info['warnings']
+
+
+def test_detail_country_requires_matching_site_and_warehouse():
+    f=actual_quote_fixture(); d,p,s=f.details[0],f.prices[0],f.stock[0]
+    s['ProductInventorySiteList'][0]['ProductInventoryList'][0]['StockItemList']=[]
+    assert summarize(d,p,s,SyncInput())['price']=='134.77'
+    d['ProductSiteModelList'][0]['SiteHosts']='other'
+    assert summarize(d,p,s,SyncInput())['price'] is None
+
+
+def test_all_eligible_quotes_remain_selectable_after_selection():
+    f=actual_quote_fixture(); d,p,s=f.details[0],f.prices[0],f.stock[0]
+    p['WarehousePriceList'].append(p['WarehousePriceList'][0] | dict(LogisticsProductCode='OTHER', SellingPrice='150'))
+    assert summarize(d,p,s,SyncInput())['price'] is None
+    info=summarize(d,p,s,SyncInput(logistics='OTHER'))
+    assert info['price']=='150' and len(info['available_offers'])==2
+
+
+@pytest.mark.parametrize('selling,expected', [('59.99','59.99'), (None,'67'), ('0','0')])
+def test_purchase_price_uses_current_selling_price(selling,expected):
+    f=FakeClient(('S1',));f.prices[0]['WarehousePriceList'][0]['SellingPrice']=selling
+    info=summarize(f.details[0],f.prices[0],f.stock[0],SyncInput(shipping='99'))
+    assert info['price']==expected and info['landed']==expected and info['shipping']=='0'
