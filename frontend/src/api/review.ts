@@ -11,6 +11,7 @@ export interface ReviewRow {
   source_sku: string;
   listing_id: string;
   title: string;
+  image_url?: string;
   brand: string;
   status: string;
   status_label: string;

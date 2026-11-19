@@ -8,6 +8,7 @@ import { errorMessage } from '../utils/display';
 import PrelistingPreview from '../components/PrelistingPreview.vue';
 import WalmartListingEditor from '../components/WalmartListingEditor.vue';
 import FilterSelect from '../components/FilterSelect.vue';
+import AppIcon from '../components/AppIcon.vue';
 const route = useRoute();
 const { auth } = useAuth();
 const canEdit = computed(
@@ -202,12 +203,24 @@ onBeforeUnmount(() => {
         ...stores.map((store) => ({ value: String(store.id), label: store.name })),
       ]"
     />
-    <input
-      v-model="query"
-      type="search"
-      aria-label="搜索批次、店铺或品牌"
-      placeholder="搜索批次、店铺或品牌"
-    />
+    <div class="batch-search">
+      <AppIcon name="Search" />
+      <input
+        v-model="query"
+        type="search"
+        aria-label="搜索批次、店铺或品牌"
+        placeholder="搜索批次、店铺或品牌"
+      />
+      <button
+        v-if="query"
+        type="button"
+        class="batch-search-clear"
+        aria-label="清空批次搜索"
+        @click="query = ''"
+      >
+        <AppIcon name="X" />
+      </button>
+    </div>
     <button class="btn" :disabled="busy" @click="trash = !trash">
       {{ trash ? '返回批次列表' : '回收站' }}
     </button>
@@ -355,17 +368,96 @@ onBeforeUnmount(() => {
 </template>
 <style scoped>
 .batch-filters {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(150px, 190px) minmax(150px, 190px) minmax(240px, 1fr) auto;
   align-items: center;
   gap: 12px;
   margin: 20px 0;
+  padding: 16px;
+  border: 1px solid #dce5ee;
+  border-radius: 14px;
+  background: #f8fafc;
 }
 .batch-filters > * {
-  min-width: 160px;
+  min-width: 0;
 }
-.batch-filters input {
+.batch-filters :deep(.filter-select summary) {
+  height: 42px;
+  border-radius: 10px;
+}
+.batch-filters > .btn {
+  min-height: 42px;
+  padding-inline: 18px;
+  border-radius: 10px;
+}
+.batch-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid #d6e2ed;
+  border-radius: 10px;
+  background: #fff;
+  color: #7b91a6;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease;
+}
+.batch-search:focus-within {
+  border-color: #89a6c2;
+  box-shadow: 0 0 0 3px #6e94ba1a;
+}
+.batch-search input {
   flex: 1;
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 0;
+  border: 0;
+  outline: none;
+  box-shadow: none;
+  background: transparent;
+  color: #344b61;
+  font-size: 14px;
+  appearance: none;
+}
+.batch-search input::placeholder {
+  color: #8a9aac;
+}
+.batch-search input::-webkit-search-cancel-button {
+  appearance: none;
+}
+.batch-search-clear {
+  display: grid;
+  place-items: center;
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: #edf3f8;
+  color: #6b839a;
+}
+.batch-search-clear:hover {
+  background: #dfeaf4;
+  color: #345b80;
+}
+@media (max-width: 1000px) {
+  .batch-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 540px) {
+  .batch-filters {
+    padding: 12px;
+    gap: 10px;
+  }
+  .batch-search {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
 }
 .batch-actions {
   display: flex;

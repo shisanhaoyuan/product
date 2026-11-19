@@ -5,6 +5,7 @@ import { useAuth } from '../composables/useAuth';
 import { errorMessage } from '../utils/display';
 import FilterSelect from '../components/FilterSelect.vue';
 import AppIcon from '../components/AppIcon.vue';
+import ProductImage from '../components/ProductImage.vue';
 import WalmartResultReasons from '../components/WalmartResultReasons.vue';
 const { auth } = useAuth();
 const canPoll = computed(() => !auth.enabled || auth.user?.role === 'admin');
@@ -255,10 +256,21 @@ onBeforeUnmount(() => {
         <tbody>
           <tr v-for="row in data?.items" :key="`${row.attempt_id}:${row.platform_sku}`">
             <td class="review-product">
-              <strong>{{ row.title || row.source_sku }}</strong
-              ><code>{{ row.platform_sku }}</code
-              ><small>来源 SKU：{{ row.source_sku }}</small
-              ><small v-if="!row.is_latest">历史提交，已有较新结果</small>
+              <div class="review-product-summary">
+                <button
+                  class="review-product-photo"
+                  :aria-label="'查看商品审核详情 ' + row.source_sku"
+                  @click="open(row)"
+                >
+                  <ProductImage :src="row.image_url" :alt="row.title || row.source_sku" />
+                </button>
+                <div class="review-product-copy">
+                  <strong>{{ row.title || row.source_sku }}</strong
+                  ><code>{{ row.platform_sku }}</code
+                  ><small>来源 SKU：{{ row.source_sku }}</small
+                  ><small v-if="!row.is_latest">历史提交，已有较新结果</small>
+                </div>
+              </div>
             </td>
             <td>
               <strong>{{ row.store_name }}</strong
@@ -341,7 +353,12 @@ onBeforeUnmount(() => {
           <AppIcon name="X" />
         </button>
       </div>
-      <h3>{{ selected.title || selected.source_sku }}</h3>
+      <div class="review-product-summary review-detail-product">
+        <div class="review-product-photo">
+          <ProductImage :src="selected.image_url" :alt="selected.title || selected.source_sku" />
+        </div>
+        <h3>{{ selected.title || selected.source_sku }}</h3>
+      </div>
       <span class="review-status" :class="tone(selected.status)">{{ selected.status_label }}</span>
       <p>{{ selected.message }}</p>
       <dl class="review-facts">
@@ -509,8 +526,54 @@ onBeforeUnmount(() => {
   color: #6a7c91;
 }
 .review-product {
-  min-width: 220px;
-  max-width: 330px;
+  min-width: 310px;
+  max-width: 450px;
+  overflow-wrap: anywhere;
+}
+.review-product-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+.review-product-photo {
+  flex: 0 0 84px;
+  width: 84px;
+  height: 84px;
+  padding: 5px;
+  overflow: hidden;
+  border: 1px solid #dce5ee;
+  border-radius: 12px;
+  background: #f7f9fc;
+}
+button.review-product-photo:hover {
+  border-color: #8da9c5;
+  background: #edf3f9;
+}
+.review-product-photo :deep(img) {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: 7px;
+}
+.review-product-photo :deep(.image-placeholder) {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 4px;
+  font-size: 10px;
+  text-align: center;
+}
+.review-product-copy {
+  min-width: 0;
+  flex: 1;
+}
+.review-detail-product {
+  margin: 20px 0;
+  align-items: center;
+}
+.review-detail-product h3 {
+  margin: 0;
   overflow-wrap: anywhere;
 }
 .review-product strong {

@@ -27,6 +27,7 @@ def queue_sql(postgres):
         expanded = "CROSS JOIN LATERAL jsonb_array_elements(CAST(a.rows_json AS jsonb)) AS entry(value)"
         field = lambda name: f"entry.value->>'{name}'"
         title = "entry.value->'visible'->>'productName'"
+        image = "entry.value->'visible'->>'mainImageUrl'"
         brand = "CAST(b.preview_json AS jsonb)->>'brand'"
         result = "CAST(a.results_json AS jsonb)->(entry.value->>'platform_sku')"
         state = "result_json->>'status'"
@@ -34,6 +35,7 @@ def queue_sql(postgres):
         expanded = 'JOIN json_each(a.rows_json) AS entry'
         field = lambda name: f"json_extract(entry.value,'$.{name}')"
         title = "json_extract(entry.value,'$.visible.productName')"
+        image = "json_extract(entry.value,'$.visible.mainImageUrl')"
         brand = "json_extract(b.preview_json,'$.brand')"
         result = f"(SELECT value FROM json_each(a.results_json) WHERE key={field('platform_sku')})"
         state = "json_extract(result_json,'$.status')"
@@ -42,6 +44,7 @@ def queue_sql(postgres):
                a.feed_id,a.message AS attempt_message,a.created_at,a.updated_at,s.name AS store_name,
                {field('platform_sku')} AS platform_sku,{field('source_sku')} AS source_sku,
                {field('listing_id')} AS listing_id,COALESCE({title},'') AS title,
+               COALESCE({image},'') AS image_url,
                COALESCE({brand},'') AS brand,{result} AS result_json,
                t.state AS polling_state,t.next_at,t.last_error,
                CASE WHEN w.partner_id=a.partner_id AND w.status='verified'

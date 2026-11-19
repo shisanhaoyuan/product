@@ -58,6 +58,32 @@ def test_partial_submission_keeps_unsubmitted_work_and_unknown_is_not_failure(pu
     assert queue(c,status='unknown')['total']==1
 
 
+def test_review_images_match_submitted_skus_and_preserve_history(publishing):
+    c,catalog,_,_,b,base,remote=publishing
+    attempt=send(publishing,ready(publishing))
+    with catalog.connect() as db:
+        submitted=json.loads(db.execute('SELECT rows_json FROM walmart_listing_attempts WHERE id=?',
+                                       (attempt['id'],)).fetchone()[0])
+        for index,row in enumerate(submitted):
+            row['visible']['mainImageUrl']=f'https://example.com/submitted-{index}.jpg'
+        db.execute('UPDATE walmart_listing_attempts SET rows_json=? WHERE id=?',
+                   (encoded(submitted),attempt['id']))
+    before=len(remote.calls)
+    expected={r['platform_sku']:r['visible']['mainImageUrl'] for r in submitted}
+    assert {r['platform_sku']:r['image_url'] for r in queue(c)['items']}==expected
+    assert len(remote.calls)==before
+    outcome(catalog,attempt['id'],'failed')
+    send(publishing,ready(publishing))
+    history=queue(c,history=True)['items']
+    assert {r['platform_sku']:r['image_url'] for r in history if r['attempt_id']==attempt['id']}==expected
+    with catalog.connect() as db:
+        submitted[0]['visible'].pop('mainImageUrl')
+        submitted[1]['visible']['mainImageUrl']=None
+        db.execute('UPDATE walmart_listing_attempts SET rows_json=? WHERE id=?',
+                   (encoded(submitted),attempt['id']))
+    assert all(r['image_url']=='' for r in queue(c,history=True)['items'] if r['attempt_id']==attempt['id'])
+
+
 def test_filters_pagination_binding_scopes_and_read_does_not_contact_platform(publishing):
     c,catalog,_,_,b,base,remote=publishing
     doc=ready(publishing);a=send(publishing,doc)
