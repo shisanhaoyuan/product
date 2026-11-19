@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { isSupplier, sourceInfo } from '../utils/productSources';
 import type { PrelistingPreview } from '../api/types';
 import { money, plain } from '../utils/display';
 import StatusBadge from './StatusBadge.vue';
@@ -38,7 +39,10 @@ defineProps<{ preview: PrelistingPreview }>();
         item.status === 'ready' ? '预检查通过' : '待复核'
       }}</StatusBadge
       ><strong>{{ item.sku }}</strong
-      ><span>{{ item.source === 'GigaB2B' ? '大建云仓 · ' : '' }}{{ item.title }}</span>
+      ><span
+        >{{ isSupplier(item.source) ? sourceInfo(item.source).label + ' · ' : ''
+        }}{{ item.title }}</span
+      >
     </summary>
     <div class="plan-item-body">
       <p class="subtitle">
@@ -53,8 +57,8 @@ defineProps<{ preview: PrelistingPreview }>();
       </p>
       <p v-for="issue in item.errors" :key="issue" class="seller-risk-label">{{ issue }}</p>
       <p v-for="warning in item.warnings" :key="warning" class="subtitle">{{ warning }}</p>
-      <p v-if="item.source === 'GigaB2B'" class="subtitle">
-        计算规则：（来源商品单价 ＋ 运费（含打包费））× {{ preview.multiplier }}，结果保留两位小数。
+      <p v-if="isSupplier(item.source)" class="subtitle">
+        计算规则：（来源商品单价 ＋ 配送运费）× {{ preview.multiplier }}，结果保留两位小数。
       </p>
       <div class="table-scroll">
         <table class="data-table">
@@ -63,19 +67,19 @@ defineProps<{ preview: PrelistingPreview }>();
               <th>SKU / ASIN</th>
               <th>目标店铺 SKU</th>
               <th>预上架编码</th>
-              <th>{{ item.source === 'GigaB2B' ? '来源商品单价' : '当前售价' }}</th>
+              <th>{{ isSupplier(item.source) ? '来源商品单价' : '当前售价' }}</th>
               <th>来源含运费</th>
-              <th>{{ item.source === 'GigaB2B' ? '物流费（含打包）' : '首次 ERP 原价' }}</th>
+              <th>{{ isSupplier(item.source) ? '配送运费' : '首次 ERP 原价' }}</th>
               <th>计价基准</th>
               <th>预上架售价</th>
-              <th>{{ item.source === 'GigaB2B' ? '来源可售 / 上架库存' : '历史库存' }}</th>
+              <th>{{ isSupplier(item.source) ? '来源可售 / 上架库存' : '历史库存' }}</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="v in item.variants" :key="v.sku">
               <td>
                 {{ v.sku }}<br /><span class="muted">{{
-                  item.source === 'GigaB2B' ? '大建云仓供应商 SKU' : v.asin || '缺少 ASIN'
+                  isSupplier(item.source) ? '供应商 SKU' : v.asin || '缺少 ASIN'
                 }}</span>
               </td>
               <td class="platform-sku">
@@ -97,16 +101,16 @@ defineProps<{ preview: PrelistingPreview }>();
                 <span v-else-if="v.assigned_identifier" class="muted">创建批次时随机分配</span>
                 <span v-else class="muted">{{ v.content?.ean || '未填写' }}</span>
               </td>
-              <td>{{ money(item.source === 'GigaB2B' ? v.unit_price : v.current_price) }}</td>
+              <td>{{ money(isSupplier(item.source) ? v.unit_price : v.current_price) }}</td>
               <td>{{ money(v.landed) }}</td>
-              <td>{{ money(item.source === 'GigaB2B' ? v.shipping_fee : v.original) }}</td>
+              <td>{{ money(isSupplier(item.source) ? v.shipping_fee : v.original) }}</td>
               <td>{{ money(v.base) }}</td>
               <td>
                 <strong>{{ money(v.price) }}</strong>
                 <p v-if="v.error" class="seller-risk-label">{{ v.error }}</p>
               </td>
               <td>
-                <template v-if="item.source === 'GigaB2B'"
+                <template v-if="isSupplier(item.source)"
                   >{{ v.source_stock ?? '未记录' }} / </template
                 >{{ v.stock ?? '未记录' }}
               </td>
@@ -120,7 +124,7 @@ defineProps<{ preview: PrelistingPreview }>();
         class="details"
       >
         <summary>
-          {{ v.sku }} · {{ item.source === 'GigaB2B' ? '云仓商品内容' : '子商品完整内容' }}
+          {{ v.sku }} · {{ isSupplier(item.source) ? '供应商商品内容' : '子商品完整内容' }}
         </summary>
         <template v-if="v.content">
           <p class="subtitle">

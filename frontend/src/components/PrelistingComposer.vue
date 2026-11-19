@@ -255,10 +255,17 @@ async function create() {
       </section>
       <div class="composer-actions">
         <p class="composer-hint">
-          {{ source === 'GigaB2B' ? '来源普通单价＋物流费（含打包）' : '基准价格' }} × 本次倍率<br />
+          {{
+            source === 'Saleyee'
+              ? '赛盈商品价＋已填写运费'
+              : source === 'GigaB2B'
+                ? '来源普通单价＋物流费（含打包）'
+                : '基准价格'
+          }}
+          × 本次倍率<br />
           <span>{{
-            source === 'GigaB2B'
-              ? '云仓按供应商 SKU 独立计价 · 保留两位小数'
+            source === 'GigaB2B' || source === 'Saleyee'
+              ? '供应商按供应商 SKU 独立计价 · 保留两位小数'
               : '多变体 .99 尾价 · 单商品保留两位小数'
           }}</span>
         </p>

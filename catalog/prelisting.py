@@ -105,7 +105,7 @@ class StoreState(StoreCodeInput):
 
 
 class Filters(StrictInput):
-    source: Literal['', 'Amazon', 'GigaB2B'] = ''
+    source: Literal['', 'Amazon', 'GigaB2B', 'Saleyee'] = ''
     deduplicate: bool = False
     q: str = Field(default='', max_length=300)
     identifiers: str = Field(default='', max_length=6000)
@@ -275,18 +275,18 @@ def build_preview(catalog, db, data, exclude_batch=None):
     items, seen, seen_variants, conflict = [], set(), set(), False
     for row in rows:
         d = json.loads(row['data_json'])
-        is_giga = d['source'] == 'GigaB2B'
+        is_supplier = d['source'] in ('GigaB2B', 'Saleyee')
         key = (seller_key(d['source']), claim_identity(d))
         errors, warnings = [], ['使用历史核验记录；正式执行前需重新采集价格和库存']
-        if not is_giga and d.get('local_edit', {}).get('changed'):
+        if not is_supplier and d.get('local_edit', {}).get('changed'):
             errors.append('存在本地手工修改，尚未同步 ERP 或重新核验')
         reserved = db.execute('SELECT batch_id FROM prelisting_claims WHERE source_key=? AND asin=? AND store_id=?', (*key, data.store_id)).fetchone()
         if key in seen or (reserved and reserved['batch_id'] != exclude_batch):
-            errors.append(('同来源供应商 SKU' if is_giga else '同来源 ASIN') + ' 已在本次选择或该目标店铺的未取消批次中'); conflict = True
+            errors.append(('同来源供应商 SKU' if is_supplier else '同来源 ASIN') + ' 已在本次选择或该目标店铺的未取消批次中'); conflict = True
         seen.add(key)
         blocked = matches(d, entries)
         errors += [f"卖家已拉黑：{b['seller']}（{b['reason']}）" for b in blocked]
-        if not is_giga and not d['fill_complete']:
+        if not is_supplier and not d['fill_complete']:
             errors.append('商品填写尚未核验完整')
         children = d['variants']
         if data.variant_skus is not None:
@@ -294,10 +294,14 @@ def build_preview(catalog, db, data, exclude_batch=None):
             if not selected.issubset({v['sku'] for v in children}):
                 raise HTTPException(409, '所选子 SKU 不属于该商品或已不存在，请刷新后重新选择')
             children = [v for v in children if v['sku'] in selected]
-        if is_giga:
+        if is_supplier:
             original = json.loads(db.execute('SELECT data_json FROM listings WHERE id=?', (row['id'],)).fetchone()[0])
-            priced, giga_errors, warnings = prepare_giga(d, original, data.multiplier)
-            errors.extend(giga_errors)
+            if d['source'] == 'Saleyee':
+                from .saleyee_prelisting import prepare as prepare_supplier
+            else:
+                prepare_supplier = prepare_giga
+            priced, supplier_errors, warnings = prepare_supplier(d, original, data.multiplier)
+            errors.extend(supplier_errors)
         elif children:
             priced = [dict(sku=v['sku'], asin=v['asin'], current_price=v['price'], stock=v['stock'],
                            content={k: v.get(k) for k in ('images', 'attributes', 'product_id_type', 'ean',
@@ -320,7 +324,7 @@ def build_preview(catalog, db, data, exclude_batch=None):
                 variant['assigned_identifier'] = dict(state='assigned',type=assigned['kind'],value=assigned['value'])
             elif has_pool:
                 variant['assigned_identifier'] = dict(state='pending',type='EAN',value='')
-        if not is_giga:
+        if not is_supplier:
             errors += [f"{v['sku']}：{v['error']}" for v in priced if v['error']]
             errors += [f"{v['sku']}：库存缺失或不符合 0 / 10 规则，执行前需核验" for v in priced if str(v['stock']) not in {'0', '10'}]
         if not d['seller'] or any(not v['seller'] for v in children):
@@ -335,7 +339,7 @@ def build_preview(catalog, db, data, exclude_batch=None):
                   ready_count=sum(d['status'] == 'ready' for d in items), can_create=not conflict,
                   execution_enabled=False,
                   price_rule=('giga_regular_landed_v1' if all(i['source'] == 'GigaB2B' for i in items)
-                              else 'source_specific_v1' if any(i['source'] == 'GigaB2B' for i in items)
+                              else 'source_specific_v1' if any(i['source'] in ('GigaB2B', 'Saleyee') for i in items)
                               else 'verified_higher_basis_v1'), sku_rule=platform_sku.RULE)
     from .listing_templates import annotate_preview
     annotate_preview(db, data, result, exclude_batch)

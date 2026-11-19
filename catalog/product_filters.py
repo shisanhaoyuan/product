@@ -90,7 +90,7 @@ def price_clause(direction, postgres):
             COALESCE({field('s.data_json','source_facts','price')},{field('s.data_json','price')}) AS price,
             {field('s.data_json','source_facts','currency')} AS currency
         FROM snapshots s JOIN listings l ON l.id=s.listing_id JOIN products p ON p.id=l.product_id
-        WHERE p.source='GigaB2B'
+        WHERE p.source IN ('GigaB2B','Saleyee')
         UNION ALL
         SELECT c.listing_id,c.variant_sku || ':' || c.asin,c.captured_at,c.id,
             COALESCE({field('c.data_json','basis_price')},{field('c.data_json','price')}),
@@ -118,9 +118,9 @@ def price_clause(direction, postgres):
             THEN ({number('price')})-({number('old_price')}) END AS delta
         FROM ranked WHERE n=1
     ), expected AS (
-        SELECT l.id AS listing_id,CASE WHEN p.source='GigaB2B' THEN '' ELSE ':' || p.asin END AS target
+        SELECT l.id AS listing_id,CASE WHEN p.source IN ('GigaB2B','Saleyee') THEN '' ELSE ':' || p.asin END AS target
         FROM listings l JOIN products p ON p.id=l.product_id
-        WHERE p.source='GigaB2B' OR NOT EXISTS (SELECT 1 FROM variants v WHERE v.listing_id=l.id)
+        WHERE p.source IN ('GigaB2B','Saleyee') OR NOT EXISTS (SELECT 1 FROM variants v WHERE v.listing_id=l.id)
         UNION ALL
         SELECT v.listing_id,v.sku || ':' || v.asin FROM variants v
         JOIN listings l ON l.id=v.listing_id JOIN products p ON p.id=l.product_id WHERE p.source='Amazon'

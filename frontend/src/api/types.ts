@@ -88,7 +88,14 @@ export interface GigaSummary {
   product_return_rate?: unknown;
   risks: string[];
 }
+export interface SaleyeeSummary {
+  inventory: number | null;
+  shipping: string | null;
+  landed: string | null;
+  warnings: string[];
+}
 export interface ProductSummary extends EvidenceStatus {
+  saleyee_summary?: SaleyeeSummary | null;
   store_history?: StoreHistory[];
   giga_summary?: GigaSummary | null;
   listing_count: number;

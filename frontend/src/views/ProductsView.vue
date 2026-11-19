@@ -1,5 +1,7 @@
 <script setup lang="ts">
+import { sourceFromPath, isSupplier, sourceInfo } from '../utils/productSources';
 import ProductStoreHistory from '../components/ProductStoreHistory.vue';
+import SaleyeeQuickFacts from '../components/SaleyeeQuickFacts.vue';
 import GigaQuickFacts from '../components/GigaQuickFacts.vue';
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
@@ -31,12 +33,14 @@ const composerSelection = ref<PrelistingSelection>({}),
 
 const route = useRoute(),
   router = useRouter();
+const isWarehouse = computed(() => isSupplier(source.value));
 const isGiga = computed(() => route.path === '/giga-products');
-const source = computed(() => (isGiga.value ? 'GigaB2B' : 'Amazon'));
-const libraryPath = computed(() => (isGiga.value ? '/giga-products' : '/products'));
-const libraryName = computed(() => (isGiga.value ? '大建云仓商品库' : '亚马逊商品库'));
+const currentSource = computed(() => sourceFromPath(route.path));
+const source = computed(() => currentSource.value.source);
+const libraryPath = computed(() => currentSource.value.path);
+const libraryName = computed(() => currentSource.value.name);
 const { stats, refreshStats } = useCatalog(source);
-const detailPath = (id: string) => (isGiga.value ? '/giga-product/' : '/product/') + id;
+const detailPath = (id: string) => currentSource.value.detail + id;
 const data = ref<ProductPage>();
 const listingStores = ref<ListingStore[]>([]);
 const storeFilterError = ref('');
@@ -77,7 +81,7 @@ const filters = computed(() => {
     if (typeof value === 'string' && value) params.set(key, value);
   }
   if (route.path === '/review' && !params.has('status')) params.set('status', 'review');
-  if (isGiga.value && route.query.inventory_status === 'out_of_stock')
+  if (isWarehouse.value && route.query.inventory_status === 'out_of_stock')
     params.set('inventory_status', 'out_of_stock');
   params.set('source', source.value);
   return params;
@@ -185,13 +189,13 @@ const pages = computed(() =>
 );
 const metrics = computed(() =>
   stats.value
-    ? isGiga.value
+    ? isWarehouse.value
       ? [
           {
             label: '供应商商品',
             value: stats.value.products,
             icon: 'Package',
-            foot: '大建云仓独立来源库',
+            foot: sourceInfo(source.value).name,
             type: 'products',
             progress: null,
           },
@@ -207,7 +211,7 @@ const metrics = computed(() =>
             label: '来源类目',
             value: stats.value.categories.filter((c) => c.value !== 'missing').length,
             icon: 'LayoutGrid',
-            foot: '大建云仓原始类目',
+            foot: '供应商原始类目',
             type: 'saved',
             progress: null,
           },
@@ -257,8 +261,8 @@ const metrics = computed(() =>
     : [],
 );
 const tabs = computed(() =>
-  isGiga.value
-    ? [{ value: '', label: '全部云仓商品', count: stats.value?.unique_counts?.all_products }]
+  isWarehouse.value
+    ? [{ value: '', label: '全部供应商商品', count: stats.value?.unique_counts?.all_products }]
     : [
         { value: '', label: '全部商品', count: stats.value?.unique_counts?.all_products },
         { value: 'complete', label: '核验完整', count: stats.value?.unique_counts?.complete },
@@ -475,7 +479,7 @@ onBeforeUnmount(() => {
           name="q"
           :value="search"
           :placeholder="
-            isGiga
+            isWarehouse
               ? '搜索 SKU、商品名称、卖家…支持批量粘贴'
               : '搜索 ASIN、SKU、商品名称、卖家…支持批量粘贴'
           "
@@ -486,9 +490,9 @@ onBeforeUnmount(() => {
         />
       </div>
       <FilterSelect
-        v-if="isGiga"
+        v-if="isWarehouse"
         label="筛选库存"
-        title="按大建云仓 Seller 可售库存筛选；未返回库存不计入无库存"
+        title="按供应商已匹配的可售库存筛选；未返回库存不计入无库存"
         multiple
         :model-value="filterValue('inventory_status')"
         :options="[
@@ -561,7 +565,7 @@ onBeforeUnmount(() => {
         @update:model-value="changeMultiFilter('date', $event)"
       />
       <ListingCountFilter
-        v-if="!isGiga"
+        v-if="!isWarehouse"
         :minimum="filters.get('listing_count_min') || ''"
         :maximum="filters.get('listing_count_max') || ''"
         @change="changeListingCount"
@@ -582,8 +586,8 @@ onBeforeUnmount(() => {
       v-if="filterValue('listed_store') || filterValue('price_change') || filters.get('multi')"
       class="batch-search-hint"
     >
-      同一筛选项可多选，匹配任一选中值即可；不同筛选项需同时满足。上架店铺仅匹配沃尔玛 API 最近一次回读确认为已发布的商品，不含预上架、审核中或失败记录。
-      价格比较最近两次同
+      同一筛选项可多选，匹配任一选中值即可；不同筛选项需同时满足。上架店铺仅匹配沃尔玛 API
+      最近一次回读确认为已发布的商品，不含预上架、审核中或失败记录。 价格比较最近两次同
       SKU、同币种的来源单价（不含运费、倍率）；云仓使用同步或巡查记录，亚马逊使用来源采集记录。
       多变体只要有一个涨价或降价即可命中；全部可比较且相同才算未变化。
     </p>
@@ -635,7 +639,9 @@ onBeforeUnmount(() => {
       ><span class="data-note"
         ><i></i
         >{{
-          isGiga ? '按大建云仓账号与 SKU 独立建档' : '按 ASIN 去重 · 上架次数按亚马逊店铺模板统计'
+          isWarehouse
+            ? '按供应商账号与 SKU 独立建档'
+            : '按 ASIN 去重 · 上架次数按亚马逊店铺模板统计'
         }}</span
       >
     </div>
@@ -666,8 +672,8 @@ onBeforeUnmount(() => {
             <tr>
               <th v-if="canEdit">选择</th>
               <th>商品</th>
-              <th v-if="!isGiga">上架次数 / 店铺</th>
-              <th>{{ isGiga ? '供应商 SKU' : 'ASIN / SKU' }}</th>
+              <th v-if="!isWarehouse">上架次数 / 店铺</th>
+              <th>{{ isWarehouse ? '供应商 SKU' : 'ASIN / SKU' }}</th>
               <th>店铺 / 品牌</th>
               <th>来源 / 卖家</th>
               <th>价格 / 币种</th>
@@ -697,11 +703,11 @@ onBeforeUnmount(() => {
                   ></RouterLink
                 >
               </td>
-              <td v-if="!isGiga" class="listing-coverage-cell">
+              <td v-if="!isWarehouse" class="listing-coverage-cell">
                 <ListingCoverage :product="product" />
               </td>
               <td class="mono">
-                <template v-if="!isGiga">{{ product.asin }}<br /></template
+                <template v-if="!isWarehouse">{{ product.asin }}<br /></template
                 ><span class="muted">{{ product.sku }}</span>
               </td>
               <td>
@@ -728,7 +734,10 @@ onBeforeUnmount(() => {
                       : product.prices,
                     product.currency ?? 'USD',
                   )
-                }}<GigaQuickFacts v-if="isGiga" :summary="product.giga_summary" />
+                }}<GigaQuickFacts v-if="isGiga" :summary="product.giga_summary" /><SaleyeeQuickFacts
+                  v-if="source === 'Saleyee'"
+                  :summary="product.saleyee_summary"
+                />
               </td>
               <td>
                 <StatusBadge :type="productStatus(product).type">{{
@@ -787,8 +796,8 @@ onBeforeUnmount(() => {
     <AppIcon name="Database" />
     <div>
       {{
-        isGiga
-          ? '大建云仓 API 来源资料 · 原价、运费与可售库存分开记录。'
+        isWarehouse
+          ? '供应商 API 来源资料 · 原价、运费与可售库存分开记录。'
           : '历史快照 · 商品价格、库存与文案以详情中的回读记录为准。'
       }}
     </div>

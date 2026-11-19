@@ -3,6 +3,9 @@
 # values and select placeholders; never infer a taxonomy from product titles.
 _VALUE = "trim(json_extract(data_json,'$.fields.dc_productType'), char(9)||char(10)||char(13)||' ')"
 CATEGORY_SQL = f"""CASE
+    WHEN json_extract(data_json,'$.source')='Saleyee'
+      AND json_type(data_json,'$.fields."Saleyee category"')='text'
+    THEN trim(json_extract(data_json,'$.fields."Saleyee category"'))
     WHEN json_extract(data_json,'$.source')='GigaB2B'
       AND json_type(data_json,'$.fields."GIGA category"')='text'
     THEN trim(json_extract(data_json,'$.fields."GIGA category"'))

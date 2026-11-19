@@ -146,7 +146,7 @@ class Catalog:
                 raw = encoded(data)
                 digest = hashlib.sha256(raw.encode()).hexdigest()
                 lid = hashlib.sha256(f"{bundle.namespace}:{item.external_id}".encode()).hexdigest()[:24]
-                identity = f"{bundle.namespace}:{item.sku}" if item.source == "GigaB2B" and not item.asin else item.asin
+                identity = f"{bundle.namespace}:{item.sku}" if item.source in ("GigaB2B", "Saleyee") and not item.asin else item.asin
                 pid = hashlib.sha256(f"{item.source}:{identity}".encode()).hexdigest()[:24]
                 old = db.execute("SELECT * FROM listings WHERE id=?", (lid,)).fetchone()
                 if old:
@@ -239,13 +239,18 @@ class Catalog:
             args.append(source)
         if inventory_status == 'out_of_stock':
             # Filter source stock before pagination; local edits are not supplier availability.
-            clauses.append("listings.product_id IN (SELECT id FROM products WHERE source='GigaB2B')")
-            if self.postgres:
-                stock = "(data_json::jsonb #> '{source_facts,giga,inventory,sellerInventoryInfo,sellerAvailableInventory}')"
-                clauses.append(f"jsonb_typeof({stock})='number' AND {stock}::text='0'")
-            else:
-                path = '$.source_facts.giga.inventory.sellerInventoryInfo.sellerAvailableInventory'
-                clauses.append(f"json_type(data_json,'{path}')='integer' AND json_extract(data_json,'{path}')=0")
+            paths = [('GigaB2B', ['source_facts','giga','inventory','sellerInventoryInfo','sellerAvailableInventory']),
+                     ('Saleyee', ['source_facts','inventory'])]
+            choices = []
+            for supplier, parts in paths:
+                if self.postgres:
+                    stock = "(data_json::jsonb #> '{" + ','.join(parts) + "}')"
+                    condition = f"jsonb_typeof({stock})='number' AND {stock}::text='0'"
+                else:
+                    path = '$.' + '.'.join(parts)
+                    condition = f"json_type(data_json,'{path}')='integer' AND json_extract(data_json,'{path}')=0"
+                choices.append(f"(listings.product_id IN (SELECT id FROM products WHERE source='{supplier}') AND {condition})")
+            clauses.append('(' + ' OR '.join(choices) + ')')
         if listed_store:
             from .product_filters import store_clause
             clauses.append(store_clause(self.postgres))
@@ -346,8 +351,9 @@ class Catalog:
                     'template','creator','uploaded_at','observed_at','evidence_kind','save_succeeded',
                     'fill_complete','readback_verified','local_edit')} | dict(manual_review=d.get('manual_review'),id=r['id'],title=d['copy']['title'],
                     image=d['images'][0] if d['images'] else next((v['images'][0] for v in d['variants'] if v['images']),''),
+                    saleyee_summary={k:d.get('source_facts',{}).get(k) for k in ('inventory','shipping','landed','warnings')} if d['source']=='Saleyee' else None,
                     giga_summary=giga_summary(d.get('source_facts')) if d['source']=='GigaB2B' else None,
-                    variant_count=len(d['variants']),prices=prices,currency=(d.get('source_facts',{}).get('currency') or '') if d['source']=='GigaB2B' else 'USD',issue_count=0 if review.get('valid') and review.get('complete') else len(d['issues']),category=r['category'],seller_blacklist=matches(d, entries),
+                    variant_count=len(d['variants']),prices=prices,currency=(d.get('source_facts',{}).get('currency') or '') if d['source'] in ('GigaB2B','Saleyee') else 'USD',issue_count=0 if review.get('valid') and review.get('complete') else len(d['issues']),category=r['category'],seller_blacklist=matches(d, entries),
                     listing_count=sum(s['count'] for s in coverage.get(d['asin'], [])) or 1,
                     store_history=store_history[r['id']],listing_stores=coverage.get(d['asin'], [dict(store=d['store'],count=1)])))
             return dict(items=items,total=total,page=page,page_size=page_size)

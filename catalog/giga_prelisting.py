@@ -7,7 +7,7 @@ from .giga_presentation import summary, obj
 
 def claim_identity(item):
     # The existing claim column is named asin; GIGA has no ASIN.
-    return 'sku:' + item['sku'] if item['source'] == 'GigaB2B' else item['asin']
+    return 'sku:' + item['sku'] if item['source'] in ('GigaB2B', 'Saleyee') else item['asin']
 
 
 def has_text(value):

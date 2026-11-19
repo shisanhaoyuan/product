@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { sourceInfo, sourceFromPath, isSupplier } from '../utils/productSources';
+import SaleyeeSourceFacts from '../components/SaleyeeSourceFacts.vue';
 import ProductStoreHistory from '../components/ProductStoreHistory.vue';
 import { computed, nextTick, onBeforeUnmount, provide, ref, watch } from 'vue';
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router';
@@ -44,7 +46,7 @@ function variantPlanCreated(id: string) {
   void router.push('/prelisting/' + id);
 }
 const { stats, refreshStats } = useCatalog(
-  () => product.value?.source || (route.path.startsWith('/giga-') ? 'GigaB2B' : 'Amazon'),
+  () => product.value?.source || sourceFromPath(route.path).source,
 );
 const product = ref<ProductDetail>(),
   loading = ref(true),
@@ -221,7 +223,9 @@ const identity = computed(() => {
   if (!p) return [];
   return [
     [
-      p.source === 'GigaB2B' ? '大建云仓来源类目' : '商品类目（已记录 Product Type）',
+      isSupplier(p.source)
+        ? sourceInfo(p.source).label + '来源类目'
+        : '商品类目（已记录 Product Type）',
       p.category || '未记录类目',
     ],
     ['商品 SKU', p.sku],
@@ -266,7 +270,7 @@ async function load() {
     const result = await catalogApi.product(String(route.params.id), request.signal);
     if (request.signal.aborted) return;
     product.value = result;
-    const expectedPath = (result.source === 'GigaB2B' ? '/giga-product/' : '/product/') + result.id;
+    const expectedPath = sourceInfo(result.source).detail + result.id;
     if (route.path !== expectedPath) await router.replace(expectedPath);
     if (!stats.value) await refreshStats();
   } catch (reason) {
@@ -297,15 +301,9 @@ onBeforeUnmount(() => {
 <template>
   <RouterLink
     class="back-link"
-    :to="
-      product?.source === 'GigaB2B' || route.path.startsWith('/giga-')
-        ? '/giga-products'
-        : '/products'
-    "
-    ><AppIcon name="ArrowLeft" />{{
-      product?.source === 'GigaB2B' || route.path.startsWith('/giga-')
-        ? '返回大建云仓商品库'
-        : '返回亚马逊商品库'
+    :to="sourceInfo(product?.source || sourceFromPath(route.path).source).path"
+    ><AppIcon name="ArrowLeft" />返回{{
+      sourceInfo(product?.source || sourceFromPath(route.path).source).name
     }}</RouterLink
   >
   <div v-if="loading" class="loading">正在读取商品详情…</div>
@@ -325,7 +323,7 @@ onBeforeUnmount(() => {
           <span class="dot-separator">/</span> {{ product.template }}
         </p>
         <button
-          v-if="product.source === 'GigaB2B' && canEdit"
+          v-if="isSupplier(product.source) && canEdit"
           class="btn primary"
           :disabled="!!editActive || editBusy"
           @click="wholeProductPlan = true"
@@ -385,8 +383,8 @@ onBeforeUnmount(() => {
     </div>
     <div v-if="product.evidence_kind !== 'persisted_readback'" class="notice warning notice-space">
       {{
-        product.source === 'GigaB2B'
-          ? '本商品为大建云仓 API 来源资料，尚未完成目标店铺的填写与上架核验。'
+        isSupplier(product.source)
+          ? '本商品为供应商 API 来源资料，尚未完成目标店铺的填写与上架核验。'
           : '本商品没有可用的独立产品库回读。下方为历史编辑快照，不能视为已保存的 ERP 内容。'
       }}
     </div>
@@ -454,7 +452,7 @@ onBeforeUnmount(() => {
             <div class="detail-fact">
               <label
                 >{{
-                  product.source === 'GigaB2B'
+                  isSupplier(product.source)
                     ? '商品库编辑单价'
                     : product.variants.length
                       ? '子变体售价范围'
@@ -462,9 +460,7 @@ onBeforeUnmount(() => {
                 }}
                 ·
                 {{
-                  product.source === 'GigaB2B'
-                    ? product.source_facts.currency || '币种未返回'
-                    : 'USD'
+                  isSupplier(product.source) ? product.source_facts.currency || '币种未返回' : 'USD'
                 }}</label
               ><InlineEdit
                 :value="product.price"
@@ -477,7 +473,7 @@ onBeforeUnmount(() => {
                     product.variants.length
                       ? product.variants.map((variant) => variant.price)
                       : [product.price],
-                    product.source === 'GigaB2B'
+                    isSupplier(product.source)
                       ? String(product.source_facts.currency || '')
                       : 'USD',
                   )
@@ -488,7 +484,7 @@ onBeforeUnmount(() => {
               <label
                 >MSRP ·
                 {{
-                  product.source === 'GigaB2B' ? product.source_facts.currency || '—' : 'USD'
+                  isSupplier(product.source) ? product.source_facts.currency || '—' : 'USD'
                 }}</label
               ><InlineEdit
                 :value="product.msrp"
@@ -498,7 +494,7 @@ onBeforeUnmount(() => {
                 ><strong>{{
                   money(
                     product.msrp,
-                    product.source === 'GigaB2B'
+                    isSupplier(product.source)
                       ? String(product.source_facts.currency || '')
                       : 'USD',
                   )
@@ -521,7 +517,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <SourceCapturePanel
-            v-if="product.source !== 'GigaB2B'"
+            v-if="!isSupplier(product.source)"
             :listing-id="product.id"
             :asin="product.asin"
           />
@@ -533,6 +529,7 @@ onBeforeUnmount(() => {
       :facts="product.source_facts"
       :summary="product.giga_summary"
     />
+    <SaleyeeSourceFacts v-if="product.source === 'Saleyee'" :product="product" @updated="load" />
     <SellerRiskPanel :product="product" />
     <div class="detail-tabs">
       <a
@@ -557,7 +554,7 @@ onBeforeUnmount(() => {
                   ? product.local_edit?.changed
                     ? '商品库本地编辑内容 · 未同步 ERP'
                     : '产品库重新打开后读取的原始内容'
-                  : product.source === 'GigaB2B'
+                  : isSupplier(product.source)
                     ? '供应商文案'
                     : '历史编辑框快照'
               }}
@@ -722,7 +719,13 @@ onBeforeUnmount(() => {
         <div class="section-head">
           <div>
             <h2>来源证据</h2>
-            <p>{{ product.source === 'GigaB2B' ? '大建云仓 API 同步记录' : '本地历史记录' }}</p>
+            <p>
+              {{
+                isSupplier(product.source)
+                  ? sourceInfo(product.source).label + ' API 同步记录'
+                  : '本地历史记录'
+              }}
+            </p>
           </div>
         </div>
         <div class="section-body">

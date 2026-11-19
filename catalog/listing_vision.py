@@ -22,7 +22,7 @@ from .prelisting import encoded, fingerprint
 
 def allowed_image_url(url):
     parsed=urlsplit(url)
-    hosts=['media-amazon.com','ssl-images-amazon.com','gigab2b.cn','gigab2b.com']
+    hosts=['media-amazon.com','ssl-images-amazon.com','gigab2b.cn','gigab2b.com','saleyee.com','saleyee.cn']
     hosts += [h.strip().lower() for h in os.environ.get('CATALOG_LISTING_IMAGE_HOSTS','').split(',') if h.strip()]
     host=parsed.hostname or ''
     if (parsed.scheme!='https' or parsed.username or parsed.password or parsed.port not in (None,443)

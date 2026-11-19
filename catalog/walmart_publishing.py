@@ -923,8 +923,11 @@ def inventory_target(catalog,row):
             raise ValueError()
     except (ValueError,TypeError,KeyError):
         raise WalmartError('来源库存已过期，请重新采集／同步该 SKU，再查询处理结果以核验库存') from None
-    if item['source']=='GigaB2B':
-        from .giga_prelisting import prepare
+    if item['source'] in ('GigaB2B', 'Saleyee'):
+        if item['source'] == 'Saleyee':
+            from .saleyee_prelisting import prepare
+        else:
+            from .giga_prelisting import prepare
         if item['sku']!=row['source_sku']:
             raise WalmartError('库存来源 SKU 不匹配，暂停写入')
         variants,_,_=prepare(item,source,Decimal('1'))

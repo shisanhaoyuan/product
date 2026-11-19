@@ -3,6 +3,7 @@ import { computed, onErrorCaptured, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import AppIcon from './components/AppIcon.vue';
 import NavigationDropdown from './components/NavigationDropdown.vue';
+import { productSources, sourceFromPath } from './utils/productSources';
 import { useCatalog } from './composables/useCatalog';
 import { useAuth } from './composables/useAuth';
 import { request } from './api/client';
@@ -20,10 +21,7 @@ const route = useRoute();
 const { stats } = useCatalog();
 const fatalError = ref('');
 // Add future product sources here to keep their navigation under one entry.
-const catalogSources = [
-  { path: '/products', name: '亚马逊商品库', icon: 'LayoutGrid' },
-  { path: '/giga-products', name: '大建云仓', icon: 'Package' },
-];
+const catalogSources = productSources;
 const navigation = [
   { path: '/prelisting', name: '预上架', icon: 'Upload' },
   { path: '/walmart-review', name: '审核进度', icon: 'ScanLine' },
@@ -34,10 +32,8 @@ const navigation = [
   { path: '/imports', name: '导入记录', icon: 'History' },
 ];
 const current = computed(() =>
-  route.path.startsWith('/product/') || route.path.startsWith('/giga-product/')
-    ? route.path.startsWith('/giga-')
-      ? '大建云仓商品详情'
-      : '亚马逊商品详情'
+  productSources.some((s) => route.path.startsWith(s.detail))
+    ? sourceFromPath(route.path).label + '商品详情'
     : route.path.startsWith('/prelisting/')
       ? '预上架批次'
       : route.path === '/walmart-accounts'
@@ -54,6 +50,7 @@ function active(path: string) {
   if (path === '/prelisting') return route.path.startsWith('/prelisting');
   if (path === '/listing-stores')
     return ['/listing-stores', '/walmart-accounts'].includes(route.path);
+  if (path === '/saleyee-products') return route.path.startsWith('/saleyee-');
   if (path === '/giga-products') return route.path.startsWith('/giga-');
   if (path === '/review')
     return (

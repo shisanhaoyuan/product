@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import AppIcon from '../components/AppIcon.vue';
+import SaleyeeIntegration from '../components/SaleyeeIntegration.vue';
 import GigaIntegration from '../components/GigaIntegration.vue';
 import ImportUploader from '../components/ImportUploader.vue';
 import StatusBadge from '../components/StatusBadge.vue';
@@ -16,6 +17,7 @@ const { auth } = useAuth();
   </div>
   <div class="integration-grid">
     <GigaIntegration />
+    <SaleyeeIntegration />
     <section class="section">
       <div class="section-head">
         <h2>商品 JSON 导入</h2>

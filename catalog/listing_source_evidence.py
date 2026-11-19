@@ -50,6 +50,18 @@ def supplement_facts(catalog,source,item,variant,ai):
             supplemented=copy.deepcopy(source)
             supplemented.setdefault('source_facts',{}).setdefault('giga',{})['detail']=detail
             collected=source_facts(supplemented,item,variant)
+        elif source['source']=='Saleyee':
+            from .saleyee import SaleyeeSettings,SaleyeeClient,index_rows
+            settings=SaleyeeSettings()
+            with catalog.connect() as db:
+                stored=db.execute('SELECT namespace FROM listings WHERE id=?',(item['listing_id'],)).fetchone()
+            if not settings.configured or not stored or stored['namespace']!=settings.namespace:
+                return facts,dict(state='unavailable',message='当前赛盈 API 账号与该来源不一致或未配置，使用已有快照')
+            result=SaleyeeClient(settings).query('detail',{'Skus':[variant['sku']],'PageIndex':1,'PageSize':30})
+            detail=index_rows(result['ProductInfoList'],[variant['sku']])[variant['sku']]
+            supplemented=copy.deepcopy(source)
+            supplemented.setdefault('source_facts',{}).setdefault('saleyee',{})['detail']=detail
+            collected=source_facts(supplemented,item,variant)
         elif source['source'].casefold()=='amazon':
             asin=variant.get('asin','')
             if not re.fullmatch('[A-Z0-9]{10}',asin):

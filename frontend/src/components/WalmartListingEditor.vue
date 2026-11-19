@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { sourceInfo } from '../utils/productSources';
 import { computed, nextTick, onMounted, ref, watch, onBeforeUnmount } from 'vue';
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute } from 'vue-router';
 import {
@@ -1028,7 +1029,7 @@ onBeforeUnmount(() => {
           <div class="listing-product-heading">
             <div>
               <span class="muted"
-                >{{ source?.source === 'GigaB2B' ? '大建云仓' : '亚马逊' }} ·
+                >{{ sourceInfo(source?.source || 'Amazon').label }} ·
                 {{ current.source_sku }}</span
               >
               <h3>{{ plain(String(current.visible.productName || '请填写商品标题')) }}</h3>

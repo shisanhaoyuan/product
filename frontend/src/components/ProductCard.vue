@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import SaleyeeQuickFacts from './SaleyeeQuickFacts.vue';
+import { sourceInfo, isSupplier } from '../utils/productSources';
 import ProductStoreHistory from './ProductStoreHistory.vue';
 import GigaQuickFacts from './GigaQuickFacts.vue';
 import type { ProductSummary } from '../api/types';
@@ -12,7 +14,7 @@ defineProps<{ product: ProductSummary }>();
 <template>
   <RouterLink
     class="product-card"
-    :to="(product.source === 'GigaB2B' ? '/giga-product/' : '/product/') + product.id"
+    :to="sourceInfo(product.source).detail + product.id"
     :aria-label="'查看 ' + (product.asin || product.sku)"
   >
     <div class="card-image">
@@ -41,14 +43,17 @@ defineProps<{ product: ProductSummary }>();
       >
         卖家已拉黑 · {{ product.seller_blacklist.length }} 位（含子变体）
       </p>
-      <GigaQuickFacts v-if="product.source === 'GigaB2B'" :summary="product.giga_summary" />
-      <ListingCoverage v-if="product.source !== 'GigaB2B'" :product="product" />
+      <GigaQuickFacts
+        v-if="product.source === 'GigaB2B'"
+        :summary="product.giga_summary"
+      /><SaleyeeQuickFacts v-if="product.source === 'Saleyee'" :summary="product.saleyee_summary" />
+      <ListingCoverage v-if="!isSupplier(product.source)" :product="product" />
       <ProductStoreHistory v-if="product.store_history?.length" :entries="product.store_history" />
       <div class="card-meta">
-        <template v-if="product.source !== 'GigaB2B'"
+        <template v-if="!isSupplier(product.source)"
           ><span class="meta-label">ASIN</span
           ><span class="mono">{{ product.asin }}</span></template
-        ><span class="meta-label">{{ product.source === 'GigaB2B' ? '供应商 SKU' : 'SKU' }}</span
+        ><span class="meta-label">{{ isSupplier(product.source) ? '供应商 SKU' : 'SKU' }}</span
         ><span class="mono" :title="product.sku">{{ product.sku }}</span>
       </div>
       <div class="source-seller">
@@ -72,7 +77,7 @@ defineProps<{ product: ProductSummary }>();
               product.currency ?? 'USD',
             )
           }}<small v-if="product.evidence_kind !== 'persisted_readback'">{{
-            product.source === 'GigaB2B' ? '供应商资料' : '编辑快照'
+            isSupplier(product.source) ? '供应商资料' : '编辑快照'
           }}</small></span
         >
       </div>

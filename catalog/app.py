@@ -66,6 +66,8 @@ def create_app(database=None):
     app.include_router(source_routes(catalog))
     from .giga import giga_routes
     app.include_router(giga_routes(catalog))
+    from .saleyee import saleyee_routes
+    app.include_router(saleyee_routes(catalog))
     from .giga_patrol import patrol_routes
     app.include_router(patrol_routes(catalog))
     from .walmart_client import WalmartVerifier
@@ -147,7 +149,7 @@ def create_app(database=None):
                 'images':storage.backend if storage else 'sqlite'}
 
     @app.get('/api/stats')
-    def stats(source:Literal["", "Amazon", "GigaB2B"]=""):return catalog.stats(source=source)
+    def stats(source:Literal["", "Amazon", "GigaB2B", "Saleyee"]=""):return catalog.stats(source=source)
 
     def listing_counts(listing_count_min: int | None = Query(None, ge=1, le=2147483647),
                        listing_count_max: int | None = Query(None, ge=1, le=2147483647)):
@@ -169,7 +171,7 @@ def create_app(database=None):
             raise HTTPException(422, str(exc)) from None
 
     @app.get('/api/products')
-    def products(q:str='',store:str='',brand:str='',status:str='',date:str='',page:int=Query(1,ge=1),page_size:int=Query(24,ge=1,le=100),category:str='',seller_status:str=Query('',pattern='^(blocked|unblocked)?$'),deduplicate:bool=False,counts:dict=Depends(listing_counts),source:Literal['', 'Amazon', 'GigaB2B']='',inventory_status:Literal['', 'out_of_stock']='',identifiers:str=Depends(batch_identifiers),listed_store:str=Query('',pattern='^([0-9]+)?$'),price_change:Literal['', 'up', 'down', 'unchanged', 'unknown']='',multi:str=Depends(multi_filters)):
+    def products(q:str='',store:str='',brand:str='',status:str='',date:str='',page:int=Query(1,ge=1),page_size:int=Query(24,ge=1,le=100),category:str='',seller_status:str=Query('',pattern='^(blocked|unblocked)?$'),deduplicate:bool=False,counts:dict=Depends(listing_counts),source:Literal['', 'Amazon', 'GigaB2B', 'Saleyee']='',inventory_status:Literal['', 'out_of_stock']='',identifiers:str=Depends(batch_identifiers),listed_store:str=Query('',pattern='^([0-9]+)?$'),price_change:Literal['', 'up', 'down', 'unchanged', 'unknown']='',multi:str=Depends(multi_filters)):
         return catalog.find(q,store,brand,status,date,page,page_size,category=category,seller_status=seller_status,deduplicate=deduplicate,source=source,inventory_status=inventory_status,identifiers=identifiers,listed_store=listed_store,price_change=price_change,multi=multi,**counts)
 
     @app.get('/api/products/{listing_id}')
@@ -215,7 +217,7 @@ def create_app(database=None):
                         headers={'Content-Disposition':'attachment; filename="catalog-backup.json"'})
 
     @app.get('/api/export.csv')
-    def export_csv(q:str='',store:str='',brand:str='',status:str='',date:str='',category:str='',seller_status:str=Query('',pattern='^(blocked|unblocked)?$'),counts:dict=Depends(listing_counts),source:Literal['', 'Amazon', 'GigaB2B']='',inventory_status:Literal['', 'out_of_stock']='',identifiers:str=Depends(batch_identifiers),listed_store:str=Query('',pattern='^([0-9]+)?$'),price_change:Literal['', 'up', 'down', 'unchanged', 'unknown']='',multi:str=Depends(multi_filters)):
+    def export_csv(q:str='',store:str='',brand:str='',status:str='',date:str='',category:str='',seller_status:str=Query('',pattern='^(blocked|unblocked)?$'),counts:dict=Depends(listing_counts),source:Literal['', 'Amazon', 'GigaB2B', 'Saleyee']='',inventory_status:Literal['', 'out_of_stock']='',identifiers:str=Depends(batch_identifiers),listed_store:str=Query('',pattern='^([0-9]+)?$'),price_change:Literal['', 'up', 'down', 'unchanged', 'unknown']='',multi:str=Depends(multi_filters)):
         buffer=io.StringIO();writer=csv.writer(buffer)
         writer.writerow(['ASIN','商品SKU','平台SKU','店铺','品牌','商品来源','来源链接','商品卖家','标题','子变体数','保存确认','填写完整','证据类型','上传时间','商品类目','卖家黑名单原因'])
         page=1

@@ -188,7 +188,7 @@ def sync_lease(catalog, namespace):
         write_lock(db)
         old = db.execute('SELECT expires_at FROM integration_leases WHERE name=?', (namespace,)).fetchone()
         if old and old[0] > time.time():
-            raise HTTPException(409, '此大建云仓账号正在同步，请等待本页完成后重试')
+            raise HTTPException(409, '此供应商账号正在同步，请等待本页完成后重试')
         db.execute('INSERT INTO integration_leases VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET token=excluded.token,expires_at=excluded.expires_at',
                    (namespace, token, time.time() + 180))
     try:

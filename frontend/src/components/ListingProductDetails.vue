@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { sourceInfo } from '../utils/productSources';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, useId, watch } from 'vue';
 import { catalogApi } from '../api/client';
 import type { ProductDetail } from '../api/types';
@@ -7,6 +8,7 @@ import { errorMessage, money, plain, safeUrl } from '../utils/display';
 import ProductImage from './ProductImage.vue';
 import ProductStoreHistory from './ProductStoreHistory.vue';
 import ReadableAttributes from './ReadableAttributes.vue';
+import SaleyeeSourceFacts from './SaleyeeSourceFacts.vue';
 import GigaSourceFacts from './GigaSourceFacts.vue';
 import AppIcon from './AppIcon.vue';
 import { useFloatingDialog } from '../composables/useFloatingDialog';
@@ -191,6 +193,11 @@ onBeforeUnmount(() => {
               :facts="sourceRecord.source_facts"
               :summary="product.giga_summary"
             />
+            <SaleyeeSourceFacts
+              v-else-if="product.source === 'Saleyee'"
+              :product="product"
+              @updated="load"
+            />
             <details v-else class="details">
               <summary>来源采集信息</summary>
               <ReadableAttributes :value="sourceRecord.source_facts" />
@@ -242,10 +249,7 @@ onBeforeUnmount(() => {
         <button class="btn small" @click="reset()">恢复默认大小</button>
         <a
           v-if="product"
-          :href="
-            (product.source === 'GigaB2B' ? '#/giga-product/' : '#/product/') +
-            encodeURIComponent(product.id)
-          "
+          :href="'#' + sourceInfo(product.source).detail + encodeURIComponent(product.id)"
           target="_blank"
           rel="noopener"
           >在新页打开完整档案 ↗</a
