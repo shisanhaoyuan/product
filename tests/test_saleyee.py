@@ -255,3 +255,76 @@ def test_shipping_absence_blocks_walmart_validation(tmp_path,settings,vault):
     doc=validation.json()
     assert doc['validation']['valid_count']==0 and not remote.posts
     assert any('运费' in e['message'] for row in doc['validation']['rows'].values() for e in row['errors'])
+
+
+@pytest.mark.parametrize('operation,payload,expected',[
+    ('detail',{'status':'failed','code':'10200','message':'private-test-token'},'AccessToken 无效'),
+    ('price',{'status':'failed','code':'999','message':'没有访问接口权限'},'当前账号没有此接口'),
+    ('stock',{'status':'failed','code':'11600'},'请求过于频繁'),
+    ('detail',{'status':'processing'},'仍在处理中'),
+    ('detail',{'status':'failed','message':'SKU不存在'},'商品 SKU 不存在'),
+    ('detail',{'status':'failed','code':'private-test-token','message':'private-test-token'},'未提供有效错误码'),
+    ('detail',{'status':'failed','message':{'secret':'private-test-token'}},'接口未返回成功结果'),
+])
+def test_error_diagnostics_never_echo_remote_secrets(settings,monkeypatch,operation,payload,expected):
+    monkeypatch.setattr('catalog.saleyee.time.sleep',lambda _:None)
+    remote=httpx.MockTransport(lambda r:httpx.Response(200,json=payload))
+    with pytest.raises(SaleyeeError) as error:
+        SaleyeeClient(settings,remote).query(operation,{'Skus':['S1']})
+    assert expected in str(error.value)
+    assert settings.token not in str(error.value)
+    assert {'detail':'商品详情','price':'商品价格','stock':'商品库存'}[operation] in str(error.value)
+
+
+
+def test_sync_validation_reports_field_without_private_value(tmp_path,settings,monkeypatch):
+    app=create_app(tmp_path/'invalid-field.db');f=FakeClient(('S1',))
+    f.details[0]['GoodsImageList'][0]['ImageUrl']='https://private-user:private-password@example.com/image.jpg'
+    monkeypatch.setattr('catalog.saleyee.SaleyeeClient',lambda _:f)
+    r=TestClient(app).post('/api/integrations/saleyee/sync',json={'skus':['S1']})
+    assert r.status_code==502 and '商品图片' in r.text and '本页未保存' in r.text
+    assert 'private-password' not in r.text and 'example.com' not in r.text
+    assert app.state.catalog.stats()['products']==0
+
+
+def test_sync_type_failure_reports_code_location_not_input(tmp_path,settings,monkeypatch):
+    app=create_app(tmp_path/'bad-nested.db');f=FakeClient(('S1',))
+    f.details[0]['GoodsImageList']=['private-malformed-value']
+    monkeypatch.setattr('catalog.saleyee.SaleyeeClient',lambda _:f)
+    r=TestClient(app).post('/api/integrations/saleyee/sync',json={'skus':['S1']})
+    assert r.status_code==502 and '字段转换失败' in r.text
+    assert 'private-malformed-value' not in r.text
+    assert app.state.catalog.stats()['products']==0
+
+
+
+@pytest.mark.parametrize('value,expected',[
+    ('/item/65567143.html?warehouseId=123','https://www.saleyee.com/item/65567143.html?warehouseId=123'),
+    ('item/65567143.html','https://www.saleyee.com/item/65567143.html'),
+    ('//www.saleyee.com/item/65567143.html','https://www.saleyee.com/item/65567143.html'),
+    ('www.saleyee.com/item/65567143.html','https://www.saleyee.com/item/65567143.html'),
+    ('  https://www.saleyee.com/item/65567143.html  ','https://www.saleyee.com/item/65567143.html'),
+    ('http://www.saleyee.com/item/65567143.html','http://www.saleyee.com/item/65567143.html'),
+    (None,''), ('',''), ('65567143',''), (123,''),
+    ('javascript:alert(1)',''), ('https://user:password@www.saleyee.com/item/1.html',''),
+    ('//unknown.example/item/1.html',''), ('https://www.saleyee.com/\nitem/1.html',''),
+])
+def test_source_link_normalization_preserves_raw_and_never_changes_sku(tmp_path,settings,value,expected):
+    c=Catalog(tmp_path/'links.db');f=FakeClient(('65567143',));f.details[0]['Url']=value
+    assert sync_page(c,settings,SyncInput(),client=f)['created']==1
+    row=c.get(c.find(source='Saleyee')['items'][0]['id'])
+    assert row['source_url']==expected and row['sku']=='65567143'
+    assert row['source_facts']['saleyee']['detail']['Url']==value
+    assert bool(row['source_facts']['import_warnings'])==bool(value and not expected)
+    assert row['stock']=='25' and row['price']=='67'
+    assert sync_page(c,settings,SyncInput(),client=f)['unchanged']==1
+
+
+def test_unusable_source_link_does_not_block_prelisting(tmp_path,settings):
+    app=create_app(tmp_path/'bad-link.db');f=FakeClient(('S1',));f.details[0]['Url']='not-a-url'
+    sync_page(app.state.catalog,settings,SyncInput(shipping='2.33'),client=f)
+    c=TestClient(app)
+    r=c.post('/api/prelisting/preview',json=inputs(c,filters={'source':'Saleyee'}))
+    assert r.status_code==200,r.text
+    assert r.json()['ready_count']==1
+    assert r.json()['items'][0]['variants'][0]['content']['source_url']==''

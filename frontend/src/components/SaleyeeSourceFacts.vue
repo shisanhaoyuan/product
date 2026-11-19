@@ -38,6 +38,7 @@ interface SaleyeeFacts {
   selected_offer?: Offer;
   warehouses?: Warehouse[];
   warnings?: string[];
+  import_warnings?: string[];
   saleyee?: { price?: { WarehousePriceList?: Offer[] }; detail?: Record<string, unknown> };
 }
 const facts = computed(() => props.product.source_facts as SaleyeeFacts);
@@ -123,7 +124,7 @@ async function refresh() {
           ><strong>{{ facts.shipping != null ? money(facts.shipping) : '待填写' }}</strong>
         </div>
       </div>
-      <p v-for="warning in facts.warnings || []" :key="warning" class="notice">{{ warning }}</p>
+      <p v-for="warning in [...(facts.warnings || []), ...(facts.import_warnings || [])]" :key="warning" class="notice">{{ warning }}</p>
       <div class="table-scroll">
         <table>
           <thead>

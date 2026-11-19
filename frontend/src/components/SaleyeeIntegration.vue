@@ -82,10 +82,10 @@ onBeforeUnmount(() => {
   <section class="section">
     <div class="section-head">
       <h2>赛盈 · Saleyee</h2>
-      <span>{{ config?.configured ? '已配置 V2' : '待配置' }}</span>
+      <span>{{ config?.configured ? '已填写 V2 凭证' : '待配置' }}</span>
     </div>
     <div class="section-body saleyee-integration">
-      <p>同步商品详情、图片、仓库报价与可用库存。同账号、同 SKU 重复同步自动更新，保留编辑记录。</p>
+      <p>同步商品详情、图片、仓库报价与可用库存。凭证已填写不代表接口验证通过。同账号、同 SKU 重复同步自动更新，保留编辑记录。</p>
       <p v-if="!config?.configured" class="notice">
         管理员需配置服务器的 CATALOG_SALEYEE_ACCESS_TOKEN 和固定账号标识
         CATALOG_SALEYEE_ACCOUNT。令牌不在网页中显示。

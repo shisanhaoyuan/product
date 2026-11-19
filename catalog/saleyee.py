@@ -6,16 +6,18 @@ Only product read endpoints are allowed; never create or pay supplier orders.
 import hashlib
 import json
 import os
+import re
 import time
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
+from urllib.parse import urlsplit, urljoin
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from .giga import sync_lease
-from .models import ImportBundle, Listing
+from .models import ImportBundle, Listing, safe_url
 
 SOURCE = 'Saleyee'
 HOST = 'https://api.saleyee.com'
@@ -27,6 +29,59 @@ PATHS = {name: '/api/v2/Product/' + path for name, path in {
 
 class SaleyeeError(ValueError):
     pass
+
+
+def response_error(operation, payload, token=''):
+    """Expose documented codes and local explanations, never arbitrary remote text."""
+    label = {'detail':'商品详情','price':'商品价格','stock':'商品库存','warehouses':'仓库'}.get(operation,'商品')
+    data = payload if isinstance(payload, dict) else {}
+    code = str(data.get('code') or '')
+    code = code if re.fullmatch(r'[0-9]{1,8}', code) and code != token else ''
+    message = data.get('message')
+    message = message if isinstance(message,str) else ''
+    if token:
+        message = message.replace(token, '')
+    if data.get('status') == 'processing':
+        reason = '接口仍在处理中，请稍后重试；尚未保存本页'
+    elif code == '10200':
+        reason = 'AccessToken 无效，请使用开发者信息中“请求凭证（v2）”生成的完整令牌；重新生成后旧令牌会失效'
+    elif code == '11600':
+        reason = '请求过于频繁，请稍后重试'
+    elif '没有访问接口权限' in message or '无权访问' in message or '接口未授权' in message:
+        reason = '当前账号没有此接口的调用权限，请联系赛盈客户经理开通商品详情、商品价格和商品库存接口'
+    elif '商品权限' in message or '无权查看商品' in message:
+        reason = '当前账号无此商品的访问权限，请核对 SKU 与分销权限'
+    elif 'SKU' in message.upper() and ('不存在' in message or '无效' in message):
+        reason = '商品 SKU 不存在或无效，请使用商品页面标注的 SKU，不能直接用网址编号替代'
+    else:
+        reason = '接口未返回成功结果；请根据错误码核对令牌、接口授权和请求参数'
+    suffix = f'（错误码 {code}）' if code else '（未提供有效错误码）'
+    return f'赛盈{label}查询失败{suffix}：{reason}'
+
+
+def field_error(exc):
+    """Only report model field names/types; validation input may include private URLs."""
+    labels = {'images':'商品图片','source_url':'来源链接','copy':'商品文案','title':'标题',
+              'description':'描述','features':'卖点','brand':'品牌','fields':'商品属性',
+              'sku':'SKU','external_id':'商品编号','observed_at':'采集时间','shipping':'运费'}
+    if isinstance(exc, ValidationError):
+        problems = []
+        for entry in exc.errors(include_input=False, include_url=False)[:5]:
+            path = ' / '.join(str(v + 1) if type(v) is int else labels.get(v, '字段')
+                              for v in entry['loc'])
+            kind = {'string_type':'应为文本','list_type':'应为列表','dict_type':'应为对象',
+                    'too_long':'超过允许长度或数量','missing':'缺少必填值',
+                    'value_error':'内容格式不符合要求'}.get(entry['type'],'字段类型或内容不符合要求')
+            problems.append(path + '：' + kind)
+        return '赛盈商品字段校验失败：' + '；'.join(problems) + '；本页未保存'
+    # Code location only, never the exception message or remote values.
+    trace = exc.__traceback__
+    position = ''
+    while trace:
+        if trace.tb_frame.f_code.co_filename == __file__:
+            position = f"{trace.tb_frame.f_code.co_name}:{trace.tb_lineno}"
+        trace = trace.tb_next
+    return '赛盈字段转换失败（' + (position or '未知位置') + '），本页未保存；请提供此位置以便核对'
 
 
 class SaleyeeSettings:
@@ -87,8 +142,7 @@ class SaleyeeClient:
                     raise
                 raise SaleyeeError('赛盈响应不是有效 JSON，本页未保存') from None
             if not isinstance(data, dict) or data.get('status') != 'success':
-                # Never echo remote messages, which may contain credentials or request data.
-                raise SaleyeeError('赛盈未返回成功结果，请检查 AccessToken、接口权限或稍后重试')
+                raise SaleyeeError(response_error(operation, data, self.settings.token))
             return data.get('data')
         raise SaleyeeError('赛盈暂不可用')
 
@@ -196,6 +250,42 @@ def summarize(detail, price, stock, options):
                 selected_offer=selected, offers=offers, warehouses=inventories, warnings=warnings)
 
 
+def source_link(value):
+    """Resolve supplier-owned relative links without inventing a URL from its SKU.
+
+    Url is optional metadata, not the join identity. Retain the exact upstream
+    value in source_facts.saleyee.detail even when it cannot be a clickable link.
+    """
+    if value in (None, ''):
+        return '', []
+    warning = ['赛盈返回的商品来源链接格式不正确，已保留原始值；暂不提供点击跳转，不影响商品资料入库']
+    if not isinstance(value, str):
+        return '', warning
+    value = value.strip()
+    if not value:
+        return '', []
+    if any(c.isspace() or ord(c) < 32 for c in value) or '\x7f' in value or '\\' in value:
+        return '', warning
+    try:
+        parsed = urlsplit(value)
+        if not parsed.scheme:
+            if value.startswith('//'):
+                value = 'https:' + value
+            elif value.startswith(('/item/', 'item/')):
+                value = urljoin('https://www.saleyee.com/', value)
+            elif value.startswith(('www.saleyee.com/', 'saleyee.com/')):
+                value = 'https://' + value
+            else:
+                return '', warning
+            host = urlsplit(value).hostname or ''
+            if host not in ('www.saleyee.com','saleyee.com'):
+                return '', warning
+        safe_url(value)
+        return value, []
+    except (ValueError, TypeError):
+        return '', warning
+
+
 def listing_from_api(sku, detail, price, stock, options, namespace, now):
     if any(v.get('Sku') != sku for v in (detail, price, stock)):
         raise SaleyeeError('赛盈商品、价格和库存 SKU 不一致')
@@ -212,7 +302,8 @@ def listing_from_api(sku, detail, price, stock, options, namespace, now):
                          for level in ('First', 'Second', 'Third')).strip(' >')
     attributes = {x.get('AttributeNameEn') or x.get('AttributeName') or x.get('AttributeCode') or '未命名属性': x.get('AttributeValue')
                   for x in detail.get('ProductAttributeList') or []}
-    return Listing(external_id=sku, sku=sku, asin='', source=SOURCE, source_url=detail.get('Url') or '',
+    url, link_warnings = source_link(detail.get('Url'))
+    return Listing(external_id=sku, sku=sku, asin='', source=SOURCE, source_url=url,
         store='赛盈来源库', template='SALEYEE:' + sku, brand=detail.get('BrandName') or '',
         seller='', observed_at=now, uploaded_at=now, evidence_kind='source_only',
         copy={'title': detail.get('EnName') or detail.get('CnName') or sku,
@@ -221,7 +312,7 @@ def listing_from_api(sku, detail, price, stock, options, namespace, now):
                            if p.get('GoodsDescription') and p.get('ParagraphName') in ('特征','卖点','Features')]},
         images=images, price=info['price'], stock=None if info['inventory'] is None else str(info['inventory']),
         fields={'Saleyee category': category, 'Saleyee attributes': attributes},
-        source_facts=dict(info, sku=sku, saleyee={'detail': detail, 'price': price, 'inventory': stock,
+        source_facts=dict(info, sku=sku, import_warnings=link_warnings, saleyee={'detail': detail, 'price': price, 'inventory': stock,
                                                'options': options.model_dump(mode='json', exclude={'page','skus','end_date'})}),
         evidence={'adapter':'saleyee-openapi-v2','namespace':namespace,
                   'note':'赛盈 API 来源快照；供应商未返回卖家名称，不将品牌当作卖家'})
@@ -313,8 +404,8 @@ def saleyee_routes(catalog):
             return sync_page(catalog, settings, data, user['id'] if user else None)
         except SaleyeeError as exc:
             raise HTTPException(502, str(exc)) from None
-        except (ValueError, TypeError, KeyError, AttributeError):
-            raise HTTPException(502, '赛盈响应字段格式异常，本页未保存') from None
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            raise HTTPException(502, field_error(exc)) from None
     @router.post('/products/{product_id}/refresh')
     def refresh(product_id: str, data: QuoteInput, request: Request):
         settings = SaleyeeSettings()
@@ -337,6 +428,6 @@ def saleyee_routes(catalog):
             return catalog.get(product_id)
         except SaleyeeError as exc:
             raise HTTPException(502, str(exc)) from None
-        except (ValueError, TypeError, KeyError, AttributeError):
-            raise HTTPException(502, '赛盈响应字段格式异常，已有商品保留') from None
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            raise HTTPException(502, field_error(exc)) from None
     return router
