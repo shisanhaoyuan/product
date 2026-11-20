@@ -13,7 +13,7 @@ import re
 import time
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
@@ -136,6 +136,7 @@ class Revision(Input):
 
 class PriceReview(Revision):
     platform_sku: str = Field(min_length=1, max_length=50)
+    original_price: Decimal | None = Field(default=None, gt=0, le=10000000, decimal_places=2)
 
 
 class Submit(Revision):
@@ -655,22 +656,37 @@ def publishing_routes(catalog):
             if latest_results(db,bid).get(data.platform_sku,{}).get('status','unsubmitted') not in EDITABLE:
                 raise HTTPException(409,'该商品已提交或正在处理，不能修改验证记录')
             basis=unchanged_sources(db,doc)
-            row=next((r for r in json.loads(doc['rows_json']) if r['platform_sku']==data.platform_sku),None)
+            rows=json.loads(doc['rows_json'])
+            row=next((r for r in rows if r['platform_sku']==data.platform_sku),None)
             if not row:
                 raise HTTPException(404,'商品不属于当前批次')
             item=next(i for i in basis['items'] if i['listing_id']==row['listing_id'])
             variant=next(v for v in item['variants'] if v['platform_sku']==row['platform_sku'])
             if not eligible(item,variant):
                 raise HTTPException(409,'只有缺少来源原价的提醒可以人工确认，其他来源异常请单独处理')
+            audit={}
+            if data.original_price is not None:
+                from .prelisting import money
+                from .listing_preparation_source import positive
+                try:
+                    multiplier=money(basis['multiplier'])
+                    price=money((data.original_price*multiplier).quantize(Decimal('.01'),rounding=ROUND_HALF_UP))
+                except ValueError as exc:
+                    raise HTTPException(422,'原价乘倍率后的售价无效：'+str(exc)) from None
+                row['orderable']['price']=float(price)
+                if not positive(row['orderable'].get('msrp')) and price*2<=Decimal('10000000'):
+                    row['orderable']['msrp']=float(price*2)
+                audit=dict(original_price=str(data.original_price),multiplier=str(multiplier),method='manual_original')
             key=review_key(basis,item,variant,row)
             if not key:
                 raise HTTPException(422,'请先填写并保存有效的上架售价，再点击已验证')
-            if data.platform_sku not in reviews(db,doc):
+            previous=reviews(db,doc).get(data.platform_sku)
+            if not previous or rows!=json.loads(doc['rows_json']) or any(previous.get(k)!=v for k,v in audit.items()):
                 event(db,bid,request,ACTION,dict(key=key,platform_sku=row['platform_sku'],
                     source_sku=row['source_sku'],store_id=basis['store']['id'],price=row['orderable']['price'],
-                    note='人工确认当前上架售价；解除缺少来源原价限制，不改写来源证据'))
-                db.execute('UPDATE walmart_listing_documents SET revision=revision+1,validation_json=?,updated_at=? WHERE batch_id=?',
-                           ('{}',now(),bid))
+                    note='人工确认当前上架售价；解除缺少来源原价限制，不改写来源证据',**audit))
+                db.execute('UPDATE walmart_listing_documents SET revision=revision+1,rows_json=?,validation_json=?,updated_at=? WHERE batch_id=?',
+                           (encoded(rows),'{}',now(),bid))
             return public_document(db,bid)
 
     @router.post('/refresh-source')

@@ -64,7 +64,17 @@ export interface Attempt {
   polling?: { state: string; next_at: number; tries: number; last_error: string } | null;
 }
 export interface ListingDocument {
-  source_price_reviews?: Record<string, { at: string; actor_id: number | null; price: number }>;
+  source_price_reviews?: Record<
+    string,
+    {
+      at: string;
+      actor_id: number | null;
+      price: number;
+      original_price?: string;
+      multiplier?: string;
+      method?: string;
+    }
+  >;
   identifier_pool?: { total: number; available: number };
   requirements?: Record<string, { visible?: string[]; orderable?: string[] }>;
   specs?: Record<string, ListingSpec>;
@@ -121,6 +131,7 @@ export interface GenerationJob {
         state: string;
         preparation_state?: string;
         collection?: { state: string; message?: string; listing_id?: string };
+        source_collection?: { state: string; message?: string };
         vision?: { state: string; message?: string; warnings?: string[]; images?: string[] };
         rounds?: {
           state: string;
@@ -151,10 +162,15 @@ const body = (method: string, data: unknown = {}) => ({
 });
 const path = (bid: string) => `/api/prelisting/batches/${encodeURIComponent(bid)}/walmart`;
 export const publishingApi = {
-  verifySourcePrice: (bid: string, revision: number, platform_sku: string) =>
+  verifySourcePrice: (
+    bid: string,
+    revision: number,
+    platform_sku: string,
+    original_price?: string,
+  ) =>
     request<ListingDocument>(
       path(bid) + '/verify-source-price',
-      body('POST', { revision, platform_sku }),
+      body('POST', { revision, platform_sku, ...(original_price ? { original_price } : {}) }),
     ),
   generation: (bid: string) =>
     request<{

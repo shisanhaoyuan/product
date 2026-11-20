@@ -103,3 +103,56 @@ def test_only_missing_price_is_waived_not_stock_or_identity():
 def test_viewer_cannot_confirm(team):
     client,_=login(team,'viewer')
     assert client.post('/api/prelisting/batches/any/walmart/verify-source-price',json={'revision':1,'platform_sku':'one'}).status_code==403
+
+
+def test_manual_original_calculates_and_confirms_only_current_sku(amazon):
+    c,catalog,_,_,b,base,remote=amazon
+    doc=c.get(base).json();sku=doc['rows'][0]['platform_sku']
+    before_other=doc['rows'][1]
+    doc['rows'][0]['orderable'].pop('price')
+    doc['rows'][0]['orderable'].pop('msrp',None)
+    doc=c.patch(base,json={k:doc[k] for k in ('revision','version','rows')}).json()
+    basis=doc['basis']
+    payload=dict(revision=doc['revision'],platform_sku=sku,original_price='72.89')
+    response=c.post(base+'/verify-source-price',json=payload)
+    assert response.status_code==200,response.text
+    result=response.json();row=result['rows'][0]
+    assert row['orderable']['price']==87.47  # fixture multiplier 1.2, ROUND_HALF_UP
+    assert row['orderable']['msrp']==174.94
+    assert result['rows'][1]==before_other and result['basis']==basis
+    review=result['source_price_reviews'][sku]
+    assert review['original_price']=='72.89' and review['multiplier']=='1.2'
+    assert review['method']=='manual_original'
+    again=c.post(base+'/verify-source-price',json=payload | {'revision':result['revision']}).json()
+    assert again['revision']==result['revision']
+    checked=c.post(base+'/validate',json={'revision':result['revision']}).json()
+    assert checked['validation']['rows'][sku]['valid'],checked['validation']
+    with catalog.connect() as db:
+        assert db.execute('SELECT COUNT(*) FROM source_captures').fetchone()[0]==0
+        events=db.execute("SELECT details_json FROM walmart_listing_events WHERE batch_id=? AND action='verify_source_price'",(b['id'],)).fetchall()
+        assert len(events)==1 and json.loads(events[0][0])['original_price']=='72.89'
+    assert not remote.posts and not remote.stock
+
+
+@pytest.mark.parametrize('original',['0','-1','NaN','Infinity','10000001','0.001','10000000'])
+def test_invalid_manual_original_never_writes(amazon,original):
+    c,_,_,_,_,base,_=amazon
+    before=c.get(base).json();sku=before['rows'][0]['platform_sku']
+    response=c.post(base+'/verify-source-price',json=dict(revision=before['revision'],platform_sku=sku,original_price=original))
+    assert response.status_code==422,response.text
+    after=c.get(base).json()
+    assert after['revision']==before['revision'] and after['rows']==before['rows']
+    assert not after['source_price_reviews']
+
+
+def test_manual_original_preserves_custom_msrp_and_revision_checks(amazon):
+    c,_,_,_,_,base,_=amazon
+    doc=c.get(base).json();sku=doc['rows'][0]['platform_sku']
+    doc['rows'][0]['orderable']['msrp']=111
+    doc=c.patch(base,json={k:doc[k] for k in ('revision','version','rows')}).json()
+    payload=dict(revision=doc['revision'],platform_sku=sku,original_price='70')
+    assert c.post(base+'/verify-source-price',json=payload | {'revision':doc['revision']-1}).status_code==409
+    assert c.post(base+'/verify-source-price',json=payload | {'platform_sku':'other-store'}).status_code==404
+    result=c.post(base+'/verify-source-price',json=payload).json()
+    assert result['rows'][0]['orderable']['price']==84
+    assert result['rows'][0]['orderable']['msrp']==111

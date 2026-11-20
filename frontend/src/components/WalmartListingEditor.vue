@@ -22,6 +22,7 @@ import { shouldPrepareOnEntry } from '../utils/listingPreparation';
 import { collectMissingPrices } from '../utils/sourceCollection';
 import { applyListingDefaults } from '../utils/listingDefaults';
 import ListingSchemaField from './ListingSchemaField.vue';
+import ListingPriceRecovery from './ListingPriceRecovery.vue';
 import ProductImage from './ProductImage.vue';
 import ListingProductDetails from './ListingProductDetails.vue';
 import ProductStoreHistory from './ProductStoreHistory.vue';
@@ -374,6 +375,16 @@ const locked = computed(
 );
 const issues = computed(() => doc.value?.validation.rows?.[activeSku.value]?.errors || []);
 const priceReview = computed(() => doc.value?.source_price_reviews?.[activeSku.value]);
+const priceRecovery = ref<InstanceType<typeof ListingPriceRecovery>>();
+const hasSellingPrice = computed(() => Number.isFinite(Number(current.value?.orderable.price)) && Number(current.value?.orderable.price) > 0);
+const needsSourcePrice = computed(() => source.value?.source === 'Amazon' &&
+  sourceVariant.value?.error === '缺少来源采集原价，请采集卖家与报价后重新计算' && !priceReview.value);
+async function openPriceRecovery() {
+  tab.value = 'basic';
+  await nextTick();
+  priceRecovery.value?.focus();
+}
+
 function canVerifySourceIssue(issue: Issue) {
   const missing = '缺少来源采集原价，请采集卖家与报价后重新计算';
   return issue.code === 'source_price_review' || (source.value?.source === 'Amazon' &&
@@ -381,13 +392,17 @@ function canVerifySourceIssue(issue: Issue) {
       `${sourceVariant.value.sku}：${missing}`, '缺少已核验的来源售价，不能提交',
     ].includes(issue.message));
 }
-async function verifySourcePrice() {
+async function verifySourcePrice(originalPrice?: string) {
   if (locked.value || !current.value) return;
+  if (!originalPrice && !hasSellingPrice.value) {
+    await openPriceRecovery();
+    return;
+  }
   const sku = current.value.platform_sku;
   await run(async () => {
     await save();
     if (!doc.value) return;
-    install(await publishingApi.verifySourcePrice(props.bid, doc.value.revision, sku));
+    install(await publishingApi.verifySourcePrice(props.bid, doc.value.revision, sku, originalPrice));
     install(await publishingApi.validate(props.bid, doc.value.revision));
     message.value = '当前售价已人工验证，已解除来源原价缺失限制；其他要求仍按校验结果显示';
   });
@@ -713,6 +728,10 @@ async function reconcile(a: Attempt) {
   });
 }
 async function jump(issue: Issue) {
+  if (needsSourcePrice.value && !hasSellingPrice.value && (canVerifySourceIssue(issue) || issue.path === "orderable.price")) {
+    await openPriceRecovery();
+    return;
+  }
   const segments = issue.path.split('.');
   if (
     segments.some((k) => optionalOrderableKeys.value.includes(k) || optionalKeys.value.includes(k))
@@ -1137,17 +1156,17 @@ onBeforeUnmount(() => {
             <strong>此 SKU 有 {{ issues.length }} 项需要处理</strong
             ><div v-for="(issue, index) in issues.slice(0, 3)" :key="index" class="listing-issue-row">
               <button @click="jump(issue)">{{ issue.message }} <span>定位 →</span></button>
-              <button v-if="canVerifySourceIssue(issue) && !locked" class="source-price-verify" :disabled="busy || saving" @click="verifySourcePrice">已验证</button>
+              <button v-if="canVerifySourceIssue(issue) && !locked" class="source-price-verify" :disabled="busy || saving" @click="verifySourcePrice()">{{ hasSellingPrice ? '已验证' : '填写价格' }}</button>
             </div>
             <details v-if="issues.length > 3">
               <summary>展开其余 {{ issues.length - 3 }} 项</summary>
               <div v-for="(issue, index) in issues.slice(3)" :key="index" class="listing-issue-row">
                 <button @click="jump(issue)">{{ issue.message }} <span>定位 →</span></button>
-                <button v-if="canVerifySourceIssue(issue) && !locked" class="source-price-verify" :disabled="busy || saving" @click="verifySourcePrice">已验证</button>
+                <button v-if="canVerifySourceIssue(issue) && !locked" class="source-price-verify" :disabled="busy || saving" @click="verifySourcePrice()">{{ hasSellingPrice ? '已验证' : '填写价格' }}</button>
               </div>
             </details>
           </div>
-          <p v-if="priceReview" class="notice notice-space" role="status">来源价格已人工验证 · 确认售价 {{ money(priceReview.price) }} · {{ priceReview.at }}。修改售价或来源后需重新确认。</p>
+          <p v-if="priceReview" class="notice notice-space" role="status">来源价格已人工验证<span v-if="priceReview.original_price"> · 人工原价 {{ money(priceReview.original_price) }} × {{ priceReview.multiplier }}</span> · 确认售价 {{ money(priceReview.price) }} · {{ priceReview.at }}。修改售价或来源后需重新确认。</p>
           <p v-if="locked && result" class="notice notice-space">
             {{ result.message }}。当前状态不允许修改或重复提交。
           </p>
@@ -1383,6 +1402,10 @@ onBeforeUnmount(() => {
                   <strong>计算售价 {{ money(sourceVariant?.price) }}</strong>
                 </p>
               </template>
+              <p v-else-if="priceReview?.original_price">
+                人工核对原价 {{ money(priceReview.original_price) }} × 倍率 {{ priceReview.multiplier }} ＝
+                <strong>确认售价 {{ money(priceReview.price) }}</strong>
+              </p>
               <p v-else>
                 倍率 ×{{ doc.basis.multiplier }} · 已核验计价基准 {{ money(sourceVariant?.base) }} ·
                 计算售价 {{ money(sourceVariant?.price) }}
@@ -1404,6 +1427,16 @@ onBeforeUnmount(() => {
                 </span>
               </p>
             </div>
+            <ListingPriceRecovery
+              v-if="needsSourcePrice"
+              :key="activeSku"
+              ref="priceRecovery"
+              :asin="sourceVariant?.asin"
+              :multiplier="doc.basis.multiplier"
+              :collection="generationRow?.source_collection || generationRow?.collection"
+              :disabled="locked || busy || saving"
+              @confirm="verifySourcePrice"
+            />
             <template v-if="currentSpec"
               ><ListingSchemaField
                 v-for="key in orderableKeys"

@@ -162,3 +162,31 @@ def test_two_variants_of_one_product_use_their_own_captured_prices(publishing,mo
     assert len(fetched)==2
     assert {r['source_sku']:r['orderable']['price'] for r in doc['rows']}=={'child-70':87.47,'child-71':96}
     assert len({r['listing_id'] for r in doc['rows']})==1
+
+
+def test_wraith_recovery_flows_into_pricing_and_ai(amazon,monkeypatch):
+    c,_,_,_,_,base,_=amazon
+    patch_rows(c,base,empty_prices)
+    def blocked(asin):raise HumanVerificationRequired('Amazon 要求人机验证')
+    monkeypatch.setattr('catalog.images.fetch_amazon_page',blocked)
+    monkeypatch.setenv('CATALOG_AMAZON_BROWSER_PYTHON','configured')
+    monkeypatch.setattr('catalog.amazon_browser.fetch_page',lambda asin:page(asin,offer(original='72.89')))
+    doc,status=execute(amazon)
+    assert status['state']=='complete',status
+    assert all(row['orderable']['price']==87.47 for row in doc['rows'])
+    assert all(row['source_collection']['method']=='wraith_background' for row in status['report']['rows'].values())
+
+
+def test_confirmed_manual_price_is_not_collected_again(amazon,monkeypatch):
+    c,_,_,_,_,base,_=amazon
+    doc=c.get(base).json()
+    for row in doc['rows']:
+        result=c.post(base+'/verify-source-price',json=dict(revision=doc['revision'],platform_sku=row['platform_sku'],original_price='72.89'))
+        assert result.status_code==200,result.text
+        doc=result.json()
+    def fail(asin):raise AssertionError('confirmed price should not be fetched again')
+    monkeypatch.setattr('catalog.images.fetch_amazon_page',fail)
+    after,status=execute(amazon)
+    assert status['state']=='complete',status
+    assert all(row['orderable']['price']==87.47 for row in after['rows'])
+    assert len(after['source_price_reviews'])==2

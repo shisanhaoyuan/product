@@ -61,36 +61,37 @@ def refresh_amazon(catalog, db, doc, actor_id=None, job_id=None):
 
 
 def collect_before_generation(catalog, job, report, progress, checked_context):
-    from .source_capture import amazon_source, save_capture
+    from .source_capture import collect_quote_page, save_capture
     from .images import fetch_amazon_page, HumanVerificationRequired
     from .walmart_publishing import document, latest_results, EDITABLE
     with catalog.connect() as db:
         stored,_=checked_context(db,job)
         basis=json.loads(stored['basis_json']);statuses=latest_results(db,job['batch_id'])
+        from .listing_price_review import reviews
+        verified=reviews(db,stored)
     targets=[(i,v) for i in basis['items'] if i.get('source')=='Amazon' for v in i['variants']
-             if v.get('capture_required') and statuses.get(v['platform_sku'],{}).get('status','unsubmitted') in EDITABLE]
+             if v.get('capture_required') and v['platform_sku'] not in verified and statuses.get(v['platform_sku'],{}).get('status','unsubmitted') in EDITABLE]
     for index,(item,variant) in enumerate(targets):
         sku=variant['platform_sku'];asin=variant['asin']
         progress(sku,'collecting',f'后台采集报价 {index+1}/{len(targets)}：{variant["sku"]}')
         captured=None
         try:
-            html=fetch_amazon_page(asin)
-            quote=amazon_source(html,asin)
+            html,quote,method=collect_quote_page(asin,fetch_amazon_page)
             from .listing_source_evidence import amazon_details
             facts=amazon_details(html,asin)
             captured=quote
             message=('后台报价采集完成' if quote['status']=='captured' else
                      '后台报价尚未完整核验；继续 AI 填充，售价可人工核对')
-            outcome=dict(state=quote['status'],message=message,asin=asin,facts=facts)
-        except HumanVerificationRequired:
-            outcome=dict(state='verification_required',message='后台遇到人机验证；继续 AI 填充，售价可人工核对',asin=asin)
+            outcome=dict(state=quote['status'],message=message,asin=asin,facts=facts,method=method)
+        except HumanVerificationRequired as exc:
+            outcome=dict(state='verification_required',message=str(exc)+'；继续 AI 填充，售价可人工核对',asin=asin)
         except (ValueError, OSError, ListingAIError) as exc:
             outcome=dict(state='failed',message='后台报价采集失败，继续 AI 填充；'+str(exc)[:200],asin=asin)
         with catalog.connect() as db:
             write_lock(db);stored,_=checked_context(db,job)
             if captured is not None and captured.get('status') in ('captured','partial'):
                 save_capture(catalog,db,item['listing_id'],variant.get('capture_sku') or None,asin,captured,
-                             job.get('actor_id'),f'https://www.amazon.com/dp/{asin}?th=1&psc=1','generation_background')
+                             job.get('actor_id'),f'https://www.amazon.com/dp/{asin}?th=1&psc=1','wraith_background' if method=='wraith_background' else 'generation_background')
                 stored=refresh_amazon(catalog,db,stored,job.get('actor_id'),job['id'])
                 job['revision']=stored['revision']
             report['rows'][sku]['source_collection']=outcome

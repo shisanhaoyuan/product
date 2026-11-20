@@ -256,6 +256,25 @@ def amazon_source(html, asin):
                 delivery_location=location or None, issues=issues)
 
 
+
+def collect_quote_page(asin, fetch):
+    """One HTTP attempt, then at most one configured background browser attempt."""
+    from .amazon_browser import configured, fetch_page
+    try:
+        html=fetch(asin)
+        quote=amazon_source(html,asin)
+    except ValueError:
+        if not configured():
+            raise
+    else:
+        if not configured() or (quote.get('status') != 'browser_required' and quote.get('original_price')
+                                and re.search(r'\b10001\b',quote.get('delivery_location') or '')):
+            return html,quote,'server'
+    html=fetch_page(asin)
+    quote=amazon_source(html,asin)
+    return html,quote,'wraith_background'
+
+
 def save_capture(catalog, db, lid, sku, asin, result, actor_id, url, method):
     """Persist with the caller's transaction so generation can atomically rebase its snapshot."""
     result = dict(result, source_url=url, captured_at=datetime.now(timezone.utc).isoformat(),
@@ -309,14 +328,14 @@ def source_routes(catalog):
         asin = v['asin']
         url = f'https://www.amazon.com/dp/{asin}?th=1&psc=1'
         try:
-            result = amazon_source(fetch_amazon_page(asin), asin)
-        except HumanVerificationRequired:
-            return {'status': 'verification_required', 'asin': asin, 'source_url': url}
+            _, result, method = collect_quote_page(asin, fetch_amazon_page)
+        except HumanVerificationRequired as exc:
+            return {'status': 'verification_required', 'asin': asin, 'source_url': url, 'issues': [str(exc)]}
         except ValueError as exc:
             raise HTTPException(502, str(exc)) from None
         if result['status'] == 'partial' and not data.background:
             return {'status': 'browser_required', 'asin': asin, 'source_url': url}
-        return save(lid, data.variant_sku, asin, result, request, url, 'server')
+        return save(lid, data.variant_sku, asin, result, request, url, method)
 
     @router.post('/{lid}/source-capture/sync')
     def sync_existing(lid: str, data: CaptureInput, request: Request):

@@ -36,5 +36,6 @@ def reviews(db, doc):
             continue
         item,variant=entries[sku]
         if eligible(item,variant) and data.get('key') == review_key(basis,item,variant,rows[sku]):
-            result[sku]=dict(at=event['at'],actor_id=event['actor_id'],price=data['price'])
+            result[sku]=dict(at=event['at'],actor_id=event['actor_id'],price=data['price'],
+                **{k:data[k] for k in ('original_price','multiplier','method') if k in data})
     return result

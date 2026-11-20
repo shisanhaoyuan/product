@@ -1,0 +1,5 @@
+# Separate runtime: do not install these into the web service venv.
+wraith @ git+https://github.com/YogevKr/wraith.git@38133435ea43f01d89d613aa46321ecbe9e011dc
+camoufox[geoip]==0.5.9b5
+playwright==1.62.0
+patchright==1.64.4
