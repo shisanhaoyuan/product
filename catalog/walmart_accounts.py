@@ -32,6 +32,8 @@ def initialize(db):
     db.execute('''CREATE TABLE IF NOT EXISTS walmart_account_events(
         id TEXT PRIMARY KEY,store_id INTEGER NOT NULL REFERENCES listing_stores(id),
         actor_id INTEGER NOT NULL,action TEXT NOT NULL,at TEXT NOT NULL,message TEXT NOT NULL)''')
+    from .store_items import initialize as initialize_offer_changes
+    initialize_offer_changes(db)
     db.execute('INSERT INTO migrations VALUES(15) ON CONFLICT DO NOTHING')
 
 

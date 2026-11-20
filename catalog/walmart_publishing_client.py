@@ -109,6 +109,13 @@ class WalmartSession:
     def feed_owner(self, feed_id):
         return self.call('GET', '/v3/feeds', params={'feedId': feed_id, 'limit': 50})
 
+    def items(self, cursor, sku=''):
+        params = {'sku': sku} if sku else {'nextCursor': cursor, 'limit': 50}
+        return self.call('GET', '/v3/items', params=params)
+
+    def retire(self, sku):
+        return self.call('DELETE', '/v3/items/' + quote(sku, safe=''))
+
     def item(self, sku):
         return self.call('GET', '/v3/items/' + quote(sku, safe=''), params={'productIdType': 'SKU'})
 
@@ -116,7 +123,7 @@ class WalmartSession:
         details = self.call('GET', '/v3/token/detail')
         scopes = details.get('scopes')
         if details.get('is_valid') is not True or not isinstance(scopes, dict) or scopes.get(scope) != 'full_access':
-            label = '价格' if scope == 'price' else '库存'
+            label = {'price': '价格', 'inventory': '库存', 'item': '商品'}[scope]
             raise WalmartError(f'店铺缺少{label}（{scope}）完整写入权限，请更新授权')
 
     def set_price(self, sku, value):

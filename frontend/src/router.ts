@@ -21,6 +21,7 @@ export const router = createRouter({
     { path: '/prelisting/:id', component: () => import('./views/PrelistingView.vue') },
     { path: '/walmart-review', component: () => import('./views/WalmartReviewView.vue') },
     { path: '/walmart-accounts', component: () => import('./views/WalmartAccountsView.vue') },
+    { path: '/store-items', component: () => import('./views/StoreItemsView.vue') },
     { path: '/listing-stores', component: () => import('./views/ListingStoresView.vue') },
     { path: '/blacklist', component: () => import('./views/BlacklistView.vue') },
     { path: '/imports', component: () => import('./views/ImportsView.vue') },

@@ -79,6 +79,8 @@ def create_app(database=None):
     from .walmart_publishing import publishing_routes, public_media_routes
     app.state.walmart_publisher=WalmartPublishingClient()
     app.include_router(publishing_routes(catalog))
+    from .store_items import store_item_routes
+    app.include_router(store_item_routes(catalog))
     from .walmart_review import review_routes
     app.include_router(review_routes(catalog))
     app.include_router(public_media_routes(catalog,storage))
@@ -114,7 +116,7 @@ def create_app(database=None):
                 return Response('首次登录请先修改密码',status_code=403)
             if path.startswith(('/api/admin/', '/api/walmart/')) and user['role'] != 'admin':
                 return Response('需要管理员权限',status_code=403)
-            if writing and (path == '/api/imports' or path.startswith(('/api/seller-blacklist', '/api/prelisting', '/api/listing-stores', '/api/products/', '/api/integrations/'))) and user['role'] not in {'admin','editor'}:
+            if writing and (path == '/api/imports' or path.startswith(('/api/seller-blacklist', '/api/prelisting', '/api/listing-stores', '/api/products/', '/api/integrations/', '/api/store-items'))) and user['role'] not in {'admin','editor'}:
                 return Response('只读成员不能修改商品库数据',status_code=403)
             if writing and not secrets.compare_digest(request.headers.get('x-csrf-token',''),user['csrf_token']):
                 return Response('登录校验已过期，请刷新后重试',status_code=403)

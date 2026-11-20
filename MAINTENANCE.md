@@ -145,3 +145,7 @@ python validation/frontend_state_check.py
 `giga_patrol.py` 保留原调度命令和审计表，对大建云仓/赛盈分来源账号执行；`saleyee_patrol.py` 负责 30 SKU 分批响应、同报价匹配和字段独立更新。`giga_walmart_sync.py` 共用已上架店铺更新流程；赛盈的新提交冻结账号、站点、仓库、物流和倍率，历史提交从预览恢复报价依据。默认 CLI 执行所有已配置来源，支持 `--source saleyee|giga`。原 systemd 周期保持不变。前端共用巡查页面，赛盈独立路由与 API，数据库沿用按 namespace 隔离的审计表，无需数据迁移或导入。
 
 本功能测试使用隔离数据库、模拟赛盈和沃尔玛接口；不将其视为服务器计时器已启动或真实店铺修改成功。部署方式和手工单来源执行命令见 `deploy/giga-patrol.md`。
+
+## 2026-11-20 店铺商品管理
+
+新增 store_items.py 和 StoreItemsView.vue，直接读取绑定店铺 API 的全部商品/精确 SKU，不通过来源库或本地提交记录推断线上商品。人工改价、分仓库存、永久下架使用独立审计表 walmart_offer_changes；校验当前账号、绑定版本、原值和权限，发送前持久化意图，模糊结果仅回读核对。手工与巡查通过共同数据库写锁及待确认记录避免互相覆盖。新表在账号 schema 初始化时创建，纳入 SQLite → PostgreSQL 迁移；权限为成员可读、编辑/管理员可写，绑定管理权限不变。详见 deploy/store-items.md。

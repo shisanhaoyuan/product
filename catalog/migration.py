@@ -14,7 +14,7 @@ TABLES = ('products','listings','variants','snapshots','imports','users','sessio
           'auth_attempts','audit_events','seller_blacklist','seller_blacklist_events',
           'product_edits','product_edit_events','listing_stores','platform_skus','prelisting_batches',
           'prelisting_items','prelisting_claims','prelisting_events','image_objects','source_captures','giga_patrol_runs','giga_patrol_items','giga_patrol_evidence','giga_patrol_actions',
-          'walmart_accounts','walmart_binding_previews','walmart_account_events',
+          'walmart_accounts','walmart_offer_changes','walmart_binding_previews','walmart_account_events',
           'walmart_listing_documents','walmart_listing_metadata','walmart_listing_attempts',
           'walmart_listing_claims','walmart_listing_events','walmart_listing_polls','listing_generation_jobs',
           'listing_store_preparation','listing_real_identifiers','listing_preparation_rounds',

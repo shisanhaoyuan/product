@@ -25,6 +25,7 @@ const catalogSources = productSources;
 const navigation = [
   { path: '/prelisting', name: '预上架', icon: 'Upload' },
   { path: '/walmart-review', name: '审核进度', icon: 'ScanLine' },
+  { path: '/store-items', name: '店铺商品管理', icon: 'Package' },
   { path: '/listing-stores', name: '店铺管理', icon: 'Store' },
   { path: '/blacklist', name: '卖家黑名单', icon: 'ShieldCheck' },
   { path: '/review', name: '待复核', icon: 'CircleDashed' },

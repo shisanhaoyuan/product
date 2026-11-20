@@ -95,6 +95,10 @@ def check_identity(db, action, ev, namespace, account_token, run_token, bound=No
     from .giga_patrol import assert_lease
     assert_lease(db, namespace, account_token)
     assert_lease(db, namespace + '.patrol', run_token)
+    manual = db.execute("SELECT 1 FROM walmart_offer_changes WHERE store_id=? AND partner=? AND sku=? "
+                        "AND status='pending'", (action['store_id'], action['partner_id'], action['platform_sku'])).fetchone()
+    if manual:
+        raise WalmartError('此商品有人工修改待确认，请先在店铺商品管理中核对')
     current = db.execute('SELECT namespace,sku,external_id,data_json FROM listings WHERE id=?', (action['listing_id'],)).fetchone()
     expected = ev['source']
     if (not current or current['namespace'] != namespace or current['sku'] != action['source_sku']
