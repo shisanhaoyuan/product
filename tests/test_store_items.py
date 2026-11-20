@@ -22,6 +22,8 @@ class ItemsRemote(Remote):
         self.delay = False
         self.wrong = False
         self.node = 'node-a'
+        self.search_result = {'items': [{'itemId': '123', 'images': [{'url': 'https://i5.walmartimages.com/catalog.jpg'}]}]}
+        self.search_status = 200
 
     @property
     def writes(self):
@@ -52,6 +54,11 @@ class ItemsRemote(Remote):
             assert r.method == 'DELETE'
             if not self.delay: self.life = 'RETIRED'
             return httpx.Response(200,json={'sku':'REMOTE-ONLY'})
+        if path == '/v3/items/walmart/search':
+            assert r.method == 'GET'
+            assert r.url.params['gtin'] == '12345678901234'
+            assert r.url.params['responseFormat'] == 'DEFAULT'
+            return httpx.Response(self.search_status, json=self.search_result)
         if path == '/v3/price':
             assert r.method == 'PUT'
             assert json.loads(r.content)['sku'] == 'REMOTE-ONLY'
@@ -221,3 +228,75 @@ def test_submitted_image_requires_same_store_partner_and_sku(tmp_path, settings,
         item.update(image='https://example.com/remote.jpg',image_source='walmart')
         attach_images(db,[item],sid,'100009')
         assert item['image'] == 'https://example.com/remote.jpg'
+
+
+def image_request(c, sid, bound, **params):
+    return c.get(f'/api/store-items/{sid}/image', params={
+        'sku': 'REMOTE-ONLY', 'partner': bound['profile']['partnerId'], 'revision': bound['revision'], **params})
+
+
+def test_external_offer_image_lookup_cached_without_modifying_offer(offers):
+    c, remote, sid, bound = offers
+    original = c.get(f'/api/store-items/{sid}').json()
+    assert not original['items'][0]['image']
+    result = image_request(c, sid, bound)
+    assert result.status_code == 200, result.text
+    assert result.json()['image'] == 'https://i5.walmartimages.com/catalog.jpg'
+    assert result.json()['image_source'] == 'walmart'
+    count = len(remote.calls)
+    assert image_request(c, sid, bound).json() == result.json()
+    assert len(remote.calls) == count
+    assert image_request(c, sid, bound, revision=999).status_code == 409
+    assert image_request(c, sid, bound, partner='OTHER').status_code == 409
+    assert c.get(f'/api/store-items/{sid}').json() == original
+    assert not remote.writes
+
+
+@pytest.mark.parametrize('status,raw,expected', [
+    (200, {}, 'missing'),
+    (200, {'items': [{'gtin': '99999999999999', 'images': [{'url': 'https://example.com/wrong.jpg'}]}]}, 'missing'),
+    (200, {'items': [{'images': [{'url': 'javascript:alert(1)'}]}]}, 'missing'),
+    (200, {'items': [{}, {}]}, 'missing'),
+    (429, {}, 'unavailable'),
+    (403, {}, 'unavailable'),
+])
+def test_image_failures_do_not_break_listing(offers, status, raw, expected):
+    c, remote, sid, bound = offers
+    remote.search_status, remote.search_result = status, raw
+    result = image_request(c, sid, bound)
+    assert result.status_code == 200
+    assert result.json()['image'] == '' and result.json()['image_status'] == expected
+    assert c.get(f'/api/store-items/{sid}').status_code == 200
+    assert not remote.writes
+
+
+def test_image_requires_store_sku_and_server_gtin(offers):
+    c, remote, sid, bound = offers
+    remote.wrong = True
+    assert image_request(c, sid, bound).json()['image_status'] == 'unavailable'
+    assert not any(r.url.path.endswith('/walmart/search') for r in remote.calls)
+
+
+@pytest.mark.parametrize('extra', [{'gtin': ''}, {'gtin': 'invalid'}, {'images': [{'url': 'https://example.com/direct.jpg'}]}])
+def test_image_skips_search_when_not_needed_or_no_gtin(offers, extra):
+    c, remote, sid, bound = offers
+    original = remote.item
+    remote.item = lambda: original() | extra
+    result = image_request(c, sid, bound).json()
+    assert result['image'] == ('https://example.com/direct.jpg' if 'images' in extra else '')
+    assert not any(r.url.path.endswith('/walmart/search') for r in remote.calls)
+
+
+def test_image_identity_and_local_asset_formats():
+    from catalog.store_items import catalog_image, image_url
+    image = 'https://example.com/correct.jpg'
+    raw = {'items': [{'itemId': 'wrong', 'images': [{'url': 'https://example.com/wrong.jpg'}]},
+                     {'itemId': 'correct', 'images': [{'url': image}]}]}
+    assert catalog_image(raw, {'gtin': '00123456789012', 'item_id': 'correct'}) == image
+    assert catalog_image(raw, {'gtin': '00123456789012', 'item_id': 'missing'}) == ''
+    raw = {'items': [{'upc': '123456789012', 'images': [{'url': image}]}]}
+    assert catalog_image(raw, {'gtin': '00123456789012'}) == image
+    local = '/api/products/images/assets/' + 'a' * 64
+    assert image_url(local) == local
+    assert image_url('//example.com/a.jpg') == ''
+    assert image_url('/api/products/images/assets/../../secrets') == ''

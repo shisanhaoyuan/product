@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, computed, nextTick } from 'vue';
+import { ref, onMounted, onBeforeUnmount, computed, nextTick } from 'vue';
+import { loadStoreItemImages, type StoreItemImage } from '../utils/storeItemImages';
 import { request } from '../api/client';
 import { errorMessage } from '../utils/display';
 import ProductImage from '../components/ProductImage.vue';
@@ -11,10 +12,7 @@ interface Store {
   name: string;
   partner_id: string;
 }
-interface Item {
-  image: string;
-  image_source: string;
-  sku: string;
+interface Item extends StoreItemImage {
   name: string;
   gtin: string;
   published: string;
@@ -88,11 +86,14 @@ const post = (data: unknown) => ({
   body: JSON.stringify(data),
 });
 const base = () => `/api/store-items/${sid.value}`;
+let imageRequest: AbortController | undefined;
+onBeforeUnmount(() => imageRequest?.abort());
 async function history() {
   histories.value = await request<History[]>(base() + '/history');
 }
 async function load(reset = false) {
   if (!sid.value || busy.value) return;
+  imageRequest?.abort();
   busy.value = true;
   error.value = '';
   selection.value = undefined;
@@ -103,6 +104,8 @@ async function load(reset = false) {
   try {
     const params = new URLSearchParams({ cursor: cursor.value, sku: search.value.trim() });
     data.value = await request<Page>(base() + '?' + params);
+    imageRequest = new AbortController();
+    void loadStoreItemImages(sid.value, data.value, imageRequest.signal);
     await history();
   } catch (e) {
     data.value = undefined;
@@ -275,12 +278,31 @@ onMounted(async () => {
         <tbody>
           <tr v-for="item in data.items" :key="item.sku">
             <td class="image-column">
-              <a v-if="safeUrl(item.image)" :href="safeUrl(item.image)" target="_blank" rel="noopener noreferrer"
-                class="offer-thumbnail" :aria-label="'查看商品图片：' + (item.name || item.sku)">
+              <a
+                v-if="safeUrl(item.image)"
+                :href="safeUrl(item.image)"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="offer-thumbnail"
+                :aria-label="'查看商品图片：' + (item.name || item.sku)"
+              >
                 <ProductImage :src="item.image" :alt="item.name || item.sku" />
               </a>
-              <div v-else class="offer-thumbnail"><ProductImage :alt="item.name || item.sku" /></div>
-              <small v-if="item.image_source === 'submitted'" class="image-origin">上架提交图</small>
+              <div v-else class="offer-thumbnail">
+                <ProductImage
+                  :alt="item.name || item.sku"
+                  :placeholder="
+                    item.image_status === 'loading'
+                      ? '正在获取图片…'
+                      : item.image_status === 'unavailable'
+                        ? '图片查询暂不可用'
+                        : '平台暂未提供图片'
+                  "
+                />
+              </div>
+              <small v-if="item.image_source === 'submitted'" class="image-origin"
+                >上架提交图</small
+              >
             </td>
             <td class="live-product">
               <strong>{{ item.name || '平台未返回名称' }}</strong
@@ -378,7 +400,10 @@ onMounted(async () => {
             :min="kind === 'price' ? 0.01 : 0"
             :step="kind === 'price' ? 0.01 : 1"
             :disabled="busy || !editable"
-            @input="target = ($event.target as HTMLInputElement).value; pendingRequest = undefined"
+            @input="
+              target = ($event.target as HTMLInputElement).value;
+              pendingRequest = undefined;
+            "
         /></label>
         <label v-else>输入完整 SKU 确认下架<input v-model="confirmSku" :disabled="busy" /></label>
         <button
@@ -553,19 +578,49 @@ onMounted(async () => {
 </style>
 
 <style scoped>
-.edit-offer .section-head { padding: 20px 24px; margin: 0; }
-.edit-offer .section-body { padding: 20px 24px 28px; }
+.edit-offer .section-head {
+  padding: 20px 24px;
+  margin: 0;
+}
+.edit-offer .section-body {
+  padding: 20px 24px 28px;
+}
 </style>
 
 <style scoped>
-.image-column { width: 112px; min-width: 112px; }
-.offer-thumbnail {
-  display: flex; align-items: center; justify-content: center;
-  width: 80px; height: 80px; border: 1px solid #dce4ec; border-radius: 10px;
-  background: #fff; overflow: hidden;
+.image-column {
+  width: 112px;
+  min-width: 112px;
 }
-a.offer-thumbnail:hover { border-color: #819fbd; box-shadow: 0 3px 12px #526c851a; }
-.offer-thumbnail :deep(img) { width: 100%; height: 100%; object-fit: contain; }
-.offer-thumbnail :deep(.image-placeholder) { width: 100%; height: 100%; font-size: 10px; }
-.image-origin { display: block; margin-top: 6px; color: var(--muted); font-size: 11px; }
+.offer-thumbnail {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 80px;
+  height: 80px;
+  border: 1px solid #dce4ec;
+  border-radius: 10px;
+  background: #fff;
+  overflow: hidden;
+}
+a.offer-thumbnail:hover {
+  border-color: #819fbd;
+  box-shadow: 0 3px 12px #526c851a;
+}
+.offer-thumbnail :deep(img) {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.offer-thumbnail :deep(.image-placeholder) {
+  width: 100%;
+  height: 100%;
+  font-size: 10px;
+}
+.image-origin {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
 </style>

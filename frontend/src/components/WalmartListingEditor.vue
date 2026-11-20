@@ -23,6 +23,7 @@ import { collectMissingPrices } from '../utils/sourceCollection';
 import { applyListingDefaults } from '../utils/listingDefaults';
 import ListingSchemaField from './ListingSchemaField.vue';
 import ListingPriceRecovery from './ListingPriceRecovery.vue';
+import ListingStatusNotices from './ListingStatusNotices.vue';
 import ProductImage from './ProductImage.vue';
 import ListingProductDetails from './ListingProductDetails.vue';
 import ProductStoreHistory from './ProductStoreHistory.vue';
@@ -1166,10 +1167,7 @@ onBeforeUnmount(() => {
               </div>
             </details>
           </div>
-          <p v-if="priceReview" class="notice notice-space" role="status">来源价格已人工验证<span v-if="priceReview.original_price"> · 人工原价 {{ money(priceReview.original_price) }} × {{ priceReview.multiplier }}</span> · 确认售价 {{ money(priceReview.price) }} · {{ priceReview.at }}。修改售价或来源后需重新确认。</p>
-          <p v-if="locked && result" class="notice notice-space">
-            {{ result.message }}。当前状态不允许修改或重复提交。
-          </p>
+          <ListingStatusNotices :review="priceReview" :result="locked ? result : undefined" />
           <div v-if="unsupported.length" class="notice notice-space">
             <p>有 {{ unsupported.length }} 项旧类目属性不在当前规格中，请核对后移除。</p>
             <details>

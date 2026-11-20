@@ -3,8 +3,14 @@ import { ref, watch } from 'vue';
 import { safeUrl } from '../utils/display';
 import AppIcon from './AppIcon.vue';
 const props = withDefaults(
-  defineProps<{ src?: string; alt?: string; imageClass?: string; lazy?: boolean }>(),
-  { alt: '商品图片', lazy: true },
+  defineProps<{
+    src?: string;
+    alt?: string;
+    imageClass?: string;
+    lazy?: boolean;
+    placeholder?: string;
+  }>(),
+  { alt: '商品图片', lazy: true, placeholder: '暂无商品图片' },
 );
 const failed = ref(false);
 watch(
@@ -25,6 +31,6 @@ watch(
     @error="failed = true"
   />
   <div v-else class="image-placeholder">
-    <span><AppIcon name="ImageOff" /></span>{{ failed ? '图片暂不可用' : '暂无商品图片' }}
+    <span><AppIcon name="ImageOff" /></span>{{ failed ? '图片暂不可用' : placeholder }}
   </div>
 </template>

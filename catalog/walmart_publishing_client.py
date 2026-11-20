@@ -119,6 +119,10 @@ class WalmartSession:
     def item(self, sku):
         return self.call('GET', '/v3/items/' + quote(sku, safe=''), params={'productIdType': 'SKU'})
 
+    def catalog_search(self, gtin):
+        return self.call('GET', '/v3/items/walmart/search',
+                         params={'gtin': gtin, 'responseFormat': 'DEFAULT'}, timeout=15)
+
     def require_scope(self, scope):
         details = self.call('GET', '/v3/token/detail')
         scopes = details.get('scopes')

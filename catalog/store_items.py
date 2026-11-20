@@ -1,5 +1,9 @@
 """Manual management of offers returned by the bound US Marketplace account."""
 import json
+import re
+from collections import OrderedDict
+from threading import Lock
+from time import monotonic
 from urllib.parse import urlsplit
 from contextlib import contextmanager
 from decimal import Decimal
@@ -59,11 +63,56 @@ def initialize(db):
 def image_url(value):
     if not isinstance(value, str):
         return ''
+    if re.fullmatch(r'/api/products/images/assets/[a-f0-9]{64}', value):
+        return value
     try:
         url = urlsplit(value)
         return value if url.scheme in ('http', 'https') and url.hostname and not url.username and not url.password else ''
     except ValueError:
         return ''
+
+
+def primary_image(row):
+    for key in ('mainImageUrl', 'mainImageURL', 'primaryImageUrl', 'thumbnailUrl', 'imageUrl'):
+        if url := image_url(row.get(key)):
+            return url
+    images = row.get('images')
+    if isinstance(images, list):
+        for image in images:
+            if url := image_url(image.get('url') if isinstance(image, dict) else image):
+                return url
+    return ''
+
+
+def normalized_gtin(value):
+    value = str(value or '').strip()
+    return value.zfill(14) if re.fullmatch(r'(?:[0-9]{8}|[0-9]{12,14})', value) and int(value) else ''
+
+
+def catalog_image(raw, item):
+    """Identifier-only search, never use a title match or another variant's image.
+
+    Official DEFAULT response: items[].images[].url; it may omit GTIN.
+    https://developer.walmart.com/us-marketplace/reference/getsearchresult
+    """
+    rows = raw.get('items')
+    if not isinstance(rows, list):
+        return ''
+    matches = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        identifiers = [row[k] for k in ('gtin', 'upc', 'ean') if row.get(k)]
+        if identifiers:
+            if any(normalized_gtin(v) != normalized_gtin(item['gtin']) for v in identifiers):
+                continue
+        elif item.get('item_id'):
+            if str(row.get('itemId') or '') != item['item_id']:
+                continue
+        elif len(rows) != 1:
+            continue
+        matches.append(row)
+    return primary_image(matches[0]) if len(matches) == 1 else ''
 
 
 def attach_images(db, items, store_id, partner):
@@ -90,9 +139,9 @@ def item_info(row):
         raise WalmartError('沃尔玛返回的商品缺少 SKU')
     price = row.get('price') or {}
     value = number(price.get('amount')) if isinstance(price, dict) else None
-    image = next((u for k in ('mainImageUrl', 'mainImageURL', 'primaryImageUrl', 'thumbnailUrl')
-                  if (u := image_url(row.get(k)))), '')
+    image = primary_image(row)
     return dict(image=image, image_source='walmart' if image else '', sku=row['sku'], name=row.get('productName') or '', gtin=row.get('gtin') or '',
+                item_id=str(row.get('itemId') or ''),
                 lifecycle=row.get('lifecycleStatus') or '', published=row.get('publishedStatus') or '',
                 price=str(value) if value is not None else None,
                 currency=price.get('currency') if isinstance(price, dict) else '')
@@ -143,6 +192,8 @@ def finish(db, key, status, message):
 
 def store_item_routes(catalog):
     router = APIRouter(prefix='/api/store-items')
+    image_cache = OrderedDict()
+    image_lock = Lock()
 
     @contextmanager
     def session(request, sid):
@@ -184,6 +235,51 @@ def store_item_routes(catalog):
     def nodes(sid: int, request: Request):
         with session(request, sid) as (remote, _):
             return normalize_nodes(remote.nodes())
+
+    @router.get('/{sid}/image')
+    def fetch_image(sid: int, request: Request, sku: str = Query(min_length=1, max_length=200),
+                    partner: str = Query(min_length=1, max_length=300), revision: int = Query(ge=1)):
+        if sku in ('.', '..') or any(ord(c) < 32 for c in sku):
+            raise HTTPException(422, '无效 SKU')
+        with catalog.connect() as db:
+            _, bound = binding(db, sid, partner)
+        if bound['revision'] != revision:
+            raise HTTPException(409, '店铺绑定已变化，请刷新商品列表')
+        key = (sid, partner, revision, sku)
+        with image_lock:
+            cached = image_cache.get(key)
+            if cached and cached[0] > monotonic():
+                image_cache.move_to_end(key)
+                return cached[1]
+        result = dict(sku=sku, image='', image_source='', image_status='missing')
+        try:
+            with session(request, sid) as (remote, current):
+                if current['partner_id'] != partner or current['revision'] != revision:
+                    raise HTTPException(409, '店铺绑定已变化，请刷新商品列表')
+                # Establish ownership and GTIN from this account, never trust a browser-supplied GTIN.
+                item = exact_item(remote, sku)
+                with catalog.connect() as db:
+                    attach_images(db, [item], sid, partner)
+                gtin = normalized_gtin(item['gtin'])
+                if not item['image'] and gtin:
+                    item['image'] = catalog_image(remote.catalog_search(gtin), item)
+                    item['image_source'] = 'walmart' if item['image'] else ''
+                result.update(image=item['image'], image_source=item['image_source'],
+                              image_status='ready' if item['image'] else 'missing')
+        except HTTPException as exc:
+            if exc.status_code != 502:
+                raise
+            result['image_status'] = 'unavailable'
+        with catalog.connect() as db:
+            _, current = binding(db, sid, partner)
+            if current['revision'] != revision:
+                raise HTTPException(409, '店铺绑定已变化，请刷新商品列表')
+        with image_lock:
+            image_cache[key] = (monotonic() + (1800 if result['image'] else 60), result)
+            image_cache.move_to_end(key)
+            while len(image_cache) > 1000:
+                image_cache.popitem(last=False)
+        return result
 
     @router.get('/{sid}/stock')
     def stock(sid: int, request: Request, sku: str = Query(min_length=1,max_length=200),
