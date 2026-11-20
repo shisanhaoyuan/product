@@ -2,19 +2,28 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import type { SourceCapture } from '../api/types';
 import { catalogApi } from '../api/client';
-import { collectSource } from '../utils/sourceCollection';
+import { collectProductSources, hasCapturedPrice } from '../utils/sourceCollection';
 import { errorMessage, money, safeUrl } from '../utils/display';
 import { useProductEditing } from '../composables/useProductEditing';
 import AppIcon from './AppIcon.vue';
 
-const props = defineProps<{ listingId: string; asin: string; sku?: string }>();
+const props = withDefaults(
+  defineProps<{
+    listingId: string;
+    asin: string;
+    sku?: string;
+    variants?: { sku: string; asin: string }[];
+    automatic?: boolean;
+    refreshKey?: object | string;
+  }>(),
+  { automatic: true },
+);
 const editing = useProductEditing();
 const record = ref<SourceCapture | null>(null);
 const busy = ref(false),
   loading = ref(false),
   error = ref(''),
-  waiting = ref(false),
-  helper = ref(false);
+  progress = ref('');
 let controller: AbortController | undefined;
 const autoAttempted = new Set<string>();
 const disabled = computed(
@@ -29,13 +38,14 @@ const facts = computed(() => [
   ...(record.value?.delivery_location ? [['配送地区', record.value.delivery_location]] : []),
 ]);
 watch(
-  () => [props.listingId, props.sku, props.asin],
+  () => [props.listingId, props.sku, props.asin, props.refreshKey],
   async () => {
     controller?.abort();
     const request = new AbortController();
     controller = request;
     record.value = null;
-    busy.value = waiting.value = helper.value = false;
+    busy.value = false;
+    progress.value = '';
     error.value = '';
     loading.value = true;
     try {
@@ -54,17 +64,10 @@ watch(
 async function autoCapture() {
   const key = JSON.stringify([props.listingId, props.sku, props.asin]);
   if (!editing?.enabled.value || disabled.value || !props.asin || autoAttempted.has(key)) return;
-  const value = Number(record.value?.original_price);
-  if (
-    record.value?.asin === props.asin &&
-    Number.isFinite(value) &&
-    value > 0 &&
-    record.value?.currency === 'USD' &&
-    /\b10001\b/.test(record.value?.delivery_location || '')
-  )
-    return;
+  if (!props.automatic) return;
+  if (!props.variants?.length && hasCapturedPrice(record.value, props.asin)) return;
   autoAttempted.add(key);
-  await capture();
+  await capture(false, true);
 }
 watch(
   () => [editing?.enabled.value, editing?.busy.value, editing?.active.value],
@@ -73,23 +76,35 @@ watch(
   },
 );
 
-async function capture(reuse = false) {
+async function capture(reuse = false, missingOnly = false) {
   if (disabled.value) return;
   const request = new AbortController();
   controller = request;
   busy.value = true;
   if (editing) editing.busy.value = true;
   error.value = '';
-  helper.value = false;
+  progress.value = '';
   try {
-    const result = reuse
-      ? await catalogApi.syncSource(props.listingId, props.sku, request.signal)
-      : await collectSource(props.listingId, props.sku, request.signal, () => {
-          waiting.value = helper.value = true;
-        });
+    if (reuse) {
+      const result = await catalogApi.syncSource(props.listingId, props.sku, request.signal);
+      if (!request.signal.aborted) record.value = result;
+    } else {
+      const result = await collectProductSources(
+        props.listingId,
+        [{ sku: props.sku, asin: props.asin }, ...(props.sku ? [] : props.variants || [])],
+        request.signal,
+        missingOnly,
+        (text) => {
+          progress.value = text;
+        },
+        (sku, result) => {
+          if (sku === props.sku) record.value = result;
+        },
+      );
+      if (result.errors.length) error.value = result.errors.join('；');
+      progress.value = `后台采集完成，本次更新 ${result.collected} 个商品／子 SKU`;
+    }
     if (request.signal.aborted) return;
-    record.value = result;
-    helper.value = false;
     try {
       await editing?.refresh?.();
     } catch {
@@ -100,9 +115,8 @@ async function capture(reuse = false) {
   } finally {
     if (controller === request) {
       busy.value = false;
-      waiting.value = false;
+      if (editing) editing.busy.value = false;
     }
-    if (editing) editing.busy.value = false;
   }
 }
 onBeforeUnmount(() => controller?.abort());
@@ -132,8 +146,9 @@ onBeforeUnmount(() => controller?.abort());
       </button>
     </div>
     <p v-if="busy" class="muted" role="status">
-      {{ waiting ? '等待来源网页人工验证…' : '正在采集卖家与原价…' }}
+      {{ progress || '正在后台采集卖家与原价…' }}
     </p>
+    <p v-if="!busy && progress" class="muted" role="status">{{ progress }}</p>
     <p v-if="loading" class="muted" role="status">正在读取采集记录…</p>
     <template v-else-if="record">
       <dl class="source-capture-grid">
@@ -167,20 +182,9 @@ onBeforeUnmount(() => controller?.abort());
       </ul>
     </template>
     <p v-else class="muted">暂无来源采集记录</p>
-    <p v-if="waiting" role="status" class="muted">
-      等待来源页面。如出现人机验证，请在打开的网页中完成。
-    </p>
-    <div v-if="helper" class="actions source-helper-actions">
-      <a class="btn small" href="/api/products/images/helper.zip" download
-        ><AppIcon name="Download" />下载验证助手</a
-      >
-      <a class="btn small" href="/assets/capture-helper.html" target="_blank" rel="noopener"
-        >安装说明</a
-      >
-      <button v-if="waiting" class="btn small" @click="controller?.abort()">
-        <AppIcon name="X" />取消等待
-      </button>
-    </div>
+    <button v-if="busy" class="btn small" @click="controller?.abort()">
+      <AppIcon name="X" />取消采集
+    </button>
     <p v-if="error" role="alert" class="inline-error">{{ error }}</p>
   </div>
 </template>

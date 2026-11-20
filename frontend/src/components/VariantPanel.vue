@@ -310,6 +310,8 @@ defineExpose({ selectVariant });
         :listing-id="editing.listingId.value"
         :asin="selected.asin"
         :sku="selected.sku"
+        :automatic="false"
+        :refresh-key="selected"
       />
       <details class="details">
         <summary>本子 SKU 来源、价格与库存核验</summary>

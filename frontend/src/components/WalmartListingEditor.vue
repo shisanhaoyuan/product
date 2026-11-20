@@ -367,6 +367,25 @@ const locked = computed(
     (!!result.value && !['failed', 'rejected', 'unpublished'].includes(result.value.status)),
 );
 const issues = computed(() => doc.value?.validation.rows?.[activeSku.value]?.errors || []);
+const priceReview = computed(() => doc.value?.source_price_reviews?.[activeSku.value]);
+function canVerifySourceIssue(issue: Issue) {
+  const missing = '缺少来源采集原价，请采集卖家与报价后重新计算';
+  return issue.code === 'source_price_review' || (source.value?.source === 'Amazon' &&
+    sourceVariant.value?.error === missing && [
+      `${sourceVariant.value.sku}：${missing}`, '缺少已核验的来源售价，不能提交',
+    ].includes(issue.message));
+}
+async function verifySourcePrice() {
+  if (locked.value || !current.value) return;
+  const sku = current.value.platform_sku;
+  await run(async () => {
+    await save();
+    if (!doc.value) return;
+    install(await publishingApi.verifySourcePrice(props.bid, doc.value.revision, sku));
+    install(await publishingApi.validate(props.bid, doc.value.revision));
+    message.value = '当前售价已人工验证，已解除来源原价缺失限制；其他要求仍按校验结果显示';
+  });
+}
 const basic = ['productName', 'brand', 'condition', 'condition_notes'];
 const copyKeys = [
   'shortDescription',
@@ -1110,16 +1129,19 @@ onBeforeUnmount(() => {
           </div>
           <div v-if="issues.length && !dirty" class="listing-issue-list">
             <strong>此 SKU 有 {{ issues.length }} 项需要处理</strong
-            ><button v-for="(issue, index) in issues.slice(0, 3)" :key="index" @click="jump(issue)">
-              {{ issue.message }} <span>定位 →</span>
-            </button>
+            ><div v-for="(issue, index) in issues.slice(0, 3)" :key="index" class="listing-issue-row">
+              <button @click="jump(issue)">{{ issue.message }} <span>定位 →</span></button>
+              <button v-if="canVerifySourceIssue(issue) && !locked" class="source-price-verify" :disabled="busy || saving" @click="verifySourcePrice">已验证</button>
+            </div>
             <details v-if="issues.length > 3">
               <summary>展开其余 {{ issues.length - 3 }} 项</summary>
-              <button v-for="(issue, index) in issues.slice(3)" :key="index" @click="jump(issue)">
-                {{ issue.message }} <span>定位 →</span>
-              </button>
+              <div v-for="(issue, index) in issues.slice(3)" :key="index" class="listing-issue-row">
+                <button @click="jump(issue)">{{ issue.message }} <span>定位 →</span></button>
+                <button v-if="canVerifySourceIssue(issue) && !locked" class="source-price-verify" :disabled="busy || saving" @click="verifySourcePrice">已验证</button>
+              </div>
             </details>
           </div>
+          <p v-if="priceReview" class="notice notice-space" role="status">来源价格已人工验证 · 确认售价 {{ money(priceReview.price) }} · {{ priceReview.at }}。修改售价或来源后需重新确认。</p>
           <p v-if="locked && result" class="notice notice-space">
             {{ result.message }}。当前状态不允许修改或重复提交。
           </p>

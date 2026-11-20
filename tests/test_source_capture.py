@@ -165,3 +165,22 @@ def test_source_capture_permissions(team, role):
     client.headers.pop('X-CSRF-Token')
     assert client.post(path, json=body).status_code == 403
     assert client.post(sync_path, json={}).status_code == 403
+
+
+def test_background_child_capture_persists_partial_quotes_separately(local,monkeypatch):
+    client,catalog=local
+    p=detail(client);children=p['variants']
+    calls=[]
+    def fetch(asin):
+        calls.append(asin)
+        return page(asin, offer(price='10.00' if asin==children[0]['asin'] else '20.00',original='30.00').replace('<a id="sellerProfileTriggerId">Garden Store</a>',''))
+    monkeypatch.setattr('catalog.source_capture.fetch_amazon_page',fetch)
+    path=f"/api/products/{p['id']}/source-capture"
+    for child in children:
+        result=client.post(path,json={'variant_sku':child['sku'],'background':True})
+        assert result.status_code==200 and result.json()['status']=='partial'
+        assert result.json()['asin']==child['asin']
+    assert calls==[v['asin'] for v in children]
+    assert client.get(path,params={'variant_sku':children[0]['sku']}).json()['price']=='10.00'
+    assert client.get(path,params={'variant_sku':children[1]['sku']}).json()['price']=='20.00'
+    assert client.get(path).json() is None

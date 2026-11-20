@@ -134,6 +134,10 @@ class Revision(Input):
     revision: int = Field(ge=1)
 
 
+class PriceReview(Revision):
+    platform_sku: str = Field(min_length=1, max_length=50)
+
+
 class Submit(Revision):
     validation_id: str = Field(min_length=32, max_length=64)
     request_key: uuid.UUID
@@ -258,7 +262,9 @@ def public_document(db, bid):
         public['polling']=dict(task) if task else None
         attempts.append(public)
     pool=dict(db.execute("SELECT count(*) AS total,COALESCE(sum(CASE WHEN source_sku='' AND (brand='' OR brand=?) THEN 1 ELSE 0 END),0) AS available FROM listing_real_identifiers",(p['brand'],)).fetchone())
+    from .listing_price_review import reviews
     return dict(revision=row['revision'], version=row['version'], rows=json.loads(row['rows_json']),
+                source_price_reviews=reviews(db,row),
                 basis=basis, validation=validation, labels=LABELS,
                 store=p['store'], brand=p['brand'], specs=cached_specs, requirements=requirements, updated_at=row['updated_at'], results=latest_results(db, bid),
                 attempts=attempts,identifier_pool=pool)
@@ -353,11 +359,18 @@ def unchanged_sources(db, doc):
     return basis
 
 
-def source_issues(item, variant):
+def source_issues(item, variant, price_verified=False):
     # Presentation gaps can be filled in this document. Core evidence cannot be overridden here.
     ignored = ('缺少标题，', '缺少描述，', '缺少卖点，', '缺少商品图片，', '缺少UPC / GTIN', '来源类目缺失，')
     errors = [e for e in item['errors'] if not e.startswith(ignored)]
-    if variant.get('price') is None:
+    from .listing_price_review import eligible, MISSING
+    # Each row owns its source-price warning; another SKU's acknowledgement cannot clear it.
+    other_prices = {f"{v['sku']}：{MISSING}" for v in item.get('variants', []) if v.get('sku') != variant.get('sku') and eligible(item,v)}
+    errors = [e for e in errors if e not in other_prices]
+    verified = price_verified and eligible(item,variant)
+    if verified:
+        errors = [e for e in errors if e != f"{variant['sku']}：{MISSING}"]
+    if variant.get('price') is None and not verified:
         errors.append('缺少已核验的来源售价，不能提交')
     if str(variant.get('stock')) != '10':
         errors.append('当前无可上架库存或库存未核验，请先更新来源库存')
@@ -419,13 +432,19 @@ def check_rows(db, doc, session, binding_row, skus=None):
         raise HTTPException(409, '请先获取沃尔玛实际类目列表')
     types = {t['name']:t for t in taxonomy}
     nodes=cache_value(db,binding_row,'nodes',age=3600) or []
+    from .listing_price_review import reviews, eligible
+    price_reviews=reviews(db,doc)
     for row in json.loads(doc['rows_json']):
         if skus is not None and row['platform_sku'] not in skus:
             continue
         sku = row['platform_sku']; item, variant = by_sku[sku]
         from .listing_prerequisites import evidence_errors, identifier_ownership_errors
         errors = evidence_errors(db,doc,row,item)
-        errors.extend(dict(path='',message=e) for e in source_issues(item,variant))
+        for message in source_issues(item,variant,sku in price_reviews):
+            issue=dict(path='',message=message)
+            if eligible(item,variant) and message in (f"{variant['sku']}：{variant['error']}", '缺少已核验的来源售价，不能提交'):
+                issue.update(path='orderable.price',code='source_price_review')
+            errors.append(issue)
         errors.extend(dict(path='identification',message=e) for e in identifier_errors(row['identification']))
         errors.extend(identifier_ownership_errors(db,doc,row,item))
         if row['fulfillment_center_id'] not in {n['id'] for n in nodes}:
@@ -626,6 +645,34 @@ def publishing_routes(catalog):
                 event(db,bid,request,'edit',{'revision':doc['revision']+1,'before':old,'after':rows,'rule_changes':rule_changes})
             return public_document(db,bid)
 
+    @router.post('/verify-source-price')
+    def verify_source_price(bid: str, data: PriceReview, request: Request):
+        from .listing_price_review import ACTION, eligible, review_key, reviews
+        with catalog.connect() as db:
+            write_lock(db);batch(db,bid);doc=document(db,bid);revision_check(doc,data.revision)
+            if db.execute("SELECT 1 FROM listing_generation_jobs WHERE batch_id=? AND state IN ('queued','running')",(bid,)).fetchone():
+                raise HTTPException(409,'资料正在生成，请结束后再确认')
+            if latest_results(db,bid).get(data.platform_sku,{}).get('status','unsubmitted') not in EDITABLE:
+                raise HTTPException(409,'该商品已提交或正在处理，不能修改验证记录')
+            basis=unchanged_sources(db,doc)
+            row=next((r for r in json.loads(doc['rows_json']) if r['platform_sku']==data.platform_sku),None)
+            if not row:
+                raise HTTPException(404,'商品不属于当前批次')
+            item=next(i for i in basis['items'] if i['listing_id']==row['listing_id'])
+            variant=next(v for v in item['variants'] if v['platform_sku']==row['platform_sku'])
+            if not eligible(item,variant):
+                raise HTTPException(409,'只有缺少来源原价的提醒可以人工确认，其他来源异常请单独处理')
+            key=review_key(basis,item,variant,row)
+            if not key:
+                raise HTTPException(422,'请先填写并保存有效的上架售价，再点击已验证')
+            if data.platform_sku not in reviews(db,doc):
+                event(db,bid,request,ACTION,dict(key=key,platform_sku=row['platform_sku'],
+                    source_sku=row['source_sku'],store_id=basis['store']['id'],price=row['orderable']['price'],
+                    note='人工确认当前上架售价；解除缺少来源原价限制，不改写来源证据'))
+                db.execute('UPDATE walmart_listing_documents SET revision=revision+1,validation_json=?,updated_at=? WHERE batch_id=?',
+                           ('{}',now(),bid))
+            return public_document(db,bid)
+
     @router.post('/refresh-source')
     def refresh_source(bid: str,data: Revision,request: Request):
         with catalog.connect() as db:
@@ -759,6 +806,8 @@ def publishing_routes(catalog):
                         raise HTTPException(409,'确认店铺与批次绑定不一致，未提交')
                     assert_not_sending(db,bound['store_id'])
                     latest=latest_results(db,bid);all_rows={r['platform_sku']:r for r in json.loads(doc['rows_json'])}
+                    from .listing_price_review import reviews
+                    price_reviews=reviews(db,doc)
                     chosen=[];entries=active_entries(db)
                     for sku in data.skus:
                         if sku not in all_rows or not report['rows'].get(sku,{}).get('valid'):
@@ -771,7 +820,7 @@ def publishing_routes(catalog):
                             raise HTTPException(409,'官方规格已过期或变化，请重新加载并校验')
                         basis_item=next(i for i in basis['items'] if i['listing_id']==row['listing_id'])
                         basis_variant=next(v for v in basis_item['variants'] if v['platform_sku']==sku)
-                        if source_issues(basis_item,basis_variant):
+                        if source_issues(basis_item,basis_variant,sku in price_reviews):
                             raise HTTPException(409,'来源售价或库存不符合要求，请刷新来源并重新校验')
                         source=json.loads(db.execute('SELECT data_json FROM current_listings WHERE id=?',(row['listing_id'],)).fetchone()[0])
                         if matches(source,entries):

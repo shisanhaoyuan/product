@@ -14,6 +14,10 @@ from .images import (BrowserCaptureInput, CaptureInput, HumanVerificationRequire
                      ProductHTML, fetch_amazon_page, needs_verification)
 
 
+class SourceCaptureInput(CaptureInput):
+    background: bool = False
+
+
 def initialize(db):
     db.execute('''CREATE TABLE IF NOT EXISTS source_captures(
         id TEXT PRIMARY KEY, listing_id TEXT NOT NULL REFERENCES listings(id),
@@ -297,7 +301,7 @@ def source_routes(catalog):
         return json.loads(row[0]) if row else None
 
     @router.post('/{lid}/source-capture')
-    def capture(lid: str, data: CaptureInput, request: Request):
+    def capture(lid: str, data: SourceCaptureInput, request: Request):
         v = target(lid, data.variant_sku)
         asin = v['asin']
         url = f'https://www.amazon.com/dp/{asin}?th=1&psc=1'
@@ -307,7 +311,7 @@ def source_routes(catalog):
             return {'status': 'verification_required', 'asin': asin, 'source_url': url}
         except ValueError as exc:
             raise HTTPException(502, str(exc)) from None
-        if result['status'] == 'partial':
+        if result['status'] == 'partial' and not data.background:
             return {'status': 'browser_required', 'asin': asin, 'source_url': url}
         return save(lid, data.variant_sku, asin, result, request, url, 'server')
 

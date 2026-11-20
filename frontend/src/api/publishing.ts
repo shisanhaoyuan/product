@@ -39,6 +39,7 @@ export interface ListingRow {
 export interface Issue {
   path: string;
   message: string;
+  code?: string;
   details?: { path: string; message: string }[];
 }
 export interface ListingResult {
@@ -63,6 +64,7 @@ export interface Attempt {
   polling?: { state: string; next_at: number; tries: number; last_error: string } | null;
 }
 export interface ListingDocument {
+  source_price_reviews?: Record<string, { at: string; actor_id: number | null; price: number }>;
   identifier_pool?: { total: number; available: number };
   requirements?: Record<string, { visible?: string[]; orderable?: string[] }>;
   specs?: Record<string, ListingSpec>;
@@ -149,6 +151,11 @@ const body = (method: string, data: unknown = {}) => ({
 });
 const path = (bid: string) => `/api/prelisting/batches/${encodeURIComponent(bid)}/walmart`;
 export const publishingApi = {
+  verifySourcePrice: (bid: string, revision: number, platform_sku: string) =>
+    request<ListingDocument>(
+      path(bid) + '/verify-source-price',
+      body('POST', { revision, platform_sku }),
+    ),
   generation: (bid: string) =>
     request<{
       job: GenerationJob | null;

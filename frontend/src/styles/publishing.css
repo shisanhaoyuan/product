@@ -699,6 +699,10 @@
   white-space: nowrap;
   font-size: 12px;
 }
+.listing-issue-row { display: flex; align-items: center; gap: 16px; border-top: 1px solid #f3e2dc; }
+.listing-issue-row > button { border-top: 0; min-width: 0; }
+.listing-issue-row > .source-price-verify { width: auto; flex: 0 0 auto; padding: 8px 14px; border: 1px solid #b9cddd; border-radius: 9px; background: #e5eef5; color: #365b77; font-weight: 600; }
+.listing-issue-row > .source-price-verify:disabled { opacity: .5; cursor: wait; }
 .listing-action-bar {
   position: sticky;
   bottom: 10px;

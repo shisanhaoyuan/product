@@ -75,7 +75,7 @@ export const catalogApi = {
     request<SourceCapture>(`/api/products/${encodeURIComponent(id)}/source-capture`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ variant_sku: sku }),
+      body: JSON.stringify({ variant_sku: sku, background: true }),
       signal,
     }),
   browserCaptureSource: (

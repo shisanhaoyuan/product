@@ -520,6 +520,7 @@ onBeforeUnmount(() => {
             v-if="!isSupplier(product.source)"
             :listing-id="product.id"
             :asin="product.asin"
+            :variants="product.variants"
           />
         </div>
       </section>
