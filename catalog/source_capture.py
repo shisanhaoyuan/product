@@ -256,6 +256,22 @@ def amazon_source(html, asin):
                 delivery_location=location or None, issues=issues)
 
 
+def save_capture(catalog, db, lid, sku, asin, result, actor_id, url, method):
+    """Persist with the caller's transaction so generation can atomically rebase its snapshot."""
+    result = dict(result, source_url=url, captured_at=datetime.now(timezone.utc).isoformat(),
+                  variant_sku=sku or '', method=method)
+    row = db.execute('SELECT data_json FROM listings WHERE id=?', (lid,)).fetchone()
+    product = json.loads(row[0]) if row else {}
+    target = product if not sku else next((v for v in product.get('variants', []) if v['sku'] == sku), {})
+    if target.get('asin') != asin or product.get('source', '').casefold() != 'amazon':
+        raise HTTPException(409, '抓取期间商品身份发生变化，结果未保存')
+    db.execute('INSERT INTO source_captures VALUES(?,?,?,?,?,?,?)',
+               (uuid.uuid4().hex, lid, sku or '', asin, result['captured_at'], actor_id, json.dumps(result, ensure_ascii=False)))
+    from .source_sync import sync_capture
+    result['sync'] = sync_capture(catalog, db, lid, sku, asin, result, actor_id)
+    return result
+
+
 def source_routes(catalog):
     router = APIRouter(prefix='/api/products')
 
@@ -273,23 +289,10 @@ def source_routes(catalog):
     def save(lid, sku, asin, result, request, url, method):
         if result['status'] == 'browser_required':
             return result | {'asin': asin, 'source_url': url}
-        result.update(source_url=url, captured_at=datetime.now(timezone.utc).isoformat(),
-                      variant_sku=sku or '', method=method)
         with catalog.connect() as db:
             write_lock(db)
-            row = db.execute('SELECT data_json FROM listings WHERE id=?', (lid,)).fetchone()
-            p = json.loads(row[0]) if row else {}
-            v = p if not sku else next((v for v in p.get('variants', []) if v['sku'] == sku), {})
-            if v.get('asin') != asin or p.get('source', '').casefold() != 'amazon':
-                raise HTTPException(409, '抓取期间商品身份发生变化，结果未保存')
             user = getattr(request.state, 'user', None)
-            db.execute('INSERT INTO source_captures VALUES(?,?,?,?,?,?,?)',
-                       (uuid.uuid4().hex, lid, sku or '', asin, result['captured_at'],
-                        user['id'] if user else None, json.dumps(result, ensure_ascii=False)))
-            from .source_sync import sync_capture
-            result['sync'] = sync_capture(catalog, db, lid, sku, asin, result,
-                                          user['id'] if user else None)
-        return result
+            return save_capture(catalog, db, lid, sku, asin, result, user['id'] if user else None, url, method)
 
     @router.get('/{lid}/source-capture')
     def current(lid: str, variant_sku: str = ''):

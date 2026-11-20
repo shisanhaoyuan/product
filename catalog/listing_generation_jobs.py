@@ -80,6 +80,8 @@ def start_job(catalog, publisher, bid, actor_id=None, ai=None, schedule=True):
             basis = fresh_basis(catalog,db,current)
             db.execute('INSERT INTO walmart_listing_documents VALUES(?,?,?,?,?,?,?)',
                 (bid,1,os.environ.get('CATALOG_WALMART_SPEC_VERSION',DEFAULT_VERSION),encoded(default_rows(basis)),encoded(basis),'{}',now()))
+        from .listing_preparation_source import refresh_amazon
+        refresh_amazon(catalog,db,document(db,bid),actor_id)
         stored = normalize_document_titles(db,document(db,bid))
         from .listing_prerequisites import allocate_document_identifiers
         allocate_document_identifiers(db,stored,actor_id)
@@ -119,7 +121,7 @@ def start_job(catalog, publisher, bid, actor_id=None, ai=None, schedule=True):
         db.execute('INSERT INTO listing_generation_jobs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
             (jid,bid,'queued',stored['revision'],basis['store']['id'],bound['partner_id'],bound['revision'],identity,
              actor_id,encoded({'rules_version':RULES_VERSION,'model':ai.settings.model,'rows':{},'previous_fields':previous_fields,'resources_digest':resource_digest(db,bound)}),
-             '准备读取商品来源与官方类目',started,timestamp))
+             '准备后台采集、计算售价、AI 填充与校验',started,timestamp))
         row = db.execute('SELECT * FROM listing_generation_jobs WHERE id=?',(jid,)).fetchone()
     if schedule:
         POOL.submit(run_job,catalog,publisher,jid,ai)
@@ -219,6 +221,13 @@ def run_job(catalog, publisher, jid, ai):
                 if next(r for r in reread if r['platform_sku']==sku)!=updated:
                     raise ListingAIError('生成资料保存回读不一致')
 
+        from .listing_preparation_source import collect_before_generation
+        stored=collect_before_generation(catalog,job,report,progress,checked_context)
+        basis=json.loads(stored['basis_json']);rows=json.loads(stored['rows_json'])
+        with catalog.connect() as db:
+            checked_context(db,job)
+            sources={i['listing_id']:json.loads(db.execute('SELECT data_json FROM current_listings WHERE id=?',
+                (i['listing_id'],)).fetchone()[0]) for i in basis['items']}
         creds=decrypt(bound['store_id'],bound['encrypted_credentials'])
         with publisher.session(creds,bound['partner_id']) as remote:
             if types is None:
@@ -250,7 +259,18 @@ def run_job(catalog, publisher, jid, ai):
                 entry['fields']=provenance
                 issues=[];blockers=[];schema=None;facts={};expected_identity=copy.deepcopy(original['identification'])
                 try:
-                    facts,collection=supplement_facts(catalog,sources[item['listing_id']],item,variant,ai)
+                    # Amazon quote collection is already complete and persisted above.
+                    # Do not launch a second competing fetch of the same page during AI filling.
+                    if item.get('source')=='Amazon' and 'source_collection' in entry:
+                        collection=entry['source_collection']
+                        if collection.get('facts'):
+                            facts,detail_collection=supplement_facts(catalog,sources[item['listing_id']],item,variant,ai,collection['facts'])
+                            if detail_collection.get('state')=='conflict':
+                                collection=detail_collection
+                        else:
+                            facts=source_facts(sources[item['listing_id']],item,variant)
+                    else:
+                        facts,collection=supplement_facts(catalog,sources[item['listing_id']],item,variant,ai)
                     entry['collection']=collection
                     if collection.get('state')=='conflict':
                         blockers.append(dict(path='',message=collection['message'],source_digest=item['source_digest']))

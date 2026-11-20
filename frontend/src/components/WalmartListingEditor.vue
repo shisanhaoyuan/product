@@ -18,6 +18,7 @@ import { catalogApi as api } from '../api/client';
 import { useAuth } from '../composables/useAuth';
 import { errorMessage, plain, money } from '../utils/display';
 import { listingSourceImages } from '../utils/listingSourceImages';
+import { shouldPrepareOnEntry } from '../utils/listingPreparation';
 import { collectMissingPrices } from '../utils/sourceCollection';
 import { applyListingDefaults } from '../utils/listingDefaults';
 import ListingSchemaField from './ListingSchemaField.vue';
@@ -215,6 +216,11 @@ async function closeCodePool() {
     });
 }
 const generating = computed(() => ['queued', 'running'].includes(generation.value?.state || ''));
+const generationProcessed = computed(() =>
+  Object.values(generation.value?.report.rows || {}).filter(row =>
+    ['complete', 'review', 'failed', 'skipped'].includes(row.state),
+  ).length,
+);
 const generationRow = computed(() => generation.value?.report.rows[activeSku.value]);
 const generationStale = computed(
   () => !generating.value && generation.value && generation.value.revision !== doc.value?.revision,
@@ -506,7 +512,7 @@ async function prepare() {
     }
   });
   await pollGeneration();
-  if (aiReady.value && !generation.value && !reusedTemplate.value) await generate();
+  if (canEdit.value && aiReady.value && shouldPrepareOnEntry(doc.value, generation.value)) await generate();
 }
 async function loadMetadata() {
   const values = await Promise.allSettled([
@@ -795,8 +801,7 @@ onMounted(async () => {
     doc.value &&
     canEdit.value &&
     aiReady.value &&
-    !generation.value &&
-    !reusedTemplate.value
+    shouldPrepareOnEntry(doc.value, generation.value)
   )
     void generate();
 });
@@ -880,21 +885,22 @@ onBeforeUnmount(() => {
           <div>
             <strong>{{
               generating
-                ? '正在自动生成刊登资料'
+                ? '正在采集并生成刊登资料'
                 : generation
                   ? '刊登资料生成结果'
-                  : '自动生成刊登资料'
+                  : '自动采集并生成刊登资料'
             }}</strong>
             <p>
               {{
                 generation?.message ||
                 (aiReady
-                  ? '根据商品来源、官方类目与填写规则自动补齐'
+                  ? '进入填写页面后自动补采缺失报价，并生成刊登资料'
                   : 'AI 未配置，来源资料仍可正常查看和编辑')
               }}
             </p>
+            <p class="muted">后台采集 → 计算售价 → AI 填充 → 校验；遇到采集异常仍继续生成文案与属性。</p>
             <small v-if="generation"
-              >已处理 {{ Object.keys(generation.report.rows).length }} /
+              >已处理 {{ generationProcessed }} /
               {{ generation.report.total ?? doc.rows.length }} 个 SKU ·
               {{ generation.report.model }}</small
             >
@@ -905,7 +911,7 @@ onBeforeUnmount(() => {
             :disabled="busy || saving || generating"
             @click="generate"
           >
-            {{ generation ? '重新生成并校验' : '生成并校验' }}
+            {{ generation ? '重新采集并生成' : '采集并生成' }}
           </button>
         </div>
         <div class="preparation-summary">

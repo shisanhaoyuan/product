@@ -33,9 +33,9 @@ def amazon_details(html,asin):
             'content.attributes':attrs}
 
 
-def supplement_facts(catalog,source,item,variant,ai):
+def supplement_facts(catalog,source,item,variant,ai,amazon_details_data=None):
     facts=source_facts(source,item,variant)
-    if not getattr(ai.settings,'supplement',False):
+    if not getattr(ai.settings,'supplement',False) and amazon_details_data is None:
         return facts,dict(state='disabled')
     from .images import HumanVerificationRequired,fetch_amazon_page
     try:
@@ -66,7 +66,7 @@ def supplement_facts(catalog,source,item,variant,ai):
             asin=variant.get('asin','')
             if not re.fullmatch('[A-Z0-9]{10}',asin):
                 return facts,dict(state='unavailable',message='当前 SKU 缺少明确 ASIN，未猜测来源链接')
-            collected=amazon_details(fetch_amazon_page(asin),asin)
+            collected=amazon_details_data if amazon_details_data is not None else amazon_details(fetch_amazon_page(asin),asin)
         else:
             return facts,dict(state='unavailable',message='该来源暂未配置定向补采适配器')
         conflicts=[]
