@@ -9,6 +9,7 @@ import type {
   TemplateOptions,
 } from '../api/types';
 import { errorMessage } from '../utils/display';
+import { collectMissingPrices } from '../utils/sourceCollection';
 import PrelistingPreview from './PrelistingPreview.vue';
 import AppIcon from './AppIcon.vue';
 import FilterSelect from './FilterSelect.vue';
@@ -19,6 +20,7 @@ const stores = ref<ListingStore[]>([]),
   storeId = ref(''),
   brand = ref(''),
   multiplier = ref('');
+const collectionProgress = ref('');
 const busy = ref(false),
   error = ref(''),
   preview = ref<Preview>();
@@ -119,6 +121,7 @@ onBeforeUnmount(() => {
   templateController?.abort();
 });
 async function calculate() {
+  if (busy.value) return;
   busy.value = true;
   error.value = '';
   preview.value = undefined;
@@ -134,13 +137,22 @@ async function calculate() {
     ),
   };
   try {
-    preview.value = await prelistingApi.preview(input, controller.signal);
+    const signal = controller.signal;
+    let result = await prelistingApi.preview(input, signal);
+    const collected = await collectMissingPrices(result, signal, (message) => {
+      collectionProgress.value = message;
+    });
+    if (collected.attempted) result = await prelistingApi.preview(input, signal);
+    signal.throwIfAborted();
+    preview.value = result;
+    if (collected.errors.length) error.value = collected.errors.join('；');
     submitted = input;
     requestKey = crypto.randomUUID();
   } catch (e) {
     error.value = errorMessage(e);
   } finally {
     busy.value = false;
+    collectionProgress.value = '';
   }
 }
 async function create() {
@@ -191,6 +203,10 @@ async function create() {
       </button>
     </div>
     <div class="composer-body">
+      <p v-if="collectionProgress" class="notice" role="status">{{ collectionProgress }}</p>
+      <button v-if="collectionProgress" class="btn small" @click="controller?.abort()">
+        取消采集
+      </button>
       <form id="prelisting-settings" class="plan-form composer-form" @submit.prevent="calculate">
         <div class="composer-store-field">
           <span>上架店铺</span>
@@ -260,13 +276,13 @@ async function create() {
               ? '赛盈采购价（不另加运费）'
               : source === 'GigaB2B'
                 ? '来源普通单价＋物流费（含打包）'
-                : '基准价格'
+                : '来源采集原价'
           }}
           × 本次倍率<br />
           <span>{{
             source === 'GigaB2B' || source === 'Saleyee'
               ? '供应商按供应商 SKU 独立计价 · 保留两位小数'
-              : '多变体 .99 尾价 · 单商品保留两位小数'
+              : '按当前 SKU／ASIN 计价 · 保留两位小数 · 缺少原价自动采集'
           }}</span>
         </p>
         <button

@@ -265,6 +265,9 @@ export interface TemplateOptions {
   items: { listing_id: string; title: string; options: ReusableTemplate[] }[];
 }
 export interface PricePlan {
+  price_basis?: string;
+  capture_required?: boolean;
+  capture_sku?: string;
   source_stock?: number | null;
   unit_price?: string | null;
   shipping_fee?: string | null;

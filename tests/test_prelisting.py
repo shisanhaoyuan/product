@@ -16,7 +16,7 @@ def product(index=0, **changes):
     check = dict(sku=f'child-{index}', status='verified', landed_price='43.99', existing_price='50.00',
                  selected_basis='50.00', actual='57.99', expected='57.99', multiplier='1.15')
     child = dict(sku=f'child-{index}', asin=asin, seller='Seller A', price='57.99', stock='10',
-                 price_check=check, source_facts={'asin': asin, 'currency': 'USD'})
+                 price_check=check, source_facts={'asin': asin, 'currency': 'USD', 'original_price': '50.00'})
     data = dict(external_id=f'item-{index}',asin=asin,sku=f'parent-{index}',store='MYZ-L-21',brand='Old',
                 template=f'template-{index}',observed_at='2026-11-04T10:00:00+00:00',uploaded_at='2026-11-04',
                 evidence_kind='persisted_readback',fill_complete=True,save_succeeded=True,readback_verified=True,
@@ -55,8 +55,8 @@ def test_batch_prices_sku_and_idempotency(local):
     for item in plan['items']:
         assert item['variants'][0]['sku'] == 'child-' + item['sku'].split('-')[1]
         assert item['variants'][0]['base'] == '50.00'
-        assert item['variants'][0]['price'] == '60.99'  # Never 57.99 * 1.2
-        assert item['msrp'] == '121.98'
+        assert item['variants'][0]['price'] == '60.00'  # Captured original 50 * 1.2, no .99 rewrite
+        assert item['msrp'] == '120.00'
     assert client.post('/api/prelisting/preview',json=settings).json() == plan
     batch,payload = create(client,settings)
     assert batch['status'] == 'draft' and batch['execution_enabled'] is False
@@ -136,14 +136,15 @@ def test_review_items_stored_but_not_confirmed(local):
 
 def test_single_rounding_and_multiple_msrp(local):
     client,catalog=local
-    single=product(4,variants=[],price='50.59',stock='0',source_facts={'asin':'B000000004','currency':'USD'},
+    single=product(4,variants=[],price='50.59',stock='0',source_facts={'asin':'B000000004','currency':'USD','original_price':'43.99'},
                    checks={'pricing_checks':[dict(field='dc_price',status='verified',landed_price='43.99',existing_price='40',selected_basis='43.99',actual='50.59')]})
     multiple=product(5)
     second=deepcopy(multiple.variants[0]); second.sku='second'; second.asin='B000000009'; second.source_facts['asin']=second.asin
     second.price_check.update(sku='second',landed_price='90',selected_basis='90')
+    second.source_facts['original_price']='90'
     multiple.variants.append(second)
     catalog.ingest(ImportBundle(namespace='test',label='more',listings=[single,multiple]))
-    for q,price,msrp in [('parent-4','48.39','96.78'),('parent-5','55.99','199.98')]:
+    for q,price,msrp in [('parent-4','48.39','96.78'),('parent-5','55.00','198.00')]:
         result=client.post('/api/prelisting/preview',json=inputs(client,filters={'q':q},multiplier='1.1')).json()['items'][0]
         assert result['variants'][0]['price'] == price
         assert result['msrp'] == msrp
@@ -199,7 +200,7 @@ def test_permissions(team,role):
 
 
 @pytest.mark.parametrize('fault', ['sku', 'asin', 'shipping', 'malformed', 'actual', 'ambiguous'])
-def test_conflicting_price_evidence_never_uses_current_price(local, fault):
+def test_amazon_price_uses_source_identity_instead_of_legacy_erp_audit(local, fault):
     client,catalog=local
     changed=product(0,observed_at='2026-11-04T12:00:00+00:00')
     child=changed.variants[0]
@@ -213,7 +214,10 @@ def test_conflicting_price_evidence_never_uses_current_price(local, fault):
     preview=client.post('/api/prelisting/preview',json=inputs(client,filters={'q':'parent-0'}))
     assert preview.status_code == 200
     row=preview.json()['items'][0]
-    assert row['status']=='review' and row['variants'][0]['price'] is None
+    if fault in {'asin', 'ambiguous'}:
+        assert row['status']=='review' and row['variants'][0]['price'] is None
+    else:
+        assert row['variants'][0]['price']=='60.00'  # Original source price, independent of old ERP audits.
 
 
 def test_concurrent_retry_creates_one_batch(local):

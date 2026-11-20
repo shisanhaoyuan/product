@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import type { SourceCapture } from '../api/types';
 import { catalogApi } from '../api/client';
-import { captureInBrowser } from '../utils/browserCapture';
+import { collectSource } from '../utils/sourceCollection';
 import { errorMessage, money, safeUrl } from '../utils/display';
 import { useProductEditing } from '../composables/useProductEditing';
 import AppIcon from './AppIcon.vue';
@@ -16,6 +16,7 @@ const busy = ref(false),
   waiting = ref(false),
   helper = ref(false);
 let controller: AbortController | undefined;
+const autoAttempted = new Set<string>();
 const disabled = computed(
   () => busy.value || loading.value || !!editing?.busy.value || !!editing?.active.value,
 );
@@ -45,8 +46,31 @@ watch(
     } finally {
       if (!request.signal.aborted) loading.value = false;
     }
+    if (!request.signal.aborted && !error.value) await autoCapture();
   },
   { immediate: true },
+);
+
+async function autoCapture() {
+  const key = JSON.stringify([props.listingId, props.sku, props.asin]);
+  if (!editing?.enabled.value || disabled.value || !props.asin || autoAttempted.has(key)) return;
+  const value = Number(record.value?.original_price);
+  if (
+    record.value?.asin === props.asin &&
+    Number.isFinite(value) &&
+    value > 0 &&
+    record.value?.currency === 'USD' &&
+    /\b10001\b/.test(record.value?.delivery_location || '')
+  )
+    return;
+  autoAttempted.add(key);
+  await capture();
+}
+watch(
+  () => [editing?.enabled.value, editing?.busy.value, editing?.active.value],
+  () => {
+    if (!loading.value && !error.value) void autoCapture();
+  },
 );
 
 async function capture(reuse = false) {
@@ -58,26 +82,12 @@ async function capture(reuse = false) {
   error.value = '';
   helper.value = false;
   try {
-    let result = await (reuse ? catalogApi.syncSource : catalogApi.captureSource)(
-      props.listingId,
-      props.sku,
-      request.signal,
-    );
+    const result = reuse
+      ? await catalogApi.syncSource(props.listingId, props.sku, request.signal)
+      : await collectSource(props.listingId, props.sku, request.signal, () => {
+          waiting.value = helper.value = true;
+        });
     if (request.signal.aborted) return;
-    if (['verification_required', 'browser_required'].includes(result.status)) {
-      waiting.value = helper.value = true;
-      const page = await captureInBrowser(result.asin, request.signal, 'source');
-      if (request.signal.aborted) return;
-      result = await catalogApi.browserCaptureSource(
-        props.listingId,
-        props.sku,
-        page,
-        request.signal,
-      );
-    }
-    if (request.signal.aborted) return;
-    if (['verification_required', 'browser_required'].includes(result.status))
-      throw new Error('报价列表尚未展开，请在来源页面展开后重新采集。');
     record.value = result;
     helper.value = false;
     try {
@@ -121,6 +131,9 @@ onBeforeUnmount(() => controller?.abort());
         }}
       </button>
     </div>
+    <p v-if="busy" class="muted" role="status">
+      {{ waiting ? '等待来源网页人工验证…' : '正在采集卖家与原价…' }}
+    </p>
     <p v-if="loading" class="muted" role="status">正在读取采集记录…</p>
     <template v-else-if="record">
       <dl class="source-capture-grid">

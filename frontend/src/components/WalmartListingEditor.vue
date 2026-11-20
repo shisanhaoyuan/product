@@ -18,6 +18,7 @@ import { catalogApi as api } from '../api/client';
 import { useAuth } from '../composables/useAuth';
 import { errorMessage, plain, money } from '../utils/display';
 import { listingSourceImages } from '../utils/listingSourceImages';
+import { collectMissingPrices } from '../utils/sourceCollection';
 import { applyListingDefaults } from '../utils/listingDefaults';
 import ListingSchemaField from './ListingSchemaField.vue';
 import ProductImage from './ProductImage.vue';
@@ -174,6 +175,7 @@ const submitKey = ref(''),
 const root = ref<HTMLElement>();
 let saveTimer: ReturnType<typeof setTimeout> | undefined, saveFlight: Promise<void> | undefined;
 let live = true;
+let sourceCollection: AbortController | undefined;
 const serialized = () =>
   doc.value ? JSON.stringify({ version: doc.value.version, rows: doc.value.rows }) : '';
 const dirty = computed(() => !!doc.value && serialized() !== saved.value);
@@ -624,7 +626,15 @@ async function validate() {
 async function refreshSource() {
   await run(async () => {
     await save();
-    if (doc.value) install(await publishingApi.refreshSource(props.bid, doc.value.revision));
+    if (doc.value) {
+      install(await publishingApi.refreshSource(props.bid, doc.value.revision));
+      sourceCollection = new AbortController();
+      const result = await collectMissingPrices(doc.value.basis, sourceCollection.signal,
+        text => { message.value = text; });
+      if (!live) return;
+      if (result.attempted) install(await publishingApi.refreshSource(props.bid, doc.value.revision));
+      if (result.errors.length) error.value = result.errors.join('；');
+    }
     await loadMetadata();
     if (current.value?.product_type) await getSpec();
     message.value = '已读取商品库最新来源，并重新计算售价；文案和属性保留';
@@ -784,6 +794,7 @@ onBeforeRouteLeave(saveBeforeNavigation);
 onBeforeRouteUpdate(saveBeforeNavigation);
 onBeforeUnmount(() => {
   live = false;
+  sourceCollection?.abort();
   clearTimeout(saveTimer);
   clearTimeout(generationTimer);
   clearTimeout(resultTimer);

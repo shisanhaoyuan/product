@@ -62,6 +62,12 @@ defineProps<{ preview: PrelistingPreview }>();
           item.source === 'Saleyee' ? '采购价（不另加运费）' : '（来源商品单价 ＋ 配送运费）'
         }}× {{ preview.multiplier }}，结果保留两位小数。
       </p>
+      <p
+        v-if="item.variants.some((v) => v.price_basis === 'amazon_captured_original_v1')"
+        class="subtitle"
+      >
+        计算规则：来源采集原价 × {{ preview.multiplier }}，四舍五入保留两位小数。
+      </p>
       <div class="table-scroll">
         <table class="data-table">
           <thead>
@@ -71,7 +77,15 @@ defineProps<{ preview: PrelistingPreview }>();
               <th>预上架编码</th>
               <th>{{ isSupplier(item.source) ? '来源商品单价' : '当前售价' }}</th>
               <th>来源含运费</th>
-              <th>{{ isSupplier(item.source) ? '配送运费' : '首次 ERP 原价' }}</th>
+              <th>
+                {{
+                  isSupplier(item.source)
+                    ? '配送运费'
+                    : item.variants.some((v) => v.price_basis === 'amazon_captured_original_v1')
+                      ? '来源采集原价'
+                      : '历史 ERP 原价'
+                }}
+              </th>
               <th>计价基准</th>
               <th>预上架售价</th>
               <th>{{ isSupplier(item.source) ? '来源可售 / 上架库存' : '历史库存' }}</th>

@@ -277,6 +277,7 @@ def variant_images(product, variant):
 
 def build_preview(catalog, db, data, exclude_batch=None):
     from .listing_prerequisites import pool_lookup
+    from .amazon_pricing import price_plan as amazon_price
     has_pool = bool(db.execute('SELECT 1 FROM listing_real_identifiers LIMIT 1').fetchone())
     store = db.execute('SELECT * FROM listing_stores WHERE id=? AND active=1', (data.store_id,)).fetchone()
     if not store:
@@ -291,7 +292,10 @@ def build_preview(catalog, db, data, exclude_batch=None):
         is_supplier = d['source'] in ('GigaB2B', 'Saleyee')
         key = (seller_key(d['source']), claim_identity(d))
         errors, warnings = [], ['使用历史核验记录；正式执行前需重新采集价格和库存']
-        if not is_supplier and d.get('local_edit', {}).get('changed'):
+        edits = d.get('local_edit', {})
+        capture_only = bool(edits.get('changes')) and not edits.get('conflicts') and not edits.get('source_changed') and all(
+            c.get('capture_asin') for c in edits['changes'])
+        if not is_supplier and edits.get('changed') and not capture_only:
             errors.append('存在本地手工修改，尚未同步 ERP 或重新核验')
         reserved = db.execute('SELECT batch_id FROM prelisting_claims WHERE source_key=? AND asin=? AND store_id=?', (*key, data.store_id)).fetchone()
         if key in seen or (reserved and reserved['batch_id'] != exclude_batch):
@@ -299,7 +303,7 @@ def build_preview(catalog, db, data, exclude_batch=None):
         seen.add(key)
         blocked = matches(d, entries)
         errors += [f"卖家已拉黑：{b['seller']}（{b['reason']}）" for b in blocked]
-        if not is_supplier and not d['fill_complete']:
+        if not is_supplier and not (d['fill_complete'] or capture_only and edits.get('source_status', {}).get('fill_complete')):
             errors.append('商品填写尚未核验完整')
         children = d['variants']
         if data.variant_skus is not None:
@@ -320,12 +324,14 @@ def build_preview(catalog, db, data, exclude_batch=None):
                            content={**{k: v.get(k) for k in ('attributes', 'product_id_type', 'ean',
                                'swatch_attribute', 'swatch_image', 'shipping_weight', 'copy', 'source_url', 'seller')},
                                'images': variant_images(d, v)},
-                           **planned_price(v, v['price_check'], data.multiplier, True)) for v in children]
+                           **(amazon_price(db, row['id'], d, v, data.multiplier) if d['source'] == 'Amazon'
+                              else planned_price(v, v['price_check'], data.multiplier, True))) for v in children]
         else:
             raw_checks = d['checks'].get('pricing_checks', [])
             checks = [c for c in raw_checks if isinstance(c, dict) and c.get('field') == 'dc_price'] if isinstance(raw_checks, list) else []
             priced = [dict(sku=d['sku'], asin=d['asin'], current_price=d['price'], stock=d['stock'],
-                           **planned_price(d, checks[0] if len(checks) == 1 else {}, data.multiplier, False))]
+                           **(amazon_price(db, row['id'], d, d, data.multiplier) if d['source'] == 'Amazon'
+                              else planned_price(d, checks[0] if len(checks) == 1 else {}, data.multiplier, False)))]
         identities = [platform_sku.identity(d['source'], v) for v in priced]
         if len(set(identities)) != len(identities) or seen_variants.intersection(identities):
             errors.append('多个子 SKU 对应同一商品身份，无法分配唯一平台 SKU')
@@ -354,7 +360,8 @@ def build_preview(catalog, db, data, exclude_batch=None):
                   execution_enabled=False,
                   price_rule=('giga_regular_landed_v1' if all(i['source'] == 'GigaB2B' for i in items)
                               else 'source_specific_v1' if any(i['source'] in ('GigaB2B', 'Saleyee') for i in items)
-                              else 'verified_higher_basis_v1'), sku_rule=platform_sku.RULE)
+                              else 'amazon_captured_original_v1' if all(i['source'] == 'Amazon' for i in items)
+                              else 'source_specific_v1'), sku_rule=platform_sku.RULE)
     from .listing_templates import annotate_preview
     annotate_preview(db, data, result, exclude_batch)
     # Allocation occurs only on creation; its persisted value is verified separately on confirmation.
