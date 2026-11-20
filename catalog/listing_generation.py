@@ -12,7 +12,7 @@ from .listing_titles import branded_title, source_brands
 from .walmart_listing_schema import plain, sections, feed_item, schema_errors, identifier_errors, precise_validator
 from .listing_skill_defaults import has_default, skill_default, length_fallback, fixed_origin, enforce_origin
 
-RULES_VERSION = 'listing-generation-v9'
+RULES_VERSION = 'listing-generation-v10'
 RULES = Path(__file__).with_name('listing_generation_rules.md').read_text()
 BLOCKED = re.compile(r'prop.?65|warranty|certif|nrtl|chemical|origin|warning|exempt|gtin|upc|ean|model|partnumber', re.I)
 PROTECTED = {'sku','productIdentifiers','inventory','price','msrp','SkuUpdate','ProductIdUpdate','fulfillmentCenterID'}
@@ -304,8 +304,13 @@ def choose_type(row, item, facts, types, ai):
     if len(matches) == 1 and not (living and 'outdoor' in norm(matches[0]['name'])):
         return matches[0]['name'], dict(kind='source', reason='来源类目唯一准确匹配', refs=['category'])
     # Token retrieval reduces the prompt, but cannot manufacture an option.
-    words = set(re.findall(r'[a-z]{3,}', ' '.join(hints) + ' ' + str(facts.get('detail.productName', ''))))
-    ranked = sorted(types, key=lambda t: -len(words & set(re.findall(r'[a-z]{3,}', norm(t['name'] + ' ' + t['group'])))))
+    title = str((facts.get('content.copy') or {}).get('title') or facts.get('detail.productName')
+                or facts.get('detail.EnName') or row.get('visible', {}).get('productName') or '')
+    # Amazon title lives in content.copy, not the GIGA-only detail.productName.
+    tokenize = lambda value: {w[:-1] if w.endswith('s') and not w.endswith('ss') else w
+                              for w in re.findall(r'[a-z]{3,}', str(value).casefold())}
+    words = tokenize(' '.join(hints) + ' ' + title)
+    ranked = sorted(types, key=lambda t: -len(words & tokenize(t['name'] + ' ' + t['group'])))
     candidates = ranked[:60]
     proposal = ai.query('product_type', dict(source_sku=row['source_sku'], facts=facts,
         candidates=candidates, existing=row['product_type'], rules=RULES,

@@ -2,11 +2,13 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { catalogApi } from '../api/client';
 import { errorMessage } from '../utils/display';
+import { listingSourceImages } from '../utils/listingSourceImages';
 import ProductImage from './ProductImage.vue';
 import AppIcon from './AppIcon.vue';
 const props = defineProps<{
   listingId: string;
   sku: string;
+  asin?: string;
   existing: string[];
   sourceImages: string[];
 }>();
@@ -36,15 +38,12 @@ onMounted(async () => {
   try {
     const product = await catalogApi.product(props.listingId);
     if (!live) return;
-    const matches = product.variants.filter((v) => v.sku === props.sku);
-    const record = product.variants.length
-      ? matches.length === 1
-        ? matches[0]
-        : undefined
-      : product.sku === props.sku
-        ? product
-        : undefined;
-    candidates.value = [...new Set([...candidates.value, ...(record?.images || [])])];
+    candidates.value = [
+      ...new Set([
+        ...candidates.value,
+        ...listingSourceImages(product, props.sku, props.asin || ''),
+      ]),
+    ];
   } catch (e) {
     error.value = errorMessage(e);
   } finally {

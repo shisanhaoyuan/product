@@ -413,3 +413,22 @@ def test_later_pass_analyzes_new_conditional_fields_without_requerying_old_field
     assert len(ai.calls)==2
     assert list(ai.calls[1][1]['fields'])==['visible.finish']
     assert row['visible']['finish']=='Matte' and not issues
+
+
+def test_amazon_title_retrieves_official_type_outside_first_sixty():
+    row = listing()
+    row['product_type'] = ''
+    facts = {'content.copy': {'title': '63 inch Cat Tree with scratching posts'}}
+    types = [dict(name=f'Unrelated {i}', group='Other', category='Other') for i in range(80)]
+    types.append(dict(name='Cat Trees', group='Pet Supplies', category='Animals'))
+
+    class TitleAI(AI):
+        def query(self, purpose, payload):
+            assert payload['candidates'][0]['name'] == 'Cat Trees'
+            assert len(payload['candidates']) == 60
+            return dict(source_sku=row['source_sku'], product_type='Cat Trees', confidence=.97,
+                        refs=['content.copy.title'], reason='同 SKU 标题明确为猫爬架')
+
+    selected, audit = choose_type(row, {}, facts, types, TitleAI())
+    assert selected == 'Cat Trees'
+    assert audit['refs'] == ['content.copy.title']

@@ -3,9 +3,19 @@ import type { ListingDocument, ProductType, ShipNode } from '../api/publishing';
 const normalized = (value: string) =>
   value.normalize('NFKC').trim().toLowerCase().replace(/&/g, ' and ').replace(/\s+/g, ' ');
 
-// Explicit equivalent names only. No substring/fuzzy match: e.g. sofa covers
-// and sofa beds must not be silently classified as couches.
+// Explicit equivalents; title fallback must resolve to one official option.
 const equivalentTypes: string[][] = [
+  [
+    'Cat Trees',
+    'Cat Tree',
+    'Cat Trees & Condos',
+    'Cat Trees and Condos',
+    'Cat Towers',
+    'Cat Tree Towers',
+    '猫爬架',
+    '猫树',
+  ],
+
   [
     'Sofas & Couches',
     'Sofas',
@@ -24,6 +34,7 @@ export function matchProductType(
   category: string,
   types: ProductType[],
   categories: string[] = [],
+  title = '',
 ): string {
   const hints = new Set(
     [category, ...categories]
@@ -39,7 +50,29 @@ export function matchProductType(
       aliases.forEach((alias) => candidates.add(normalized(alias)));
   }
   const matches = types.filter((type) => candidates.has(normalized(type.name)));
-  return matches.length === 1 ? matches[0]!.name : '';
+  if (matches.length) return matches.length === 1 ? matches[0]!.name : '';
+  // Title fallback uses an explicit product family, never arbitrary substring matches.
+  const text = normalized(title);
+  const context = [...hints, text].join(' ');
+  if (
+    /\b(?:replacement|cover|covers|accessory|accessories|spare|outdoor|patio)\b|sofa beds?|sofa tables?/i.test(
+      context,
+    )
+  )
+    return '';
+  const families = equivalentTypes.filter((aliases) =>
+    aliases.some((alias) => {
+      const value = normalized(alias);
+      return (
+        value.includes(' ') &&
+        (' ' + text.replace(/[^a-z0-9]+/g, ' ') + ' ').includes(' ' + value + ' ')
+      );
+    }),
+  );
+  const inferred = types.filter((type) =>
+    families.some((family) => family.some((alias) => normalized(alias) === normalized(type.name))),
+  );
+  return inferred.length === 1 ? inferred[0]!.name : '';
 }
 
 export function applyListingDefaults(
@@ -53,7 +86,9 @@ export function applyListingDefaults(
     if (status && !['failed', 'rejected', 'unpublished'].includes(status)) continue;
     if (!row.product_type) {
       const item = doc.basis.items.find((item) => item.listing_id === row.listing_id);
-      const type = matchProductType(item?.category || '', types, item?.category_hints || []);
+      const variant = item?.variants?.find((v) => v.platform_sku === row.platform_sku);
+      const title = variant?.content?.copy?.title || String(row.visible.productName || '');
+      const type = matchProductType(item?.category || '', types, item?.category_hints || [], title);
       if (type) {
         row.product_type = type;
         changed = true;

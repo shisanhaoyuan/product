@@ -98,3 +98,39 @@ describe('listing metadata defaults', () => {
     expect(JSON.stringify(doc)).toBe(before);
   });
 });
+
+it('matches Amazon cat tree titles to real store types and rejects unrelated or ambiguous options', () => {
+  const cats = [{ ...types[0]!, name: 'Cat Trees' }];
+  expect(matchProductType('', cats, [], '63-inch Cat Tree with Scratching Posts')).toBe(
+    'Cat Trees',
+  );
+  expect(matchProductType('Pet Supplies > Cat Trees & Condos', cats)).toBe('Cat Trees');
+  expect(matchProductType('', types, [], 'Cat Tree')).toBe('');
+  expect(matchProductType('', [...cats, { ...cats[0]!, name: 'Cat Towers' }], [], 'Cat Tree')).toBe(
+    '',
+  );
+  for (const title of [
+    'Cat Tree Replacement Cover',
+    'Cat Tree Accessories',
+    'A tree for the garden',
+  ])
+    expect(matchProductType('', cats, [], title)).toBe('');
+  const sofas = [{ ...types[0]!, name: 'Sofas & Couches' }];
+  expect(matchProductType('Outdoor Sofas', sofas, [], 'Patio Sectional Sofas')).toBe('');
+  expect(matchProductType('', sofas, [], 'Sectional Sofas Bed Replacement Covers')).toBe('');
+});
+
+it('uses the current Amazon variant title and preserves submitted rows', () => {
+  const doc = document();
+  const item = doc.basis.items[0]!;
+  item.category = '';
+  item.variants = [
+    { platform_sku: 'a', content: { copy: { title: 'Cat Tree' } } },
+  ] as typeof item.variants;
+  const cats = [{ ...types[0]!, name: 'Cat Trees' }];
+  expect(applyListingDefaults(doc, cats, [])).toBe(true);
+  expect(doc.rows[0]!.product_type).toBe('Cat Trees');
+  doc.rows[0]!.product_type = '';
+  doc.results.a = { status: 'processing', message: '', errors: [], attempt_id: 'attempt' };
+  expect(applyListingDefaults(doc, cats, [])).toBe(false);
+});

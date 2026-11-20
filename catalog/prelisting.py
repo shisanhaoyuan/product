@@ -262,6 +262,19 @@ def selected_rows(catalog, db, data):
     return rows
 
 
+def variant_images(product, variant):
+    """Use current images for this ASIN; explicit child edits take precedence."""
+    images = variant.get('images') or []
+    changes = (product.get('local_edit') or {}).get('changes') or []
+    child_edited = any(c.get('field') == 'images' and c.get('variant_sku') == variant['sku'] for c in changes)
+    parent_edited = any(c.get('field') == 'images' and not c.get('variant_sku') for c in changes)
+    if (product.get('source') == 'Amazon' and variant.get('asin')
+            and product.get('asin') == variant['asin'] and not child_edited
+            and (parent_edited or not images)):
+        images = product.get('images') or []
+    return list(dict.fromkeys(images))
+
+
 def build_preview(catalog, db, data, exclude_batch=None):
     from .listing_prerequisites import pool_lookup
     has_pool = bool(db.execute('SELECT 1 FROM listing_real_identifiers LIMIT 1').fetchone())
@@ -304,8 +317,9 @@ def build_preview(catalog, db, data, exclude_batch=None):
             errors.extend(supplier_errors)
         elif children:
             priced = [dict(sku=v['sku'], asin=v['asin'], current_price=v['price'], stock=v['stock'],
-                           content={k: v.get(k) for k in ('images', 'attributes', 'product_id_type', 'ean',
+                           content={**{k: v.get(k) for k in ('attributes', 'product_id_type', 'ean',
                                'swatch_attribute', 'swatch_image', 'shipping_weight', 'copy', 'source_url', 'seller')},
+                               'images': variant_images(d, v)},
                            **planned_price(v, v['price_check'], data.multiplier, True)) for v in children]
         else:
             raw_checks = d['checks'].get('pricing_checks', [])

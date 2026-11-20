@@ -17,6 +17,7 @@ import {
 import { catalogApi as api } from '../api/client';
 import { useAuth } from '../composables/useAuth';
 import { errorMessage, plain, money } from '../utils/display';
+import { listingSourceImages } from '../utils/listingSourceImages';
 import { applyListingDefaults } from '../utils/listingDefaults';
 import ListingSchemaField from './ListingSchemaField.vue';
 import ProductImage from './ProductImage.vue';
@@ -303,6 +304,58 @@ const source = computed(() =>
 const sourceVariant = computed(() =>
   source.value?.variants.find((v) => v.platform_sku === activeSku.value),
 );
+const latestSourceImages = ref<string[]>([]);
+const sourceImagesLoading = ref(false);
+const syncingImages = ref(false);
+let sourceImageSequence = 0;
+watch(
+  () => [current.value?.listing_id, current.value?.source_sku, sourceVariant.value?.asin],
+  async () => {
+    const seq = ++sourceImageSequence;
+    latestSourceImages.value = [];
+    const row = current.value;
+    if (!row) {
+      sourceImagesLoading.value = false;
+      return;
+    }
+    sourceImagesLoading.value = true;
+    try {
+      const product = await api.product(row.listing_id);
+      if (!live || seq !== sourceImageSequence) return;
+      latestSourceImages.value = listingSourceImages(
+        product,
+        row.source_sku,
+        sourceVariant.value?.asin || '',
+      );
+    } catch {
+      // Keep the historical selection visible, but never pass stale images off as current.
+    } finally {
+      if (seq === sourceImageSequence) sourceImagesLoading.value = false;
+    }
+  },
+  { immediate: true },
+);
+async function syncCurrentImages() {
+  if (locked.value || !current.value || syncingImages.value) return;
+  const row = current.value;
+  const before = JSON.stringify(photos.value);
+  syncingImages.value = true;
+  try {
+    const product = await api.product(row.listing_id);
+    if (row !== current.value || locked.value) return;
+    if (JSON.stringify(photos.value) !== before)
+      throw new Error('读取期间图片选择已改变，请重新点击同步');
+    const images = listingSourceImages(product, row.source_sku, sourceVariant.value?.asin || '');
+    if (!images.length) throw new Error('当前 SKU／ASIN 没有可用图片，请先在对应商品档案补充图片');
+    latestSourceImages.value = images;
+    setPhotos(images.slice(0, 8));
+    await save();
+  } catch (e) {
+    error.value = errorMessage(e);
+  } finally {
+    syncingImages.value = false;
+  }
+}
 const result = computed(() => doc.value?.results[activeSku.value]);
 const locked = computed(
   () =>
@@ -1362,6 +1415,19 @@ onBeforeUnmount(() => {
                 </button>
               </div>
             </div>
+            <div v-if="!locked" class="actions">
+              <button
+                class="btn"
+                :disabled="busy || sourceImagesLoading || syncingImages"
+                @click="syncCurrentImages"
+              >
+                {{ syncingImages ? '正在同步图片…' : '从商品库同步图片' }}
+              </button>
+              <small class="muted"
+                >按当前 SKU／ASIN 读取最新图库，替换当前选择并默认保留前 8
+                张；编辑图片可自由增减。</small
+              >
+            </div>
             <div class="listing-photo-gallery" data-listing-path="visible.mainImageUrl">
               <figure
                 v-for="(url, i) in photos"
@@ -1759,8 +1825,9 @@ onBeforeUnmount(() => {
         :key="current.platform_sku"
         :listing-id="current.listing_id"
         :sku="current.source_sku"
+        :asin="sourceVariant?.asin || ''"
         :existing="photos"
-        :source-images="sourceVariant?.content?.images || []"
+        :source-images="latestSourceImages"
         @close="imagePickerOpen = false"
         @apply="
           (urls) => {

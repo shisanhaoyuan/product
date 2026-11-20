@@ -229,3 +229,32 @@ def test_concurrent_retry_creates_one_batch(local):
     assert client.get('/api/prelisting/batches').json()['total']==1
     with catalog.connect() as db:
         assert db.execute('SELECT COUNT(*) FROM prelisting_claims').fetchone()[0] == 3
+
+
+def test_variant_image_identity_and_edit_precedence():
+    from catalog.prelisting import variant_images
+    parent = dict(source='Amazon', asin='B000000001', images=['https://img.test/current.jpg'])
+    child = dict(sku='child', asin=parent['asin'], images=['https://img.test/old.jpg'])
+    assert variant_images(parent, child) == child['images']
+    parent['local_edit'] = dict(changes=[dict(field='images', variant_sku='')])
+    assert variant_images(parent, child) == parent['images']
+    assert variant_images(parent, child | {'asin': 'B000000002'}) == child['images']
+    assert variant_images(parent, child | {'asin': ''}) == child['images']
+    parent['local_edit']['changes'].append(dict(field='images', variant_sku='child'))
+    assert variant_images(parent, child) == child['images']
+    assert variant_images(parent, child | {'images': []}) == []  # Explicit removal stays removed.
+    parent.pop('local_edit')
+    assert variant_images(parent, child | {'images': []}) == parent['images']
+
+
+def test_amazon_preview_uses_parent_images_only_for_same_asin(local):
+    client, catalog = local
+    same = product(8, images=['https://img.test/current.jpg'])
+    other = product(9, images=['https://img.test/other.jpg'])
+    other.variants[0].asin = 'B000000099'
+    catalog.ingest(ImportBundle(namespace='test', label='image-parity', listings=[same, other]))
+    response = client.post('/api/prelisting/preview', json=inputs(client))
+    assert response.status_code == 200, response.text
+    rows = {item['sku']: item for item in response.json()['items']}
+    assert rows['parent-8']['variants'][0]['content']['images'] == same.images
+    assert rows['parent-9']['variants'][0]['content']['images'] == []
