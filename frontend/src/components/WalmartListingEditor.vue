@@ -954,7 +954,9 @@ onBeforeUnmount(() => {
                           ? '用户规则'
                           : field.kind === 'schema_cleanup'
                             ? '旧类目字段已移除'
-                            : '来源映射'
+                            : field.kind === 'ai_composed'
+                              ? 'AI 根据商品基础信息编写'
+                              : '来源映射'
                 }}
               </dt>
               <dd>

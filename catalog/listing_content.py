@@ -193,7 +193,8 @@ def description_policy(visible, field, seen):
 def source_specifications(visible, facts):
     """Rebuild from this SKU's source snapshot, never append to generated output."""
     source_copy = facts.get('content.copy') or {}
-    source_description = source_copy.get('description') or facts.get('detail.description')
+    source_description = next((v for v in (source_copy.get('description'), facts.get('detail.description'))
+                               if text(v).strip()), None)
     # Some imports have only attributes. Keep existing prose but rebuild its specs.
     sections = description_sections(source_description if source_description is not None else visible.get('shortDescription', ''))
     attributes = facts.get('content.attributes') or facts.get('detail.attributes') or {}

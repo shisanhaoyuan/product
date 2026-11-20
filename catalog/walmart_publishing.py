@@ -782,8 +782,14 @@ def publishing_routes(catalog):
                         if claim and claim['batch_id']!=bid:
                             raise HTTPException(409,'该店铺 SKU 已由其他批次提交，禁止重复')
                         frozen_row = row | {'stock':int(basis_variant['stock'])}
-                        if basis_item['source'] == 'GigaB2B':
+                        if basis_item['source'] in ('GigaB2B', 'Saleyee'):
                             frozen_row['patrol_basis'] = dict(multiplier=basis['multiplier'], landed=basis_variant['base'])
+                            if basis_item['source'] == 'Saleyee':
+                                from .saleyee_patrol import quote_key
+                                frozen_row['patrol_basis'].update(
+                                    quote=quote_key(basis_variant.get('source_facts') or {}),
+                                    namespace=db.execute('SELECT namespace FROM listings WHERE id=?',
+                                                         (row['listing_id'],)).fetchone()[0])
                         chosen.append(frozen_row)
                     payload={'MPItemFeedHeader':{'businessUnit':'WALMART_US','locale':'en','version':doc['version']},
                              'MPItem':[report['payloads'][sku] for sku in data.skus]}

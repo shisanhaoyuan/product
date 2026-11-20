@@ -70,6 +70,7 @@ def create_app(database=None):
     app.include_router(saleyee_routes(catalog))
     from .giga_patrol import patrol_routes
     app.include_router(patrol_routes(catalog))
+    app.include_router(patrol_routes(catalog, 'saleyee'))
     from .walmart_client import WalmartVerifier
     from .walmart_accounts import walmart_routes
     app.state.walmart_verifier=WalmartVerifier()

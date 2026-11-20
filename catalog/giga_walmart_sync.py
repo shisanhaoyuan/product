@@ -38,13 +38,16 @@ def encoded(value):
 
 
 def evidence(data, price_ok, stock_ok, before):
-    info = summary(data.get('source_facts'))
-    totals = info['estimated_totals']
     return dict(price_ok=price_ok, stock_ok=stock_ok, source=data,
-                before_landed=before, landed=totals[0] if len(totals) == 1 else None)
+                before_landed=before, landed=amounts(data))
 
 
 def amounts(data):
+    if data.get('source') == 'Saleyee':
+        from .saleyee_patrol import quote_key
+        facts = data.get('source_facts') or {}
+        value = facts.get('landed')
+        return value if quote_key(facts) and facts.get('currency') == 'USD' and number(value) is not None else None
     totals = summary(data.get('source_facts'))['estimated_totals']
     return totals[0] if len(totals) == 1 else None
 
@@ -71,7 +74,7 @@ def candidates(db, listing_id, source_sku):
     return result
 
 
-def basis(claim, row):
+def basis(claim, row, source='GigaB2B'):
     # New submissions freeze the exact basis on the attempt. Legacy batches have
     # immutable creation settings; source refreshes do not change the multiplier.
     if 'patrol_basis' in row:
@@ -79,9 +82,13 @@ def basis(claim, row):
     settings = json.loads(claim['settings_json'])
     preview = json.loads(claim['preview_json'])
     matches = [v for i in preview['items'] if i['listing_id'] == row['listing_id']
-               and i['source'] == 'GigaB2B' for v in i['variants']
+               and i['source'] == source for v in i['variants']
                if v['platform_sku'] == row['platform_sku'] and v['sku'] == row['source_sku']]
-    return dict(multiplier=settings.get('multiplier'), landed=matches[0].get('base') if len(matches) == 1 else None)
+    result = dict(multiplier=settings.get('multiplier'), landed=matches[0].get('base') if len(matches) == 1 else None)
+    if source == 'Saleyee':
+        from .saleyee_patrol import quote_key
+        result['quote'] = quote_key(matches[0].get('source_facts') or {}) if len(matches) == 1 else None
+    return result
 
 
 def check_identity(db, action, ev, namespace, account_token, run_token, bound=None, poll_token=None):
@@ -92,13 +99,13 @@ def check_identity(db, action, ev, namespace, account_token, run_token, bound=No
     expected = ev['source']
     if (not current or current['namespace'] != namespace or current['sku'] != action['source_sku']
             or current['external_id'] != expected['external_id'] or json.loads(current['data_json']) != expected
-            or expected['source'] != 'GigaB2B' or expected.get('asin') or expected.get('variants')):
+            or expected['source'] not in ('GigaB2B', 'Saleyee') or expected.get('asin') or expected.get('variants')):
         raise WalmartError('巡查后的来源或商品身份已改变，未继续写入')
     claim = db.execute('SELECT attempt_id FROM walmart_listing_claims WHERE store_id=? AND platform_sku=?',
                        (action['store_id'], action['platform_sku'])).fetchone()
     if not claim or claim['attempt_id'] != action['attempt_id']:
         raise WalmartError('商品提交归属已改变，未继续写入')
-    if platform_sku.lookup(db, action['store_id'], 'GigaB2B', {'sku': action['source_sku']}) != action['platform_sku']:
+    if platform_sku.lookup(db, action['store_id'], expected['source'], {'sku': action['source_sku']}) != action['platform_sku']:
         raise WalmartError('店铺与平台 SKU 映射不一致，未继续写入')
     _, current_bound = binding(db, action['store_id'], action['partner_id'])
     if bound and current_bound['revision'] != bound['revision']:
@@ -228,7 +235,7 @@ def sync_batch(catalog, run_id, namespace, targets, account_token, run_token, pu
             offers = candidates(db, target['id'], target['sku'])
         for claim, row in offers:
             try:
-                frozen = basis(claim, row)
+                frozen = basis(claim, row, ev['source']['source'])
             except (ValueError, KeyError, TypeError):
                 frozen = {}
             for kind in ('price', 'stock'):
@@ -241,7 +248,17 @@ def sync_batch(catalog, run_id, namespace, targets, account_token, run_token, pu
                               source_price=ev['source'].get('price'), source_shipping=ev['source'].get('source_facts', {}).get('shipping'),
                               source_stock=ev['source'].get('stock'), landed=ev['landed'], target=None, before=None, after=None)
                 reason = ''
-                if kind == 'stock':
+                if ev['source']['source'] == 'Saleyee':
+                    from .saleyee_patrol import quote_key
+                    current_quote = quote_key(ev['source'].get('source_facts') or {})
+                    action['source_quote'] = current_quote
+                    action['submitted_quote'] = frozen.get('quote')
+                    if (not current_quote or frozen.get('quote') != current_quote
+                            or frozen.get('namespace', namespace) != namespace):
+                        reason = '来源账号、仓库或物流报价与原上架依据不一致，未自动修改'
+                if reason:
+                    pass
+                elif kind == 'stock':
                     if not ev['stock_ok']:
                         reason = '本轮库存未核验成功，保留沃尔玛库存'
                     elif str(action['source_stock']) != '0':

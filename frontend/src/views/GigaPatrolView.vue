@@ -1,10 +1,16 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { onBeforeUnmount, ref, watch } from 'vue';
+import { useRoute } from 'vue-router';
 import { request } from '../api/client';
 import { errorMessage } from '../utils/display';
+const route = useRoute();
+const provider = () => route.path === '/saleyee-patrol' ? 'saleyee' : 'giga';
+const supplier = () => provider() === 'saleyee' ? '赛盈' : '大建云仓';
 interface Action {
   id: string;
   store_name: string;
+  source_quote?: string[] | null;
+  submitted_quote?: string[] | null;
   platform_sku: string;
   kind: string;
   status: string;
@@ -36,6 +42,7 @@ interface Run {
   message: string;
 }
 interface Values {
+  quote?: string[] | null;
   price?: string | null;
   shipping?: string | null;
   currency?: string | null;
@@ -93,7 +100,7 @@ async function load() {
   loading.value = true;
   error.value = '';
   try {
-    const result = await request<Summary>('/api/integrations/giga/patrol', {
+    const result = await request<Summary>(`/api/integrations/${provider()}/patrol`, {
       signal: pending.signal,
     });
     if (pending.signal.aborted) return;
@@ -118,7 +125,7 @@ async function open(run: Run, targetPage = 1) {
   error.value = '';
   try {
     const result = await request<{ run: Run; items: Item[]; page: number }>(
-      `/api/integrations/giga/patrol/${run.id}?page=${targetPage}`,
+      `/api/integrations/${provider()}/patrol/${run.id}?page=${targetPage}`,
       { signal: pending.signal },
     );
     if (!pending.signal.aborted) {
@@ -130,7 +137,14 @@ async function open(run: Run, targetPage = 1) {
     if (!pending.signal.aborted) error.value = errorMessage(e);
   }
 }
-onMounted(load);
+watch(() => route.path, () => {
+  detailController?.abort();
+  selected.value = undefined;
+  items.value = [];
+  data.value = undefined;
+  page.value = 1;
+  load();
+}, { immediate: true });
 onBeforeUnmount(() => {
   controller?.abort();
   detailController?.abort();
@@ -139,12 +153,12 @@ onBeforeUnmount(() => {
 <template>
   <div class="page-heading">
     <div>
-      <p class="eyebrow">GIGAB2B / MONITOR</p>
+      <p class="eyebrow">{{ provider() === 'saleyee' ? 'SALEYEE' : 'GIGAB2B' }} / MONITOR</p>
       <h1>价格与库存巡查</h1>
-      <p class="subtitle">只检查当前大建云仓 API 账号已入库商品，保留每次巡查记录。</p>
+      <p class="subtitle">只检查当前{{ supplier() }} API 账号已入库商品，保留每次巡查记录。</p>
     </div>
     <div class="actions">
-      <RouterLink class="btn" to="/giga-products">返回大建云仓</RouterLink
+      <RouterLink class="btn" :to="`/${provider()}-products`">返回{{ supplier() }}</RouterLink
       ><button class="btn primary" :disabled="loading" @click="load">
         {{ loading ? '刷新中…' : '刷新记录' }}
       </button>
@@ -157,7 +171,7 @@ onBeforeUnmount(() => {
       <span>{{ data.timer.active ? '定时巡查已启动' : '服务器定时巡查未启动' }}</span>
     </div>
     <div class="section-body">
-      <p v-if="!data.configured" class="notice">尚未配置大建云仓 API，配置后才能巡查。</p>
+      <p v-if="!data.configured" class="notice">尚未配置{{ supplier() }} API，配置后才能巡查。</p>
       <p v-if="data.timer.next_run" class="subtitle">
         服务器报告下次运行：{{ data.timer.next_run }}
       </p>
@@ -166,7 +180,7 @@ onBeforeUnmount(() => {
         启用每周巡查。页面打开或关闭不影响服务器定时任务。
       </p>
       <p class="subtitle">
-        巡查来源价格和库存后，自动更新已上架的对应店铺商品：成本上涨时按（单价＋运费）×原上架倍率计算，仅上调售价；供应商明确无库存时清零。不重新上架，不自动降价或补库存。
+        巡查来源价格和库存后，自动更新已上架的对应店铺商品：成本上涨时按{{ provider() === 'saleyee' ? '采购价×原上架倍率（不另加运费）' : '（单价＋运费）×原上架倍率' }}计算，仅上调售价；供应商明确无库存时清零。不重新上架，不自动降价或补库存。
       </p>
     </div>
     <div class="table-scroll">
@@ -217,7 +231,7 @@ onBeforeUnmount(() => {
         <thead>
           <tr>
             <th>供应商 SKU</th>
-            <th>原价 · 前 → 后</th>
+            <th>采购价 · 前 → 后</th>
             <th>运费 · 前 → 后</th>
             <th>可售库存 · 前 → 后</th>
             <th>结果</th>
@@ -227,9 +241,12 @@ onBeforeUnmount(() => {
           <template v-for="item in items" :key="item.listing_id">
             <tr>
               <td>
-                <RouterLink class="detail-link" :to="'/giga-product/' + item.listing_id">{{
+                <RouterLink class="detail-link" :to="`/${provider()}-product/${item.listing_id}`">{{
                   item.sku
                 }}</RouterLink>
+                <p v-if="item.after.quote" class="quote-info">
+                  站点 {{ item.after.quote[0] }} · 仓库 {{ item.after.quote[1] }} · 物流 {{ item.after.quote[2] }}
+                </p>
               </td>
               <td>
                 {{ amount(item.before.price, item.before.currency) }} →
@@ -261,6 +278,9 @@ onBeforeUnmount(() => {
                     <p class="sku-line">
                       平台 SKU：<code>{{ action.platform_sku }}</code
                       ><span v-if="action.node"> · 仓库 {{ action.node }}</span>
+                    </p>
+                    <p v-if="action.submitted_quote" class="quote-info">
+                      原上架来源：{{ action.submitted_quote.join(' / ') }}
                     </p>
                     <dl>
                       <template v-if="action.kind === 'price'">
@@ -323,6 +343,13 @@ onBeforeUnmount(() => {
   </section>
 </template>
 <style scoped>
+.quote-info {
+  font-size: 12px;
+  color: #64748b;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  margin: 6px 0;
+}
 .patrol-details {
   margin-top: 24px;
 }

@@ -40,6 +40,8 @@ const current = computed(() =>
         ? '店铺管理 · 沃尔玛绑定'
         : route.path === '/listing-stores'
           ? '店铺管理 · 店铺资料'
+          : route.path === '/saleyee-patrol'
+            ? '赛盈价格与库存巡查'
           : route.path === '/giga-patrol'
             ? '云仓价格与库存巡查'
             : [...catalogSources, ...navigation].find((item) => item.path === route.path)?.name ||

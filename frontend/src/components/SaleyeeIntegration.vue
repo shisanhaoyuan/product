@@ -120,6 +120,7 @@ onBeforeUnmount(() => {
         倍率计算。多条报价时，请在商品档案选择对应仓库与物流。</small
       >
       <div class="actions">
+        <RouterLink class="btn" to="/saleyee-patrol">价格与库存巡查</RouterLink>
         <RouterLink class="btn" to="/saleyee-products">打开赛盈商品库</RouterLink
         ><button
           v-if="writable"

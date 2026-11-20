@@ -12,7 +12,7 @@ from .listing_titles import branded_title, source_brands
 from .walmart_listing_schema import plain, sections, feed_item, schema_errors, identifier_errors, precise_validator
 from .listing_skill_defaults import has_default, skill_default, length_fallback, fixed_origin, enforce_origin
 
-RULES_VERSION = 'listing-generation-v8'
+RULES_VERSION = 'listing-generation-v9'
 RULES = Path(__file__).with_name('listing_generation_rules.md').read_text()
 BLOCKED = re.compile(r'prop.?65|warranty|certif|nrtl|chemical|origin|warning|exempt|gtin|upc|ean|model|partnumber', re.I)
 PROTECTED = {'sku','productIdentifiers','inventory','price','msrp','SkuUpdate','ProductIdUpdate','fulfillmentCenterID'}
@@ -393,6 +393,9 @@ def mapped_value(key, schema, facts):
 
 def fill_row(row, schema, facts, ai, provenance):
     row = copy.deepcopy(row)
+    compose_description = (empty(row['visible'].get('shortDescription'))
+        and empty((facts.get('content.copy') or {}).get('description'))
+        and empty(facts.get('detail.description')))
     spec = sections(schema, row['product_type'])
     # A class change may leave old fields in the document. Keep their full values
     # in the audit so cleanup is recoverable, without sending unsupported fields.
@@ -444,6 +447,9 @@ def fill_row(row, schema, facts, ai, provenance):
                             provenance[field].update(visual)
                 else:
                     if not empty(current):
+                        continue
+                    if section == 'visible' and key in ('shortDescription', 'keyFeatures'):
+                        # Copywriting has its own source-backed contract, not confidence-ranked attributes.
                         continue
                     if BLOCKED.search(key):
                         problems.append(dict(path=field,message='缺少该字段的明确来源或证明，不能估算'))
@@ -539,10 +545,13 @@ def fill_row(row, schema, facts, ai, provenance):
             provenance['visible.'+field]=dict(kind='user_rule',value=row['visible'].get(field),previous_value=before_content.get(field),
                 refs=[r for r in ('content.copy','detail.description','content.attributes','detail.attributes') if r in facts] if field=='shortDescription' else [],
                 reason='用户规则：从同 SKU 来源整理参数并整体覆盖描述，不追加旧编号；描述与卖点去重，默认优选8张图，手动选择数量不限')
+    from .listing_copy_generation import fill_missing_copy
+    copy_problems = fill_missing_copy(row,spec['visible'].get('properties',{}),facts,ai,provenance,RULES,
+                                      compose_description=compose_description)
     # A later conditional pass may have filled a previously missing field.
     problems = [p for p in problems if '原产国固定规则' in p['message'] or not p['path'] or
                 empty(row.get(p['path'].split('.')[0], {}).get(p['path'].split('.')[-1]))]
-    return row, problems
+    return row, problems + copy_problems
 
 
 def validate_generated(row, schema, version, origin):

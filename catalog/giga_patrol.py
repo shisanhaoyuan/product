@@ -4,6 +4,7 @@ Run with: python -m catalog.giga_patrol --env-file /etc/jiwu.env
 No product discovery, new item publication or credential output.
 """
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -17,6 +18,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query
 
 from .database import write_lock
+from . import saleyee_patrol
+from .saleyee import SaleyeeClient, SaleyeeSettings
 from .giga import GigaClient, GigaError, GigaSettings, amount, sync_lease
 
 
@@ -48,6 +51,7 @@ def encode(value):
 def values(data):
     facts = data.get('source_facts') or {}
     return dict(price=data.get('price'), shipping=facts.get('shipping'),
+                quote=saleyee_patrol.quote_key(facts) if data.get('source') == 'Saleyee' else None,
                 currency=facts.get('currency'), stock=data.get('stock'),
                 exclusive_price=(facts.get('giga', {}).get('price') or {}).get('exclusivePrice'),
                 discounted_price=(facts.get('giga', {}).get('price') or {}).get('discountedPrice'))
@@ -111,7 +115,7 @@ def renew_lease(catalog, name, token, seconds=180):
 
 
 def apply_batch(catalog, run_id, namespace, targets, price_rows, price_error,
-                stock_rows, stock_error, account_token, run_token):
+                stock_rows, stock_error, account_token, run_token, source='GigaB2B'):
     from .giga_walmart_sync import amounts, evidence
     checked_at = now()
     with catalog.connect() as db:
@@ -125,18 +129,32 @@ def apply_batch(catalog, run_id, namespace, targets, price_rows, price_error,
             data = {}
             before_landed = None
             before = after = {}
-            changed_price = changed_stock = False
+            changed_price = changed_stock = raw_changed = False
             if existing:
                 data = json.loads(existing['data_json'])
                 before_landed = amounts(data)
                 before = values(data)
                 after = dict(before)
             if (not existing or existing['namespace'] != namespace or existing['sku'] != sku
-                    or data.get('source') != 'GigaB2B' or data.get('asin')
+                    or data.get('source') != source or data.get('asin')
                     or data.get('sku') != sku or data.get('external_id') != target['external_id']
                     or data.get('evidence_kind') != 'source_only' or data.get('variants')):
                 errors.append('商品身份或结构发生变化，未写入')
                 price_ok = stock_ok = False
+            elif source == 'Saleyee':
+                previous = encode(data['source_facts'])
+                candidate = copy.deepcopy(data)
+                try:
+                    price_ok, stock_ok, errors = saleyee_patrol.refresh(
+                        candidate, price_rows.get(sku), stock_rows.get(sku), price_error, stock_error)
+                    data = candidate
+                except (ValueError, TypeError, KeyError, AttributeError):
+                    price_ok = stock_ok = False
+                    errors = ['赛盈来源数据格式异常，已保留原价格和库存']
+                after = values(data)
+                changed_price = amounts(data) != before_landed
+                changed_stock = after['stock'] != before['stock']
+                raw_changed = previous != encode(data['source_facts'])
             else:
                 price_ok = stock_ok = False
                 facts = data.setdefault('source_facts', {})
@@ -175,16 +193,16 @@ def apply_batch(catalog, run_id, namespace, targets, price_rows, price_error,
                     except (GigaError, TypeError, ValueError):
                         errors.append('未返回有效可售库存，保留原库存')
                 after = values(data)
-                if changed_price or changed_stock:
-                    data['observed_at'] = checked_at
-                    raw = encode(data)
-                    digest = hashlib.sha256(raw.encode()).hexdigest()
-                    db.execute('UPDATE listings SET data_json=?,digest=?,observed_at=? WHERE id=?',
-                               (raw, digest, checked_at, listing_id))
-                    db.execute('''INSERT INTO snapshots(listing_id,digest,observed_at,evidence_kind,data_json)
-                        VALUES(?,?,?,?,?) ON CONFLICT DO NOTHING''',
-                               (listing_id, digest, checked_at, data['evidence_kind'], raw))
-                    catalog.refresh(db, listing_id)
+            if changed_price or changed_stock or raw_changed:
+                data['observed_at'] = checked_at
+                raw = encode(data)
+                digest = hashlib.sha256(raw.encode()).hexdigest()
+                db.execute('UPDATE listings SET data_json=?,digest=?,observed_at=? WHERE id=?',
+                           (raw, digest, checked_at, listing_id))
+                db.execute('''INSERT INTO snapshots(listing_id,digest,observed_at,evidence_kind,data_json)
+                    VALUES(?,?,?,?,?) ON CONFLICT DO NOTHING''',
+                           (listing_id, digest, checked_at, data['evidence_kind'], raw))
+                catalog.refresh(db, listing_id)
             status = 'ok' if price_ok and stock_ok else 'partial' if price_ok or stock_ok else 'failed'
             db.execute('INSERT INTO giga_patrol_items VALUES(?,?,?,?,?,?,?,?)',
                        (run_id, listing_id, sku, checked_at, status, encode(before), encode(after), encode(errors)))
@@ -199,6 +217,10 @@ def apply_batch(catalog, run_id, namespace, targets, price_rows, price_error,
 
 def run_patrol(catalog, settings=None, client=None, *, publisher=None):
     settings = settings or GigaSettings()
+    saleyee = isinstance(settings, SaleyeeSettings)
+    source = 'Saleyee' if saleyee else 'GigaB2B'
+    batch_size = 30 if saleyee else 100
+    fetch = saleyee_patrol.fetch_rows if saleyee else fetch_rows
     name = settings.namespace + '.patrol'
     with sync_lease(catalog, name) as run_token:
         run_id = uuid.uuid4().hex
@@ -208,26 +230,26 @@ def run_patrol(catalog, settings=None, client=None, *, publisher=None):
             db.execute("UPDATE giga_patrol_runs SET status='interrupted',finished_at=?,message=? WHERE namespace=? AND status='running'",
                        (now(), '上次巡查中断；已保存记录保留，未检查项不算成功', settings.namespace))
             targets = [dict(r) for r in db.execute('''SELECT l.id,l.sku,l.external_id FROM listings l
-                JOIN products p ON p.id=l.product_id WHERE l.namespace=? AND p.source='GigaB2B'
-                ORDER BY l.id''', (settings.namespace,))]
+                JOIN products p ON p.id=l.product_id WHERE l.namespace=? AND p.source=?
+                ORDER BY l.id''', (settings.namespace, source))]
             db.execute('INSERT INTO giga_patrol_runs VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
                        (run_id, settings.namespace, now(), '', 'running', len(targets), 0, 0, 0, 0, 0, ''))
         try:
             if not settings.configured:
-                raise GigaError('尚未配置大建云仓 API，巡查未执行')
-            client = client or GigaClient(settings)
-            for start in range(0, len(targets), 100):
+                raise GigaError('尚未配置来源 API，巡查未执行')
+            client = client or (SaleyeeClient(settings) if saleyee else GigaClient(settings))
+            for start in range(0, len(targets), batch_size):
                 renew_lease(catalog, name, run_token)
-                batch = targets[start:start+100]
+                batch = targets[start:start+batch_size]
                 # Shared with full sync, so its stale price/stock cannot race this write.
                 with sync_lease(catalog, settings.namespace) as account_token:
                     skus = [r['sku'] for r in batch]
                     if len(skus) != len(set(skus)):
                         raise GigaError('本地 SKU 重复，已停止巡查')
-                    prices, price_error = fetch_rows(client, 'price', skus)
-                    stocks, stock_error = fetch_rows(client, 'stock', skus)
+                    prices, price_error = fetch(client, 'price', skus)
+                    stocks, stock_error = fetch(client, 'stock', skus)
                     apply_batch(catalog, run_id, settings.namespace, batch, prices, price_error,
-                                stocks, stock_error, account_token, run_token)
+                                stocks, stock_error, account_token, run_token, source)
                     from .giga_walmart_sync import sync_batch
                     sync_batch(catalog, run_id, settings.namespace, batch, account_token, run_token, publisher)
             with catalog.connect() as db:
@@ -281,12 +303,13 @@ def visible_run(db, row):
     return result
 
 
-def patrol_routes(catalog):
-    router = APIRouter(prefix='/api/integrations/giga/patrol')
+def patrol_routes(catalog, provider='giga'):
+    settings_type = SaleyeeSettings if provider == 'saleyee' else GigaSettings
+    router = APIRouter(prefix=f'/api/integrations/{provider}/patrol')
 
     @router.get('')
     def runs():
-        settings = GigaSettings()
+        settings = settings_type()
         with catalog.connect() as db:
             rows = [visible_run(db, r) for r in db.execute('SELECT * FROM giga_patrol_runs WHERE namespace=? ORDER BY started_at DESC,id DESC LIMIT 20', (settings.namespace,))]
         return dict(configured=settings.configured, timer=timer_status(), runs=rows)
@@ -295,7 +318,7 @@ def patrol_routes(catalog):
     def details(run_id: str, page: int = Query(1, ge=1)):
         with catalog.connect() as db:
             run = db.execute('SELECT * FROM giga_patrol_runs WHERE id=? AND namespace=?',
-                             (run_id, GigaSettings().namespace)).fetchone()
+                             (run_id, settings_type().namespace)).fetchone()
             if not run:
                 raise HTTPException(404, '巡查记录不存在')
             run = visible_run(db, run)
@@ -313,21 +336,34 @@ def patrol_routes(catalog):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='大建云仓每周价格和库存巡查')
+    parser = argparse.ArgumentParser(description='供应商每周价格和库存巡查')
     parser.add_argument('--env-file', type=Path)
+    parser.add_argument('--source', choices=('giga', 'saleyee'))
     args = parser.parse_args()
     if args.env_file:
         from .config import load_env_file
         load_env_file(args.env_file)
     from .db import Catalog
     path = os.environ.get('CATALOG_DATABASE_URL') or os.environ.get('CATALOG_DB', Path(__file__).resolve().parent.parent/'data/catalog.db')
-    try:
-        result = run_patrol(Catalog(path))
-    except HTTPException:
-        print('已有巡查运行，本次未重复启动')
+    catalog = Catalog(path)
+    providers = {'giga': GigaSettings(), 'saleyee': SaleyeeSettings()}
+    active = [args.source] if args.source else [k for k, v in providers.items() if v.configured]
+    if not active:
+        print('尚未配置巡查来源')
         return 1
-    print(encode({k: v for k, v in result.items() if k != 'namespace'}))
-    return 0 if result['status'] == 'completed' else 1
+    ok = True
+    for provider in active:
+        try:
+            result = run_patrol(catalog, providers[provider])
+            print(encode({'source': provider} | {k: v for k, v in result.items() if k != 'namespace'}))
+            ok = ok and result['status'] == 'completed'
+        except HTTPException:
+            print(f'{provider} 已有巡查运行，本次未重复启动')
+            ok = False
+        except Exception:
+            print(f'{provider} 巡查启动失败，请检查数据库和任务日志')
+            ok = False
+    return 0 if ok else 1
 
 
 if __name__ == '__main__':
