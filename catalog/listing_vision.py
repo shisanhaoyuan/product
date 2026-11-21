@@ -20,14 +20,19 @@ from .object_storage import configured_storage, save_metadata
 from .prelisting import encoded, fingerprint
 
 
+# Imported 数字酋长 galleries use these exact CDN hosts, not Amazon's own hosts.
+# Keep the ERP application and arbitrary CDN subdomains outside this exception.
+IMPORTED_IMAGE_HOSTS = frozenset({'ps-cdn-s3.datacaciques.com', 'pg-cdn-a2.datacaciques.com'})
+
+
 def allowed_image_url(url):
     parsed=urlsplit(url)
     hosts=['media-amazon.com','ssl-images-amazon.com','gigab2b.cn','gigab2b.com','saleyee.com','saleyee.cn']
     hosts += [h.strip().lower() for h in os.environ.get('CATALOG_LISTING_IMAGE_HOSTS','').split(',') if h.strip()]
     host=parsed.hostname or ''
     if (parsed.scheme!='https' or parsed.username or parsed.password or parsed.port not in (None,443)
-            or not any(host==h or host.endswith('.'+h) for h in hosts)):
-        raise ListingAIError('图片域名未获准用于服务器识图，请上传本地图片或配置可信图片域名')
+            or not (host in IMPORTED_IMAGE_HOSTS or any(host==h or host.endswith('.'+h) for h in hosts))):
+        raise ListingAIError(f'图片域名未获准用于服务器识图（{host[:253] or "无有效域名"}），请上传本地图片或配置可信图片域名')
     try:
         addresses=socket.getaddrinfo(host,443,type=socket.SOCK_STREAM)
         if not addresses or any(not ipaddress.ip_address(a[4][0]).is_global for a in addresses):
@@ -45,7 +50,7 @@ def fetch_image(url, transport=None):
                     url=urljoin(url,response.headers.get('location',''))
                     continue
                 if response.status_code!=200:
-                    raise ListingAIError('商品图片暂时无法下载，请补采或上传该 SKU 图片')
+                    raise ListingAIError(f'图片服务器返回 HTTP {response.status_code}（{urlsplit(url).hostname}），请补采或上传该 SKU 图片')
                 data=bytearray()
                 for chunk in response.iter_bytes():
                     data.extend(chunk)

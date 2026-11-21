@@ -275,11 +275,14 @@ def run_job(catalog, publisher, jid, ai):
                     if collection.get('state')=='conflict':
                         blockers.append(dict(path='',message=collection['message'],source_digest=item['source_digest']))
                     progress(sku,'collecting',f'正在采集并保存 {sku} 的图片')
-                    from .source_images import collect_images, localize_row
+                    from .source_images import collect_images, localize_row, recover_imported_images
                     urls=[updated['visible'].get('mainImageUrl',''),
                           *updated['visible'].get('productSecondaryImageURL',[]),
                           *variant.get('content',{}).get('images',[])]
                     image_collection=collect_images(catalog,item['listing_id'],variant['sku'],urls)
+                    if 'source_collection' not in entry:
+                        # The quote stage may already have tried this ASIN; never loop on a blocked page.
+                        image_collection=recover_imported_images(catalog,item,variant,urls,image_collection)
                     entry['image_collection']=image_collection
                     localize_row(updated,image_collection)
                     # Feed AI the collected bytes, not a second download of the same external URL.

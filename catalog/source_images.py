@@ -1,6 +1,8 @@
 """Download verified SKU galleries before generation; reuse content-addressed assets."""
 import hashlib
+import re
 import time
+from urllib.parse import urlsplit
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx
@@ -81,6 +83,35 @@ def collect_amazon_images(catalog, lid, sku, asin, html):
     except ValueError as exc:
         return dict(state='missing', message=str(exc), images=[], saved=[], failures=[])
     return collect_images(catalog, lid, sku or '', urls)
+
+
+def recover_imported_images(catalog, item, variant, urls, collection):
+    """One current-ASIN gallery attempt when every imported ERP image failed."""
+    from .listing_vision import IMPORTED_IMAGE_HOSTS
+    from .images import HumanVerificationRequired, fetch_amazon_page
+    from .source_capture import collect_quote_page
+    if collection['images'] or item.get('source') != 'Amazon':
+        return collection
+    asin = variant.get('asin', '')
+    if not re.fullmatch(r'[A-Z0-9]{10}', asin):
+        return collection
+    def imported(url):
+        try:
+            return urlsplit(url).hostname in IMPORTED_IMAGE_HOSTS
+        except ValueError:
+            return False
+    if not any(imported(u) for u in urls if isinstance(u, str)):
+        return collection
+    try:
+        html, _, _ = collect_quote_page(asin, fetch_amazon_page)
+        recovered = collect_amazon_images(catalog, item['listing_id'], variant['sku'], asin, html)
+        recovered['recovery'] = 'amazon_current_asin'
+        recovered['previous_failures'] = collection['failures']
+        recovered['message'] = '数字酋长图片不可用，已按当前 ASIN 补采：' + recovered['message']
+        return recovered
+    except (ValueError, OSError, ListingAIError) as exc:
+        message = 'Amazon 要求人机验证，请完成验证或上传当前 SKU 图片' if isinstance(exc, HumanVerificationRequired) else str(exc)[:200]
+        return collection | dict(recovery='amazon_current_asin', message=collection['message']+'；原图补采失败：'+message)
 
 
 def localize_row(row, collection):

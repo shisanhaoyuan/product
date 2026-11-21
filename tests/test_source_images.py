@@ -123,3 +123,100 @@ def test_collection_uses_configured_filesystem_storage(local, monkeypatch, tmp_p
     assert configured_storage(catalog).get(obj)
     again=collect_images(catalog,detail(c)['id'],'child-0',['https://example.com/photo.jpg'])
     assert again['saved'][0]['cached'] and again['images']==result['images']
+
+
+@pytest.mark.parametrize('host', ['ps-cdn-s3.datacaciques.com', 'pg-cdn-a2.datacaciques.com'])
+def test_imported_erp_cdn_downloads_and_saves_without_extra_configuration(local, monkeypatch, host):
+    import socket
+    import httpx
+    from catalog.listing_vision import fetch_image
+    c,catalog=local
+    monkeypatch.delenv('CATALOG_LISTING_IMAGE_HOSTS',raising=False)
+    monkeypatch.setattr(socket,'getaddrinfo',lambda *a,**k:[(socket.AF_INET,socket.SOCK_STREAM,6,'',('1.1.1.1',443))])
+    calls=[]
+    def handler(request):
+        calls.append(request)
+        assert request.url.host==host
+        return httpx.Response(200,content=picture())
+    monkeypatch.setattr('catalog.listing_vision.fetch_image',lambda url:fetch_image(url,httpx.MockTransport(handler)))
+    result=collect_images(catalog,detail(c)['id'],'child-0',[f'https://{host}/00/product.jpg'])
+    assert result['state']=='complete' and len(calls)==1
+    assert c.get(result['images'][0]).status_code==200
+
+
+@pytest.mark.parametrize('url', [
+    'https://ps-cdn-s3.datacaciques.com.evil.test/product.jpg',
+    'https://other.ps-cdn-s3.datacaciques.com/product.jpg',
+    'https://www.datacaciques.com/product.jpg',
+    'http://ps-cdn-s3.datacaciques.com/product.jpg',
+    'https://secret:password@pg-cdn-a2.datacaciques.com/product.jpg',
+    'https://pg-cdn-a2.datacaciques.com:8443/product.jpg',
+])
+def test_cdn_exception_does_not_allow_other_destinations_or_expose_secrets(monkeypatch,url):
+    from catalog.listing_vision import allowed_image_url
+    monkeypatch.delenv('CATALOG_LISTING_IMAGE_HOSTS',raising=False)
+    with pytest.raises(ListingAIError) as error:allowed_image_url(url)
+    assert '域名' in str(error.value) and 'secret' not in str(error.value) and 'password' not in str(error.value)
+
+
+def test_erp_cdn_private_dns_and_redirect_still_rejected(monkeypatch):
+    import socket
+    import httpx
+    from catalog.listing_vision import allowed_image_url,fetch_image
+    url='https://ps-cdn-s3.datacaciques.com/product.jpg'
+    monkeypatch.setattr(socket,'getaddrinfo',lambda *a,**k:[(socket.AF_INET,socket.SOCK_STREAM,6,'',('127.0.0.1',443))])
+    with pytest.raises(ListingAIError,match='内网'):allowed_image_url(url)
+    monkeypatch.setattr(socket,'getaddrinfo',lambda *a,**k:[(socket.AF_INET,socket.SOCK_STREAM,6,'',('1.1.1.1',443))])
+    calls=[]
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(302,headers={'location':'https://127.0.0.1/private'})
+    with pytest.raises(ListingAIError):fetch_image(url,httpx.MockTransport(handler))
+    assert len(calls)==1
+
+
+def test_image_failure_diagnostics_include_host_and_http_status_not_query(monkeypatch):
+    import socket
+    import httpx
+    from catalog.listing_vision import allowed_image_url,fetch_image
+    with pytest.raises(ListingAIError,match='unknown.example') as error:
+        allowed_image_url('https://unknown.example/a.jpg?token=private-token')
+    assert 'private-token' not in str(error.value)
+    monkeypatch.setattr(socket,'getaddrinfo',lambda *a,**k:[(socket.AF_INET,socket.SOCK_STREAM,6,'',('1.1.1.1',443))])
+    with pytest.raises(ListingAIError,match='HTTP 403') as error:
+        fetch_image('https://pg-cdn-a2.datacaciques.com/a.jpg?token=private-token',
+                    httpx.MockTransport(lambda r:httpx.Response(403)))
+    assert 'pg-cdn-a2.datacaciques.com' in str(error.value) and 'private-token' not in str(error.value)
+
+
+def test_erp_image_failure_recovers_exact_asin_without_overwriting_prices(local, monkeypatch):
+    from catalog.source_images import recover_imported_images
+    c,catalog=local;p=detail(c);child=p['variants'][0];calls=[]
+    def quote(asin,fetch):
+        calls.append(asin)
+        return gallery(asin), {'price':'999'}, 'server'
+    monkeypatch.setattr('catalog.source_capture.collect_quote_page',quote)
+    monkeypatch.setattr('catalog.listing_vision.fetch_image',lambda url:picture())
+    initial=dict(state='failed',images=[],saved=[],failures=[dict(index=1,reason='HTTP 424')],message='图片下载失败')
+    item=dict(source='Amazon',listing_id=p['id'])
+    result=recover_imported_images(catalog,item,child,['https://ps-cdn-s3.datacaciques.com/dead.jpg'],initial)
+    assert result['state']=='complete' and result['recovery']=='amazon_current_asin'
+    assert calls==[child['asin']] and c.get(result['images'][0]).status_code==200
+    assert detail(c)==p  # Recovery is scoped to the listing gallery; no price/product overlay mutations.
+    assert recover_imported_images(catalog,item,child,['https://ps-cdn-s3.datacaciques.com/dead.jpg'],result)==result
+    assert len(calls)==1
+
+
+def test_erp_recovery_captcha_does_not_loop_or_borrow_other_sku(local, monkeypatch):
+    from catalog.source_images import recover_imported_images
+    from catalog.images import HumanVerificationRequired
+    c,catalog=local;p=detail(c);child=p['variants'][0];calls=[]
+    def quote(asin,fetch):calls.append(asin);raise HumanVerificationRequired('captcha')
+    monkeypatch.setattr('catalog.source_capture.collect_quote_page',quote)
+    initial=dict(state='failed',images=[],saved=[],failures=[],message='HTTP 424')
+    item=dict(source='Amazon',listing_id=p['id']);urls=['https://pg-cdn-a2.datacaciques.com/dead.jpg']
+    result=recover_imported_images(catalog,item,child,urls,initial)
+    assert len(calls)==1 and result['state']=='failed' and '人机验证' in result['message']
+    recover_imported_images(catalog,item|{'source':'Saleyee'},child,urls,initial)
+    recover_imported_images(catalog,item,child|{'asin':''},urls,initial)
+    assert len(calls)==1 and detail(c)==p
