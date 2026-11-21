@@ -212,3 +212,24 @@ def test_conflicting_current_prices_keep_original_currency_and_explain_candidate
     assert result['original_price'] == result['basis_price'] == '89.99'
     assert result['currency'] == 'USD'
     assert any('85.49' in issue and '76.49' in issue for issue in result['issues'])
+
+
+@pytest.mark.parametrize('references,state', [('', 'not_displayed'),
+    ('<span class="a-text-price"><span class="a-offscreen">$149.99</span></span>', 'verified'),
+    ('<span class="a-text-price"><span class="a-offscreen">$149.99 $159.99</span></span>', 'ambiguous')])
+def test_absent_reference_is_distinct_from_conflicting_reference(references,state):
+    html=page(content='<div id="corePrice_feature_div"><span class="a-price"><span class="a-offscreen">$143.99</span></span>'+references+'</div>')
+    result=amazon_source(html,'B000000000')
+    assert result['original_price_state']==state
+    assert result['price']=='143.99'
+
+
+def test_verified_ordinary_offer_does_not_require_browser_retry(monkeypatch):
+    from catalog.source_capture import collect_quote_page
+    monkeypatch.setenv('CATALOG_AMAZON_BROWSER_PYTHON','configured')
+    def unexpected(asin): raise AssertionError('Verified quote should not need another browser fetch')
+    monkeypatch.setattr('catalog.amazon_browser.fetch_page',unexpected)
+    content=offer(price='143.99').replace('<span class="a-price a-text-price"><span class="a-offscreen">$43.99</span></span>','')
+    _,quote,method=collect_quote_page('B000000000',lambda asin:page(asin,content))
+    assert method=='server' and quote['price']=='143.99'
+    assert quote['original_price'] is None

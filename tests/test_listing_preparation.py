@@ -612,3 +612,18 @@ def test_worker_recovers_queued_repair_and_tracks_completion(publishing,monkeypa
         assert db.execute('SELECT state FROM listing_result_tasks').fetchone()[0]=='complete'
         assert db.execute('SELECT count(*) FROM listing_generation_jobs').fetchone()[0]==1
     assert len(remote.posts)==1 and not remote.stock
+
+
+@pytest.mark.parametrize('color,conflict', [('Black',False),('White',True)])
+def test_rewritten_amazon_copy_is_not_identity_conflict_but_specs_are(color,conflict):
+    source={'source':'Amazon','sku':'W1'};item={'listing_id':'one','category':'Chair'}
+    variant={'sku':'W1','asin':'B012345678','content':{'copy':{'title':'Own brand chair'},'attributes':{'Color':'Black'}}}
+    collected={'content.copy':{'title':'Source chair'},'content.attributes':{'Color':color}}
+    facts,report=supplement_facts(None,source,item,variant,SimpleNamespace(settings=SimpleNamespace(supplement=True)),collected)
+    assert (report['state']=='conflict')==conflict
+    assert report['copy_differences']==['.content.copy.title']
+    assert facts['content.copy']['title']=='Own brand chair'
+    assert facts['amazon_live_copy']['title']=='Source chair'
+    if conflict:
+        assert report['conflicts']==['.content.attributes.Color']
+        assert 'Color' in report['message']

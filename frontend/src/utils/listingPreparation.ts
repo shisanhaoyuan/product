@@ -10,12 +10,8 @@ export function shouldPrepareOnEntry(doc: ListingDocument | null, job: Generatio
   );
   if (!editable.length) return false;
   if (!job && !doc.basis.items.some((item) => item.reuse_template)) return true;
-  return editable.some((row) => {
-    const item = doc.basis.items.find((item) => item.listing_id === row.listing_id);
-    if (item?.source !== 'Amazon') return false;
-    const price = Number(row.orderable.price);
-    if (!Number.isFinite(price) || price <= 0) return true;
-    const variant = item.variants.find((v) => v.platform_sku === row.platform_sku);
-    return !!variant?.capture_required && !doc.source_price_reviews?.[row.platform_sku];
-  });
+  // Entering an editable Amazon listing refreshes quotes before generating its fields.
+  return editable.some((row) =>
+    doc.basis.items.some((item) => item.listing_id === row.listing_id && item.source === 'Amazon'),
+  );
 }

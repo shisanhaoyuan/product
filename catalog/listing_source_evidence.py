@@ -70,6 +70,7 @@ def supplement_facts(catalog,source,item,variant,ai,amazon_details_data=None):
         else:
             return facts,dict(state='unavailable',message='该来源暂未配置定向补采适配器')
         conflicts=[]
+        copy_differences=[]
         def merge(old,new,path):
             if isinstance(old,dict) and isinstance(new,dict):
                 result=copy.deepcopy(old)
@@ -79,14 +80,24 @@ def supplement_facts(catalog,source,item,variant,ai,amazon_details_data=None):
             if empty(old):
                 return new
             if not empty(new) and old!=new:
-                conflicts.append(path)
+                if source['source'].casefold() == 'amazon' and path.startswith('.content.copy.'):
+                    # ERP copy is deliberately rewritten for the target brand/store.
+                    # Keep it and expose live copy separately; it is not an identity conflict.
+                    copy_differences.append(path)
+                else:
+                    conflicts.append(path)
             return old
         result=merge(facts,collected,'')
+        if copy_differences:
+            result['amazon_live_copy'] = copy.deepcopy(collected.get('content.copy', {}))
         # Record supplemental facts independently; do not silently rebase prices,
         # source timestamps or the existing prelisting business snapshot.
         return result,dict(state='conflict' if conflicts else 'complete',conflicts=conflicts[:40],
+            copy_differences=copy_differences[:40],
             digest=fingerprint(collected),facts=collected,
-            message='补采结果与已有来源有差异，需刷新该 SKU 来源后重新生成' if conflicts else '同 SKU 补采完成；价格库存仍按冻结快照校验')
+            message=('补采规格与已有来源不同：' + '、'.join(p.removeprefix('.content.attributes.') for p in conflicts[:10]) + '；请核对这些字段后刷新来源'
+                     if conflicts else '同 ASIN 文案存在改写差异，已保留商品库文案并附上来源原文；不影响图片核验和生成'
+                     if copy_differences else '同 SKU 补采完成；价格库存仍按冻结快照校验'))
     except HumanVerificationRequired:
         return facts,dict(state='verification_required',message='来源需要人工验证，请在商品档案完成来源采集后重新生成',
             listing_id=item['listing_id'],source_sku=variant['sku'],asin=variant.get('asin',''))

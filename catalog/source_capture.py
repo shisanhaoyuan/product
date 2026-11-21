@@ -188,6 +188,7 @@ def parse_offer(root, scope):
         price = original = shipping = None
     return dict(seller=sellers[0] if len(sellers) == 1 else None, price=price,
                 original_price=original, basis_price=original or price, shipping=shipping,
+                original_price_state=('verified' if original else 'ambiguous' if originals else 'not_displayed'),
                 delivery=delivery or None, currency='USD' if price or original else None,
                 offer_scope=scope, price_text=' | '.join(prices), shipping_text=delivery)
 
@@ -262,6 +263,7 @@ def amazon_source(html, asin):
 def collect_quote_page(asin, fetch):
     """One HTTP attempt, then at most one configured background browser attempt."""
     from .amazon_browser import configured, fetch_page
+    from .amazon_pricing import regular_price_basis
     trigger = 'dynamic_offer'
     try:
         html=fetch(asin)
@@ -271,7 +273,8 @@ def collect_quote_page(asin, fetch):
             raise
         trigger = 'http_verification'
     else:
-        if not configured() or (quote.get('status') != 'browser_required' and quote.get('original_price')
+        if not configured() or (quote.get('status') != 'browser_required'
+                                and (quote.get('original_price') or (quote.get('price') and regular_price_basis(quote)))
                                 and re.search(r'\b10001\b',quote.get('delivery_location') or '')):
             return html,quote,'server'
     html=fetch_page(asin)

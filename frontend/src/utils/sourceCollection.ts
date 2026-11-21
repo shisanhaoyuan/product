@@ -122,7 +122,12 @@ export function hasCapturedPrice(
   return (
     !!record &&
     record.asin === asin &&
-    Number(record.original_price) > 0 &&
+    (Number(record.original_price) > 0 ||
+      (!record.original_price &&
+        Number(record.price) > 0 &&
+        /^(main_offer|sellers_on_amazon_list:)/.test(record.offer_scope || '') &&
+        (record.original_price_state === 'not_displayed' ||
+          (!record.original_price_state && record.status === 'captured')))) &&
     record.currency === 'USD' &&
     /\b10001\b/.test(record.delivery_location || '')
   );

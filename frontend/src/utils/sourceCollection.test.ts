@@ -282,3 +282,26 @@ it('counts a verified original as the pricing basis even when current discounts 
   expect(hasCapturedPrice({ ...record, currency: 'CAD' }, record.asin)).toBe(false);
   expect(hasCapturedPrice(record, 'B000000002')).toBe(false);
 });
+
+it('accepts ordinary pricing only with a verified offer and absent reference price', async () => {
+  const { hasCapturedPrice } = await import('./sourceCollection');
+  const record = {
+    asin: 'B000000001',
+    status: 'captured',
+    source_url: '',
+    original_price: null,
+    price: '143.99',
+    currency: 'USD',
+    delivery_location: 'New York 10001',
+    offer_scope: 'main_offer',
+    original_price_state: 'not_displayed',
+  } as const;
+  expect(hasCapturedPrice(record, record.asin)).toBe(true);
+  expect(hasCapturedPrice({ ...record, original_price_state: 'ambiguous' }, record.asin)).toBe(
+    false,
+  );
+  expect(hasCapturedPrice({ ...record, offer_scope: '' }, record.asin)).toBe(false);
+  expect(hasCapturedPrice({ ...record, delivery_location: 'Seattle 98101' }, record.asin)).toBe(
+    false,
+  );
+});

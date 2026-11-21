@@ -95,7 +95,12 @@ def start_job(catalog, publisher, bid, actor_id=None, ai=None, schedule=True):
             version=stored['version'],rules=RULES_VERSION,model=vision_identity(ai),feedback=latest_results(db,bid),
             features=[getattr(ai.settings,'vision',False),getattr(ai.settings,'supplement',False)],resources=resource_digest(db,bound),
             schemas=schema_digests,partner=bound['partner_id'],binding_revision=bound['revision']))
-        if (prior and prior['state']=='complete' and prior['input_hash']==identity
+        # A new Amazon filling run must observe current quotes, even for identical inputs.
+        statuses=latest_results(db,bid)
+        amazon_editable=any(i.get('source')=='Amazon' and any(
+            statuses.get(v['platform_sku'],{}).get('status','unsubmitted') in EDITABLE
+            for v in i['variants']) for i in basis['items'])
+        if (not amazon_editable and prior and prior['state']=='complete' and prior['input_hash']==identity
                 and validation_current(db,stored,bound,json.loads(stored['validation_json']))
                 and all(r['state'] in ('complete','skipped') for r in json.loads(prior['report_json'])['rows'].values())):
             return public_job(prior)
@@ -267,6 +272,9 @@ def run_job(catalog, publisher, jid, ai):
                             facts,detail_collection=supplement_facts(catalog,sources[item['listing_id']],item,variant,ai,collection['facts'])
                             if detail_collection.get('state')=='conflict':
                                 collection=detail_collection
+                            elif detail_collection.get('copy_differences'):
+                                collection = collection | {'copy_differences': detail_collection['copy_differences'],
+                                                           'message': detail_collection['message']}
                         else:
                             facts=source_facts(sources[item['listing_id']],item,variant)
                     else:

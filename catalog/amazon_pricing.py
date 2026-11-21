@@ -1,7 +1,16 @@
-"""Amazon prelisting uses the captured original price, never a marked-up ERP price."""
+"""Amazon prelisting uses the captured reference price or verified ordinary offer."""
 import json
 import re
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+
+
+def regular_price_basis(facts):
+    """No reference price shown: use the verified ordinary offer, never a guess."""
+    return (facts.get('original_price') in (None, '') and facts.get('currency') == 'USD'
+            and not facts.get('offer_ambiguous')
+            and (facts.get('original_price_state') == 'not_displayed'
+                 or (not facts.get('original_price_state') and facts.get('status') == 'captured'))
+            and facts.get('offer_scope', '').startswith(('main_offer', 'sellers_on_amazon_list:')))
 
 
 def price_plan(db, listing_id, product, variant, multiplier):
@@ -9,7 +18,7 @@ def price_plan(db, listing_id, product, variant, multiplier):
     asin = variant.get('asin')
     child = bool(product.get('variants'))
     sku = variant['sku'] if child else ''
-    result = dict(base=None, landed=None, original=None, price=None, error='',
+    result = dict(base=None, landed=None, original=None, price=None, source_price=None, error='',
                   price_basis='amazon_captured_original_v1', capture_required=False,
                   capture_sku=sku)
     try:
@@ -30,13 +39,20 @@ def price_plan(db, listing_id, product, variant, multiplier):
             raise ValueError('来源配送地区尚未核验为 10001，请重新采集')
         if facts.get('currency') not in (None, '', 'USD') or facts.get('offer_ambiguous'):
             raise ValueError('来源报价币种或报价归属异常，请重新采集')
-        if facts.get('original_price') in (None, ''):
+        try:
+            result['source_price'] = f"{money(facts.get('price')):.2f}"
+        except (ValueError, InvalidOperation):
+            pass
+        ordinary = regular_price_basis(facts)
+        if facts.get('original_price') in (None, '') and not ordinary:
             raise ValueError('缺少来源采集原价，请采集卖家与报价后重新计算')
-        original = money(facts['original_price'])
+        original = money(facts.get('price') if ordinary else facts['original_price'])
         final = (original * multiplier).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
         money(final)
         result.update(base=f'{original:.2f}', original=f'{original:.2f}', price=f'{final:.2f}')
-        # Informational only: shipping/current offer never changes this pricing base.
+        if ordinary:
+            result.update(original=None, price_basis='amazon_regular_no_reference_v1')
+        # Landed cost is informational; shipping is not added to the pricing base.
         try:
             landed = money(facts.get('price')) + money(facts.get('shipping'), zero=True)
             result['landed'] = f'{landed:.2f}'

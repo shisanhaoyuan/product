@@ -33,6 +33,7 @@ export interface SourceCapture {
   variant_sku?: string;
   seller?: string | null;
   price?: string | null;
+  original_price_state?: 'verified' | 'ambiguous' | 'not_displayed';
   original_price?: string | null;
   basis_price?: string | null;
   currency?: string | null;
@@ -298,6 +299,7 @@ export interface PricePlan {
   };
   asin: string;
   current_price: string | null;
+  source_price?: string | null;
   stock: string | null;
   base: string | null;
   landed: string | null;

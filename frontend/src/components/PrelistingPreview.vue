@@ -62,11 +62,9 @@ defineProps<{ preview: PrelistingPreview }>();
           item.source === 'Saleyee' ? '采购价（不另加运费）' : '（来源商品单价 ＋ 配送运费）'
         }}× {{ preview.multiplier }}，结果保留两位小数。
       </p>
-      <p
-        v-if="item.variants.some((v) => v.price_basis === 'amazon_captured_original_v1')"
-        class="subtitle"
-      >
-        计算规则：来源采集原价 × {{ preview.multiplier }}，四舍五入保留两位小数。
+      <p v-if="item.variants.some((v) => v.price_basis?.startsWith('amazon_'))" class="subtitle">
+        计算规则：本次来源原价（无划线原价则用普通售价）×
+        {{ preview.multiplier }}，四舍五入保留两位小数。
       </p>
       <div class="table-scroll">
         <table class="data-table">
@@ -75,13 +73,21 @@ defineProps<{ preview: PrelistingPreview }>();
               <th>SKU / ASIN</th>
               <th>目标店铺 SKU</th>
               <th>预上架编码</th>
-              <th>{{ isSupplier(item.source) ? '来源商品单价' : '当前售价' }}</th>
+              <th>
+                {{
+                  isSupplier(item.source)
+                    ? '来源商品单价'
+                    : item.source === 'Amazon'
+                      ? '本次来源售价'
+                      : '当前售价'
+                }}
+              </th>
               <th>来源含运费</th>
               <th>
                 {{
                   isSupplier(item.source)
                     ? '配送运费'
-                    : item.variants.some((v) => v.price_basis === 'amazon_captured_original_v1')
+                    : item.variants.some((v) => v.price_basis?.startsWith('amazon_'))
                       ? '来源采集原价'
                       : '历史 ERP 原价'
                 }}
@@ -117,10 +123,25 @@ defineProps<{ preview: PrelistingPreview }>();
                 <span v-else-if="v.assigned_identifier" class="muted">创建批次时随机分配</span>
                 <span v-else class="muted">{{ v.content?.ean || '未填写' }}</span>
               </td>
-              <td>{{ money(isSupplier(item.source) ? v.unit_price : v.current_price) }}</td>
+              <td>
+                {{
+                  money(
+                    isSupplier(item.source)
+                      ? v.unit_price
+                      : item.source === 'Amazon'
+                        ? v.source_price
+                        : v.current_price,
+                  )
+                }}
+              </td>
               <td>{{ money(v.landed) }}</td>
               <td>{{ money(isSupplier(item.source) ? v.shipping_fee : v.original) }}</td>
-              <td>{{ money(v.base) }}</td>
+              <td>
+                {{ money(v.base)
+                }}<small v-if="v.price_basis === 'amazon_regular_no_reference_v1'" class="muted"
+                  >无划线原价 · 采用普通售价</small
+                >
+              </td>
               <td>
                 <strong>{{ money(v.price) }}</strong>
                 <p v-if="v.error" class="seller-risk-label">{{ v.error }}</p>

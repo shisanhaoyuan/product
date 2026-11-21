@@ -20,13 +20,13 @@ function document(): ListingDocument {
 const completed = { state: 'complete' } as GenerationJob;
 
 describe('automatic preparation on editor entry', () => {
-  it('retries missing quotes/prices even when an earlier generation result exists', () => {
+  it('refreshes quotes even when historical prices and completed generation exist', () => {
     const doc = document();
     expect(shouldPrepareOnEntry(doc, completed)).toBe(true);
     doc.rows[0]!.orderable.price = 102.05;
     expect(shouldPrepareOnEntry(doc, completed)).toBe(true);
     doc.basis.items[0]!.variants[0]!.capture_required = false;
-    expect(shouldPrepareOnEntry(doc, completed)).toBe(false);
+    expect(shouldPrepareOnEntry(doc, completed)).toBe(true);
   });
   it('does not duplicate active jobs or touch submitted rows', () => {
     const doc = document();
@@ -37,18 +37,18 @@ describe('automatic preparation on editor entry', () => {
       expect(shouldPrepareOnEntry(doc, completed)).toBe(false);
     }
   });
-  it('respects manually verified prices and usable reused templates', () => {
+  it('refreshes quotes for manually verified prices and reused templates too', () => {
     const doc = document();
     doc.rows[0]!.orderable.price = 102.05;
     doc.source_price_reviews = { sku: { price: 102.05, actor_id: null, at: '' } };
-    expect(shouldPrepareOnEntry(doc, completed)).toBe(false);
+    expect(shouldPrepareOnEntry(doc, completed)).toBe(true);
     doc.rows[0]!.orderable.price = 0;
     expect(shouldPrepareOnEntry(doc, completed)).toBe(true);
     doc.rows[0]!.orderable.price = 102.05;
     doc.basis.items[0]!.reuse_template = {} as NonNullable<
       (typeof doc.basis.items)[0]['reuse_template']
     >;
-    expect(shouldPrepareOnEntry(doc, null)).toBe(false);
+    expect(shouldPrepareOnEntry(doc, null)).toBe(true);
     delete doc.source_price_reviews;
     expect(shouldPrepareOnEntry(doc, null)).toBe(true);
   });

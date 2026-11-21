@@ -18,7 +18,7 @@ def positive(value):
         return False
 
 
-def refresh_amazon(catalog, db, doc, actor_id=None, job_id=None):
+def refresh_amazon(catalog, db, doc, actor_id=None, job_id=None, refreshed_sku=None):
     from .walmart_publishing import batch, document, fresh_basis, latest_results, EDITABLE
     old=json.loads(doc['basis_json'])
     if not any(i.get('source')=='Amazon' for i in old['items']):
@@ -39,8 +39,9 @@ def refresh_amazon(catalog, db, doc, actor_id=None, job_id=None):
                 continue
             previous=old_variants[row['platform_sku']];new=new_variants[row['platform_sku']]
             price=row['orderable'].get('price')
-            # Preserve deliberate positive prices; only fill blanks/zero or refresh a calculated value.
-            automatic=not positive(price) or (positive(previous.get('price')) and Decimal(str(price))==Decimal(str(previous['price'])))
+            # An explicit filling run recalculates its freshly captured SKU, including old manual prices.
+            # Other rows retain deliberate overrides; submitted rows are never changed.
+            automatic=row['platform_sku']==refreshed_sku or not positive(price) or (positive(previous.get('price')) and Decimal(str(price))==Decimal(str(previous['price'])))
             before=copy.deepcopy(row['orderable'])
             if automatic:
                 if positive(new.get('price')):
@@ -67,14 +68,12 @@ def collect_before_generation(catalog, job, report, progress, checked_context):
     with catalog.connect() as db:
         stored,_=checked_context(db,job)
         basis=json.loads(stored['basis_json']);statuses=latest_results(db,job['batch_id'])
-        from .listing_price_review import reviews
-        verified=reviews(db,stored)
     targets=[(i,v) for i in basis['items'] if i.get('source')=='Amazon' for v in i['variants']
-             if v.get('capture_required') and v['platform_sku'] not in verified and statuses.get(v['platform_sku'],{}).get('status','unsubmitted') in EDITABLE]
+             if statuses.get(v['platform_sku'],{}).get('status','unsubmitted') in EDITABLE]
     for index,(item,variant) in enumerate(targets):
         sku=variant['platform_sku'];asin=variant['asin']
         progress(sku,'collecting',f'后台采集报价 {index+1}/{len(targets)}：{variant["sku"]}')
-        captured=None
+        captured=None;method='generation_background'
         try:
             html,quote,method=collect_quote_page(asin,fetch_amazon_page)
             from .listing_source_evidence import amazon_details
@@ -95,12 +94,15 @@ def collect_before_generation(catalog, job, report, progress, checked_context):
                 outcome['wraith_test'] = exc.wraith_test
         except (ValueError, OSError, ListingAIError) as exc:
             outcome=dict(state='failed',message='后台报价采集失败，继续 AI 填充；'+str(exc)[:200],asin=asin)
+        if captured is None:
+            # Record this failed attempt so an old successful quote cannot masquerade as fresh.
+            captured=dict(status='verification_required', asin=asin, issues=[outcome['message']])
         with catalog.connect() as db:
             write_lock(db);stored,_=checked_context(db,job)
-            if captured is not None and (captured.get('status') in ('captured','partial') or captured['image_collection']['images']):
+            if captured is not None and (captured.get('status') in ('captured','partial','verification_required','browser_required') or (captured.get('image_collection') or {}).get('images')):
                 save_capture(catalog,db,item['listing_id'],variant.get('capture_sku') or None,asin,captured,
                              job.get('actor_id'),f'https://www.amazon.com/dp/{asin}?th=1&psc=1','wraith_background' if method=='wraith_background' else 'generation_background')
-                stored=refresh_amazon(catalog,db,stored,job.get('actor_id'),job['id'])
+                stored=refresh_amazon(catalog,db,stored,job.get('actor_id'),job['id'],sku)
                 job['revision']=stored['revision']
             if outcome.get('image_collection'):
                 report['rows'][sku]['image_collection']=outcome['image_collection']

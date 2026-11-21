@@ -88,5 +88,29 @@ def test_original_is_multiplier_basis_even_with_discount_or_ambiguous_current(lo
         result = price_plan(db, row['id'], p, v, Decimal('1.4'))
         assert result['base'] == result['original'] == '89.99'
         assert result['price'] == '125.99'
+        assert result['source_price'] == current
         assert result['landed'] == ('85.49' if current else None)
         assert not result['capture_required']
+
+
+@pytest.mark.parametrize('state,scope,expected', [
+    ('not_displayed','main_offer','201.59'),
+    ('not_displayed','sellers_on_amazon_list:1','201.59'),
+    ('ambiguous','main_offer',None),
+    ('not_displayed','',None),
+])
+def test_ordinary_price_only_when_reference_absent_and_offer_verified(local,state,scope,expected):
+    _,catalog=local
+    with catalog.connect() as db:
+        row=db.execute("SELECT id,data_json FROM listings WHERE external_id='item-0'").fetchone()
+        p=json.loads(row['data_json']);v=p['variants'][0]
+        capture(db,row['id'],v['sku'],v['asin'],original=None,price='143.99',
+                status='captured',original_price_state=state,offer_scope=scope)
+        result=price_plan(db,row['id'],p,v,Decimal('1.4'))
+        assert result['price']==expected
+        assert result['original'] is None
+        if expected:
+            assert result['price_basis']=='amazon_regular_no_reference_v1'
+            assert result['base']=='143.99'
+        else:
+            assert result['capture_required']

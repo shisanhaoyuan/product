@@ -46,6 +46,9 @@ const facts = computed(() => [
   ['运费 · USD', record.value?.shipping != null ? money(record.value.shipping) : '未核验'],
   ['配送时间', record.value?.delivery || '未核验'],
   ...(record.value?.original_price ? [['计价原价 · USD', money(record.value.original_price)]] : []),
+  ...(!record.value?.original_price && hasCapturedPrice(record.value, props.asin)
+    ? [['计价基数 · 无划线原价', money(record.value!.price)]]
+    : []),
   ...(record.value?.delivery_location ? [['配送地区', record.value.delivery_location]] : []),
 ]);
 watch(
@@ -127,7 +130,7 @@ async function capture(reuse = false, missingOnly = false, manual = false) {
         },
       );
       if (result.errors.length) error.value = result.errors.join('；');
-      progress.value = `本次取得 ${result.collected} 条商品／子 SKU 记录，其中 ${result.verifiedPrices} 条已核验计价原价`;
+      progress.value = `本次取得 ${result.collected} 条商品／子 SKU 记录，其中 ${result.verifiedPrices} 条已核验计价基数`;
     }
     if (request.signal.aborted) return;
     try {
@@ -190,7 +193,7 @@ onBeforeUnmount(() => controller?.abort());
       本机与服务器分别保存浏览器状态，清除 Cookie 后可能需要重新设置。
     </p>
     <p v-if="record?.original_price" class="muted">
-      预上架售价 = 计价原价 × 倍率；来源售价单独保留，不参与倍率计算。
+      预上架售价 = 计价原价 × 倍率；没有划线原价时采用已核验的普通售价。
     </p>
     <p v-if="busy" class="muted" role="status">
       {{ progress || '正在后台采集卖家、原价和图片…' }}
