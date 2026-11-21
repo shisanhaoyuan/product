@@ -188,7 +188,7 @@ def parse_offer(root, scope):
         price = original = shipping = None
     return dict(seller=sellers[0] if len(sellers) == 1 else None, price=price,
                 original_price=original, basis_price=original or price, shipping=shipping,
-                delivery=delivery or None, currency='USD' if price else None,
+                delivery=delivery or None, currency='USD' if price or original else None,
                 offer_scope=scope, price_text=' | '.join(prices), shipping_text=delivery)
 
 
@@ -248,7 +248,9 @@ def amazon_source(html, asin):
             issues.append('尚未切换到可核验的普通报价')
     for key, label in [('seller', '卖家'), ('price', '商品价格'), ('delivery', '配送时间'), ('shipping', '运费')]:
         if not result.get(key):
-            issues.append(f'{label}未能明确核验')
+            issues.append(('当前售价读取到多个金额：' + result['price_text'] + '；需区分普通价与会员价')
+                          if key == 'price' and ' | ' in result.get('price_text', '')
+                          else f'{label}未能明确核验')
     location = ' '.join(unique(n.text() for n in doc.ids('glow-ingress-line2', 'contextualIngressPtLabel_deliveryShortLine')))
     if not re.search(r'\b10001\b', location):
         issues.append('配送地区未核验为 10001；价格及配送信息仅作为当前网页记录')

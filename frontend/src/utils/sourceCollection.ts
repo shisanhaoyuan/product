@@ -123,7 +123,6 @@ export function hasCapturedPrice(
     !!record &&
     record.asin === asin &&
     Number(record.original_price) > 0 &&
-    Number(record.price) > 0 &&
     record.currency === 'USD' &&
     /\b10001\b/.test(record.delivery_location || '')
   );

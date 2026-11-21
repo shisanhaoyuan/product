@@ -203,3 +203,12 @@ def test_wraith_failed_experiment_is_readable_without_overwriting_product(local,
     assert client.get(path, params={'variant_sku':child}).json()['wraith_test']==response['wraith_test']
     assert client.get(path).json() is None
     assert detail(client)==before
+
+
+def test_conflicting_current_prices_keep_original_currency_and_explain_candidates():
+    content = offer(price='85.49', original='89.99') + '<div id="corePrice_feature_div"><span class="a-offscreen">$76.49</span></div>'
+    result = amazon_source(page(content=content), 'B000000000')
+    assert result['price'] is None
+    assert result['original_price'] == result['basis_price'] == '89.99'
+    assert result['currency'] == 'USD'
+    assert any('85.49' in issue and '76.49' in issue for issue in result['issues'])

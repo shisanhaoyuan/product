@@ -76,3 +76,17 @@ def test_auto_capture_overlay_does_not_invalidate_previously_complete_listing(lo
     item=next(i for i in preview['items'] if i['sku']=='parent-0')
     assert item['status']=='ready', item['errors']
     assert item['variants'][0]['price']=='102.05'
+
+
+@pytest.mark.parametrize('current', ['85.49', None])
+def test_original_is_multiplier_basis_even_with_discount_or_ambiguous_current(local, current):
+    _, catalog = local
+    with catalog.connect() as db:
+        row = db.execute("SELECT id,data_json FROM listings WHERE external_id='item-0'").fetchone()
+        p = json.loads(row['data_json']); v = p['variants'][0]
+        capture(db, row['id'], v['sku'], v['asin'], original='89.99', price=current, shipping='0.00')
+        result = price_plan(db, row['id'], p, v, Decimal('1.4'))
+        assert result['base'] == result['original'] == '89.99'
+        assert result['price'] == '125.99'
+        assert result['landed'] == ('85.49' if current else None)
+        assert not result['capture_required']

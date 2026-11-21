@@ -265,3 +265,20 @@ it('reuses the selected local browser on subsequent products and can switch back
     vi.unstubAllGlobals();
   }
 });
+
+it('counts a verified original as the pricing basis even when current discounts conflict', async () => {
+  const { hasCapturedPrice } = await import('./sourceCollection');
+  const record = {
+    asin: 'B000000001',
+    status: 'partial',
+    source_url: '',
+    original_price: '89.99',
+    price: null,
+    currency: 'USD',
+    delivery_location: 'New York 10001',
+  } as const;
+  expect(hasCapturedPrice(record, record.asin)).toBe(true);
+  expect(hasCapturedPrice({ ...record, original_price: null }, record.asin)).toBe(false);
+  expect(hasCapturedPrice({ ...record, currency: 'CAD' }, record.asin)).toBe(false);
+  expect(hasCapturedPrice(record, 'B000000002')).toBe(false);
+});

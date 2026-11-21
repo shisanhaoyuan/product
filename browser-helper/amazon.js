@@ -42,15 +42,34 @@
       return '';
     }
     if (panel && [...panel.parentElement.querySelectorAll('[aria-busy="true"], .a-spinner-wrapper')].some(visible)) return '';
+
+    function excludedOfferNode(node) {
+      for (let current = node; current; current = current.parentElement) {
+        if (/primeSavings|recommend|sponsored/i.test(current.id || '')) return true;
+        const style = getComputedStyle(current);
+        if (current.hidden || style.display === 'none' || style.visibility === 'hidden') return true;
+      }
+      return false;
+    }
+    function offerClone(node) {
+      const clone = node.cloneNode(true);
+      const originals = [...node.querySelectorAll('*')];
+      const copies = [...clone.querySelectorAll('*')];
+      originals.forEach((child, index) => {
+        if (excludedOfferNode(child)) copies[index].remove();
+      });
+      return clone;
+    }
+
     const wrapper = document.createElement('section');
     wrapper.id = 'catalog-main-offer';
     const selectors = ['#corePriceDisplay_desktop_feature_div', '#corePrice_feature_div',
       '#desktop_buybox', '#buybox', '#merchant-info', '#tabular-buybox', '#deliveryBlockMessage',
       '[id^="mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE"]'];
-    const nodes = [...new Set(selectors.flatMap(s => [...document.querySelectorAll(s)]))].filter(visible);
+    const nodes = [...new Set(selectors.flatMap(s => [...document.querySelectorAll(s)]))].filter(node => visible(node) && !excludedOfferNode(node));
     for (const node of nodes) {
       if (nodes.some(other => other !== node && other.contains(node))) continue;
-      wrapper.append(node.cloneNode(true));
+      wrapper.append(offerClone(node));
     }
     if (!wrapper.textContent.trim() && !panel) return '';
     for (const node of wrapper.querySelectorAll('script, style, [id*="recommend"], [id*="sponsored"], #aod-container, #all-offers-display')) node.remove();

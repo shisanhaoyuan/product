@@ -216,17 +216,36 @@ def collect_in_profile(asin, engine, report, profile):
     return '';
   }
 
+
+    function excludedOfferNode(node) {
+      for (let current = node; current; current = current.parentElement) {
+        if (/primeSavings|recommend|sponsored/i.test(current.id || '')) return true;
+        const style = getComputedStyle(current);
+        if (current.hidden || style.display === 'none' || style.visibility === 'hidden') return true;
+      }
+      return false;
+    }
+    function offerClone(node) {
+      const clone = node.cloneNode(true);
+      const originals = [...node.querySelectorAll('*')];
+      const copies = [...clone.querySelectorAll('*')];
+      originals.forEach((child, index) => {
+        if (excludedOfferNode(child)) copies[index].remove();
+      });
+      return clone;
+    }
+
           const selectors = ['input#ASIN', '#productTitle', '#feature-bullets', '#productDescription',
             '#productOverview_feature_div', '#productDetails_techSpec_section_1', '#productDetails_detailBullets_sections1',
             '#glow-ingress-line2', '#contextualIngressPtLabel_deliveryShortLine',
             '#corePriceDisplay_desktop_feature_div', '#corePrice_feature_div', '#desktop_buybox', '#buybox',
             '#merchant-info', '#tabular-buybox', '#deliveryBlockMessage',
             '[id^="mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE"]', '#aod-offer-list', '#aod-ingress-link'];
-          const nodes = [...new Set(selectors.flatMap(s => [...document.querySelectorAll(s)]))];
+          const nodes = [...new Set(selectors.flatMap(s => [...document.querySelectorAll(s)]))].filter(node => !excludedOfferNode(node));
           const root = document.createElement('section'); root.id = 'catalog-main-offer';
           for (const node of nodes) {
             if (nodes.some(other => other !== node && other.contains(node))) continue;
-            root.append(node.cloneNode(true));
+            root.append(offerClone(node));
           }
           for (const node of root.querySelectorAll('script, style, [id*="recommend"], [id*="sponsored"]')) node.remove();
           const gallery = [...document.scripts].map(script => initialGallery(script.textContent)).find(Boolean);

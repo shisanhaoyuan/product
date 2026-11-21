@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "商品库 · 人工验证助手",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "在本机打开 Amazon，由用户完成人机验证后返回当前 ASIN 图片或卖家、价格及配送信息。",
   "permissions": ["storage", "scripting", "activeTab", "alarms"],
   "host_permissions": ["https://www.amazon.com/*"],
