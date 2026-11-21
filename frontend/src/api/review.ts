@@ -17,6 +17,7 @@ export interface ReviewRow {
   status_label: string;
   message: string;
   errors: ListingResult['errors'];
+  stock_message?: string;
   stock_verified: boolean;
   published_status: string;
   created_at: string;

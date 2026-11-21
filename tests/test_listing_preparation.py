@@ -265,12 +265,12 @@ def test_result_worker_recovers_lease_is_readonly_and_never_resubmits(publishing
         db.execute("UPDATE listing_result_tasks SET state='running',token='crashed',lease_until=?,next_at=0 WHERE attempt_id=?",(int(time.time())-1,aid))
     count=len(remote.posts);assert tick(c.app)
     assert not remote.stock and len(remote.posts)==count
-    current=c.get(base).json();assert all(r['status']=='stock_pending' for r in current['results'].values())
+    current=c.get(base).json();assert all(r['status']=='published' and not r['stock_verified'] and r['stock_message'] for r in current['results'].values())
     assert all(r.method!='PUT' for r in remote.calls)
     manual=c.post(path);assert manual.status_code==200,manual.text
     assert all(r['status']=='published' for r in manual.json()['results'].values())
     with catalog.connect() as db:db.execute('UPDATE listing_result_tasks SET next_at=0 WHERE attempt_id=?',(aid,))
-    assert tick(c.app)
+    assert not tick(c.app)  # Publication is already confirmed; inventory reminders do not keep polling alive.
     task=c.get(base).json()['attempts'][0]['polling'];assert task['state']=='complete'
     assert len(remote.posts)==count
 

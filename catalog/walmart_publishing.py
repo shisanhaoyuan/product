@@ -993,7 +993,7 @@ def inventory_target(catalog,row):
         if age>MAX_SOURCE_AGE or age < -300:
             raise ValueError()
     except (ValueError,TypeError,KeyError):
-        raise WalmartError('来源库存已过期，请重新采集／同步该 SKU，再查询处理结果以核验库存') from None
+        raise WalmartError('来源库存超过 24 小时未更新，暂不自动写入；请同步来源后查询并同步库存。不影响平台发布状态') from None
     if item['source'] in ('GigaB2B', 'Saleyee'):
         if item['source'] == 'Saleyee':
             from .saleyee_prelisting import prepare
@@ -1050,16 +1050,37 @@ def _refresh_attempt(catalog,bid,aid,request,poll_token,*,sync_inventory=True):
                 if status!='SUCCESS':
                     results[sku]=dict(status='processing',message='沃尔玛正在处理或进行合规审核，请稍后查询',errors=errors)
                     continue
-                # Success means ingestion, not publication. Set only this exact SKU's frozen inventory.
+                # Publication is independent of source freshness and inventory synchronization.
                 previous=results.get(sku,{})
                 stock_done=previous.get('stock_verified') is True
+                try:
+                    item=remote.item(sku)
+                    candidate=item.get('ItemResponse',item.get('responseRecord',[]))
+                    if isinstance(candidate,dict):
+                        candidate=[candidate]
+                    if not isinstance(candidate,list) or len(candidate)!=1 or candidate[0].get('sku')!=sku:
+                        raise WalmartError('商品状态回读与目标 SKU 不一致')
+                    detail_item=candidate[0];published=detail_item.get('publishedStatus')
+                    if published=='PUBLISHED':
+                        results[sku]=dict(status='published',message='沃尔玛已确认商品发布成功',errors=[],stock_verified=stock_done)
+                    elif published=='UNPUBLISHED':
+                        reasons=detail_item.get('unpublishedReasons',{}).get('reason',[])
+                        results[sku]=dict(status='unpublished',message='商品资料已处理，但尚未发布；请查看平台原因',errors=upstream_reason([{'description':r} for r in reasons]),stock_verified=stock_done)
+                    else:
+                        results[sku]=dict(status='ingested',message='商品资料处理成功，等待平台发布',errors=[],stock_verified=stock_done)
+                    results[sku].update(published_status=published or '',wpid=detail.get('wpid',''),item_id=detail.get('itemid',''))
+                except WalmartError as exc:
+                    results[sku]=dict(status='ingested',message='资料已接收，平台发布状态暂未核实：'+str(exc),
+                                      errors=[],stock_verified=stock_done,
+                                      stock_message=previous.get('stock_message',''))
+                    continue
                 try:
                     if not stock_done:
                         with catalog.connect() as db:
                             claim=db.execute('SELECT attempt_id FROM walmart_listing_claims WHERE store_id=? AND platform_sku=?',(a['store_id'],sku)).fetchone()
                         if not claim or claim['attempt_id']!=aid:
                             # Historical attempts stay readable but cannot overwrite a newer retry's stock.
-                            results[sku]=previous | {'message':'此 SKU 已有较新提交，本历史记录不再写入库存'}
+                            results[sku]['stock_message']='此 SKU 已有较新提交，本历史记录不再写入库存'
                             continue
                         target=inventory_target(catalog,row)
                         node=row['fulfillment_center_id']
@@ -1084,23 +1105,9 @@ def _refresh_attempt(catalog,bid,aid,request,poll_token,*,sync_inventory=True):
                         if inventory.get('sku')!=sku or inventory.get('quantity',{}).get('amount')!=target:
                             raise WalmartError('库存写入后的回读与该 SKU 目标库存不一致，请再次同步结果')
                         stock_done=True
-                    item=remote.item(sku)
-                    candidate=item.get('ItemResponse',item.get('responseRecord',[]))
-                    if isinstance(candidate,dict):
-                        candidate=[candidate]
-                    if not isinstance(candidate,list) or len(candidate)!=1 or candidate[0].get('sku')!=sku:
-                        raise WalmartError('商品状态回读与目标 SKU 不一致')
-                    detail_item=candidate[0];published=detail_item.get('publishedStatus')
-                    if published=='PUBLISHED':
-                        results[sku]=dict(status='published',message='商品已发布，库存回读通过',errors=[],stock_verified=stock_done)
-                    elif published=='UNPUBLISHED':
-                        reasons=detail_item.get('unpublishedReasons',{}).get('reason',[])
-                        results[sku]=dict(status='unpublished',message='商品资料已处理，但尚未发布；请查看平台原因',errors=upstream_reason([{'description':r} for r in reasons]),stock_verified=stock_done)
-                    else:
-                        results[sku]=dict(status='ingested',message='商品资料处理成功，库存回读通过；等待平台发布',errors=[],stock_verified=stock_done)
-                    results[sku].update(published_status=published or '',wpid=detail.get('wpid',''),item_id=detail.get('itemid',''))
+                    results[sku].update(stock_verified=stock_done,stock_message='库存回读已通过')
                 except WalmartError as exc:
-                    results[sku]=dict(status='stock_pending' if not stock_done else 'ingested',message=str(exc),errors=[],stock_verified=stock_done)
+                    results[sku].update(stock_verified=stock_done,stock_message=str(exc))
             terminal=all(r.get('status') in ('failed','published','unpublished') for r in results.values())
             state='complete' if terminal else 'processing'
         with catalog.connect() as db:

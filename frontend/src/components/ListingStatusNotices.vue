@@ -59,12 +59,33 @@ const verifiedAt = computed(() => {
     >
       <span class="status-card-title"><AppIcon name="History" />沃尔玛处理状态</span>
       <p class="status-card-message">{{ result.message }}</p>
+      <p
+        v-if="result.stock_message"
+        class="status-card-stock"
+        :class="{ pending: !result.stock_verified }"
+      >
+        <strong>{{ result.stock_verified ? '库存已核验：' : '库存提醒：' }}</strong
+        >{{ result.stock_message }}
+      </p>
       <p class="status-card-note">当前状态下，暂不支持修改资料或重复提交。</p>
     </section>
   </div>
 </template>
 
 <style scoped>
+.status-card-stock {
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: #edf3f8;
+  color: #526d83;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.status-card-stock.pending {
+  background: #fff5e6;
+  color: #946526;
+}
+
 .listing-status-notices {
   display: grid;
   gap: 12px;

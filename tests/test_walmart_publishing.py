@@ -499,7 +499,7 @@ def test_old_attempt_cannot_write_inventory_after_new_retry_claims_sku(publishin
     assert response.status_code==200,response.text
     assert remote.stock[target]==0
     assert len([r for r in remote.calls if r.method=='PUT'])==writes
-    assert '较新提交' in response.json()['results'][target]['message']
+    assert '较新提交' in response.json()['results'][target]['stock_message']
     assert c.post(base+f"/attempts/{second['id']}/refresh").json()['results'][target]['status']=='published'
     assert remote.stock[target]==10
 

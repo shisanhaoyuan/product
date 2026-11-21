@@ -45,6 +45,7 @@ export interface Issue {
 export interface ListingResult {
   status: string;
   message: string;
+  stock_message?: string;
   stock_verified?: boolean;
   published_status?: string;
   errors: { code: string; message: string; original: string }[];

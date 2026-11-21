@@ -125,6 +125,7 @@ async function poll(rows: ReviewRow[]) {
             updated_at: result.updated_at,
             stock_verified: outcome.stock_verified === true,
             published_status: outcome.published_status || '',
+            stock_message: outcome.stock_message || '',
           };
       }
     } catch (e) {
@@ -280,6 +281,14 @@ onBeforeUnmount(() => {
             <td class="review-outcome">
               <span class="review-status" :class="tone(row.status)">{{ row.status_label }}</span>
               <p>{{ row.message }}</p>
+              <div
+                v-if="row.stock_message"
+                class="review-stock-note"
+                :class="{ pending: !row.stock_verified }"
+              >
+                <strong>{{ row.stock_verified ? '库存已核验' : '库存提醒' }}</strong>
+                <span>{{ row.stock_message }}</span>
+              </div>
               <WalmartResultReasons :errors="row.errors" />
               <small v-if="!row.binding_matches" class="warning">店铺绑定已变化，查询已保护</small
               ><small v-else-if="row.last_error" class="warning"
@@ -379,7 +388,12 @@ onBeforeUnmount(() => {
         <dt>结果更新时间</dt>
         <dd>{{ date(selected.updated_at) }}</dd>
         <dt>库存核验</dt>
-        <dd>{{ selected.stock_verified ? '已通过' : '尚未通过，进度查询不会修改库存' }}</dd>
+        <dd>
+          {{
+            selected.stock_message ||
+            (selected.stock_verified ? '已通过' : '尚未核验，进度查询不会修改库存')
+          }}
+        </dd>
         <dt>后台任务</dt>
         <dd>
           {{ pollingLabels[selected.polling_state || ''] || '未安排后台查询，可手动查询进度' }}
@@ -412,6 +426,22 @@ onBeforeUnmount(() => {
   </dialog>
 </template>
 <style scoped>
+.review-stock-note {
+  display: grid;
+  gap: 4px;
+  margin: 10px 0;
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: #edf3f8;
+  color: #526d83;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.review-stock-note.pending {
+  background: #fff5e6;
+  color: #946526;
+}
+
 .review-counters {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));

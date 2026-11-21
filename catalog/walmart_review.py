@@ -72,6 +72,7 @@ def public_row(record):
     item.pop('attempt_message', None)
     item['errors'] = result.get('errors') or []
     item['stock_verified'] = result.get('stock_verified') is True
+    item['stock_message'] = result.get('stock_message', '')
     item['published_status'] = result.get('published_status', '')
     item['status_label'] = LABELS[item['status']]
     item['is_latest'] = item.pop('position') == 1

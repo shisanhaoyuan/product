@@ -1,5 +1,6 @@
 """Queue is a read projection; polling cannot submit feeds or change inventory."""
 import json
+import pytest
 from fastapi.testclient import TestClient
 from catalog.app import create_app
 from catalog.prelisting import encoded
@@ -113,7 +114,7 @@ def test_readonly_poll_and_failed_poll_preserve_original_results(publishing):
     a=send(publishing,ready(publishing));before=catalog.export()
     response=c.post(f"/api/walmart-review/attempts/{a['id']}/refresh")
     assert response.status_code==200,response.text
-    assert all(r['status']=='stock_pending' for r in response.json()['results'].values())
+    assert all(r['status']=='published' and not r['stock_verified'] and r['stock_message'] for r in response.json()['results'].values())
     assert not any(r.method=='PUT' for r in remote.calls)
     assert len(remote.posts)==1 and catalog.export()==before
     old=queue(c)['items'];remote.owner_override='wrong'
@@ -167,3 +168,37 @@ def test_same_sku_across_stores_never_collapses_and_search_is_literal(publishing
     assert all(r['store_id']==sid and not r['can_refresh'] for r in queue(c,store_id=sid)['items'])
     assert queue(c,q='%')['total']==0 and queue(c,q='_')['total']==0
     assert 'payload_json' not in str(queue(c)) and 'encrypted_credentials' not in str(queue(c))
+
+
+@pytest.mark.parametrize('published', ['PUBLISHED', 'UNPUBLISHED', 'STAGE'])
+def test_stale_stock_does_not_hide_platform_status(publishing, published):
+    import httpx
+    from catalog.walmart_publishing_client import WalmartPublishingClient
+    c,catalog,_,_,_,base,remote=publishing
+    a=send(publishing,ready(publishing))
+    with catalog.connect() as db:
+        records=db.execute('SELECT id,data_json FROM listings').fetchall()
+        for record in records:
+            value=json.loads(record['data_json']);value['observed_at']='2020-01-01T00:00:00+00:00'
+            db.execute('UPDATE listings SET data_json=? WHERE id=?',(json.dumps(value),record['id']))
+    original=remote.handler
+    def handler(request):
+        if request.url.path.startswith('/v3/items/') and request.url.path != '/v3/items/spec':
+            sku=request.url.path.split('/')[-1]
+            return httpx.Response(200,json={'ItemResponse':[{'sku':sku,'publishedStatus':published,
+                'unpublishedReasons':{'reason':['Missing primary image']}}]})
+        return original(request)
+    c.app.state.walmart_publisher=WalmartPublishingClient(httpx.MockTransport(handler))
+    for path in (f"/api/walmart-review/attempts/{a['id']}/refresh", base+f"/attempts/{a['id']}/refresh"):
+        response=c.post(path)
+        assert response.status_code==200,response.text
+        for result in response.json()['results'].values():
+            assert result['published_status']==published
+            assert result['status']=={'PUBLISHED':'published','UNPUBLISHED':'unpublished','STAGE':'ingested'}[published]
+            assert not result['stock_verified']
+            assert '24 小时' in result['stock_message']
+            assert '过期' not in result['message']
+            if published=='UNPUBLISHED': assert result['errors']
+    assert not any(r.method=='PUT' for r in remote.calls)
+    assert len(remote.posts)==1
+    assert all('24 小时' in r['stock_message'] for r in queue(c)['items'])
