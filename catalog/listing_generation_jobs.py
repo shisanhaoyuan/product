@@ -274,6 +274,18 @@ def run_job(catalog, publisher, jid, ai):
                     entry['collection']=collection
                     if collection.get('state')=='conflict':
                         blockers.append(dict(path='',message=collection['message'],source_digest=item['source_digest']))
+                    progress(sku,'collecting',f'正在采集并保存 {sku} 的图片')
+                    from .source_images import collect_images, localize_row
+                    urls=[updated['visible'].get('mainImageUrl',''),
+                          *updated['visible'].get('productSecondaryImageURL',[]),
+                          *variant.get('content',{}).get('images',[])]
+                    image_collection=collect_images(catalog,item['listing_id'],variant['sku'],urls)
+                    entry['image_collection']=image_collection
+                    localize_row(updated,image_collection)
+                    # Feed AI the collected bytes, not a second download of the same external URL.
+                    variant=copy.deepcopy(variant)
+                    if image_collection['images']:
+                        variant.setdefault('content',{})['images']=image_collection['images']
                     progress(sku,'generating',f'正在生成 {sku} 刊登资料')
                     try:
                         pt,decision=choose_type(updated,item,facts,types,ai)
@@ -302,7 +314,10 @@ def run_job(catalog, publisher, jid, ai):
                         with catalog.connect() as db:
                             write_lock(db);checked_context(db,job);cache_put(db,bound,'spec',schema,stored['version'],pt)
                     try:
-                        visual,vision=image_evidence(catalog,updated,variant,ai,schema)
+                        if image_collection['images']:
+                            visual,vision=image_evidence(catalog,updated,variant,ai,schema)
+                        else:
+                            visual,vision=[],dict(state='failed',images=[],message=image_collection['message'])
                         entry['vision']=vision
                         if visual:
                             facts['visual_evidence']=[v for v in visual if v.get('attribute')!='listingImageRole']

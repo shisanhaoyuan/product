@@ -190,3 +190,41 @@ def test_confirmed_manual_price_is_not_collected_again(amazon,monkeypatch):
     assert status['state']=='complete',status
     assert all(row['orderable']['price']==87.47 for row in after['rows'])
     assert len(after['source_price_reviews'])==2
+
+
+def test_quote_and_image_collection_complete_before_ai_for_each_child(amazon,monkeypatch):
+    import io
+    from PIL import Image
+    c,catalog,_,_,_,base,_=amazon
+    fetched=[];downloads=[]
+    def fetch(asin):
+        fetched.append(asin)
+        return page(asin,offer())+f'<img id="landingImage" data-old-hires="https://m.media-amazon.com/images/I/{asin}.jpg">'
+    def download(url):
+        # Old invalid links fail; valid current-ASIN galleries replace them.
+        from catalog.listing_ai_client import ListingAIError
+        if not url.startswith('https://m.media-amazon.com/'):
+            raise ListingAIError('旧图片已失效')
+        downloads.append(url)
+        data=io.BytesIO()
+        Image.new('RGB',(800,800),'red' if '70.jpg' in url else 'blue').save(data,format='JPEG')
+        return data.getvalue()
+    monkeypatch.setattr('catalog.images.fetch_amazon_page',fetch)
+    monkeypatch.setattr('catalog.listing_vision.fetch_image',download)
+    ai=AI()
+    def hook():
+        assert len(fetched)==2 and len(downloads)==2
+        with catalog.connect() as db:
+            assert db.execute('SELECT COUNT(*) FROM image_assets').fetchone()[0]==2
+    ai.hook=hook
+    doc,status=execute(amazon,ai)
+    assert status['state']=='complete',status
+    urls=[r['visible']['mainImageUrl'] for r in doc['rows']]
+    assert len(set(urls))==2 and all(u.startswith('/api/products/images/assets/') for u in urls)
+    assert all(c.get(url).status_code==200 for url in urls)
+    assert all(r['image_collection']['images'] for r in status['report']['rows'].values())
+    assert len(downloads)==2  # No repeated external fetch during the image/AI stage.
+    for row in doc['rows']:
+        product=catalog.get(row['listing_id'])
+        child=next(v for v in product['variants'] if v['sku']==row['source_sku'])
+        assert child['images'][0]==row['visible']['mainImageUrl']

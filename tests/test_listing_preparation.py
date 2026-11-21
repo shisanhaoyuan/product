@@ -520,6 +520,7 @@ def test_all_ordinary_missing_fields_select_highest_valid_candidate_in_fill_and_
 
 
 def test_job_persists_same_sku_visual_bed_size_and_reopens(publishing,monkeypatch):
+    monkeypatch.setenv('CATALOG_PUBLIC_ORIGIN','https://catalog.example.test')
     c,catalog,*_,base,remote=publishing
     visible=sections(remote.schema,PT)['visible']
     visible['properties']['bedSize']={'type':'string','enum':['Twin','Full','Queen']}
@@ -532,16 +533,18 @@ def test_job_persists_same_sku_visual_bed_size_and_reopens(publishing,monkeypatc
         return [dict(attribute='bedSize',value=value,kind='visual_inference',confidence=.41,
             images=[row['source_sku']+'-image'],reason='按本 SKU 展开床面比例推测，非实测')],dict(state='complete')
     monkeypatch.setattr('catalog.listing_generation_jobs.image_evidence',visual)
+    monkeypatch.setattr('catalog.listing_vision.fetch_image',lambda url:png())
     source=catalog.export();before=c.get(base).json()
     doc,job=run(publishing)
     assert set(seen)=={'W1','W2'}
-    assert doc['validation']['valid_count']==2
+    assert doc['validation']['valid_count']==2,[r['errors'] for r in doc['validation']['rows'].values()]
     assert c.get(base).json()['rows']==doc['rows']
     for old,row in zip(before['rows'],doc['rows']):
         assert row['visible']['bedSize']==('Full' if row['source_sku']=='W1' else 'Queen')
         assert row['orderable']['price']==old['orderable']['price']
         assert row['identification']==old['identification']
-        assert row['visible']['mainImageUrl']==old['visible']['mainImageUrl']
+        assert row['visible']['mainImageUrl'].startswith('/api/products/images/assets/')
+        assert c.get(row['visible']['mainImageUrl']).status_code==200
         entry=job['report']['rows'][row['platform_sku']]
         assert entry['fields']['visible.bedSize']['confidence']==.41
     assert catalog.export()==source and not remote.posts and not remote.stock

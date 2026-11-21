@@ -114,6 +114,7 @@ it('skips already captured children and stops remaining child requests when canc
     price: '10',
     currency: 'USD',
     delivery_location: '10001',
+    image_collection: { images: ['/api/products/images/assets/' + 'a'.repeat(64)] },
   });
   const controller = new AbortController();
   const result = await collectProductSources(
@@ -137,4 +138,23 @@ it('skips already captured children and stops remaining child requests when canc
       vi.fn(),
     ),
   ).rejects.toThrow();
+});
+
+it('collects images for an older record even when its price is complete', async () => {
+  mock.read.mockResolvedValue({
+    asin: 'B000000001',
+    original_price: '20',
+    price: '10',
+    currency: 'USD',
+    delivery_location: '10001',
+  });
+  await collectProductSources(
+    'one',
+    [{ sku: 'red', asin: 'B000000001' }],
+    new AbortController().signal,
+    true,
+    vi.fn(),
+    vi.fn(),
+  );
+  expect(mock.capture).toHaveBeenCalledTimes(1);
 });

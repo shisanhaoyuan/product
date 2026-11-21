@@ -306,7 +306,7 @@ def source_routes(catalog):
         return v
 
     def save(lid, sku, asin, result, request, url, method):
-        if result['status'] == 'browser_required':
+        if result['status'] == 'browser_required' and not (result.get('image_collection') or {}).get('images'):
             return result | {'asin': asin, 'source_url': url}
         with catalog.connect() as db:
             write_lock(db)
@@ -328,13 +328,15 @@ def source_routes(catalog):
         asin = v['asin']
         url = f'https://www.amazon.com/dp/{asin}?th=1&psc=1'
         try:
-            _, result, method = collect_quote_page(asin, fetch_amazon_page)
+            html, result, method = collect_quote_page(asin, fetch_amazon_page)
         except HumanVerificationRequired as exc:
             return {'status': 'verification_required', 'asin': asin, 'source_url': url, 'issues': [str(exc)]}
         except ValueError as exc:
             raise HTTPException(502, str(exc)) from None
+        from .source_images import collect_amazon_images
+        result['image_collection'] = collect_amazon_images(catalog, lid, data.variant_sku, asin, html)
         if result['status'] == 'partial' and not data.background:
-            return {'status': 'browser_required', 'asin': asin, 'source_url': url}
+            result['status'] = 'browser_required'
         return save(lid, data.variant_sku, asin, result, request, url, method)
 
     @router.post('/{lid}/source-capture/sync')
@@ -373,6 +375,8 @@ def source_routes(catalog):
             result = amazon_source(data.html, v['asin'])
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
+        from .source_images import collect_amazon_images
+        result['image_collection'] = collect_amazon_images(catalog, lid, data.variant_sku, v['asin'], data.html)
         return save(lid, data.variant_sku, v['asin'], result, request, data.source_url, 'browser')
 
     return router

@@ -246,7 +246,13 @@ def image_routes(catalog, storage):
         if p['source'].casefold() != 'amazon' or not re.fullmatch('[A-Z0-9]{10}', v['asin']):
             raise HTTPException(422, '当前商品没有明确的 Amazon ASIN，不能推测抓取')
         try:
-            return fetch_amazon_images(v['asin'])
+            result = fetch_amazon_images(v['asin'])
+            from .source_images import collect_images
+            collection = collect_images(catalog, lid, data.variant_sku or '', result['images'])
+            result.update(images=collection['images'], image_collection=collection)
+            if not result['images']:
+                raise ValueError(collection['message'])
+            return result
         except HumanVerificationRequired:
             return {'status': 'verification_required', 'asin': v['asin'],
                     'source_url': f"https://www.amazon.com/dp/{v['asin']}?th=1&psc=1"}
@@ -269,7 +275,11 @@ def image_routes(catalog, storage):
             images = amazon_images(data.html, v['asin'])
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
-        return {'asin': v['asin'], 'source_url': data.source_url, 'images': images,
+        from .source_images import collect_images
+        collection = collect_images(catalog, lid, data.variant_sku or '', images)
+        if not collection['images']:
+            raise HTTPException(502, collection['message'])
+        return {'asin': v['asin'], 'source_url': data.source_url, 'images': collection['images'], 'image_collection': collection,
                 'fetched_at': datetime.now(timezone.utc).isoformat()}
 
     return router

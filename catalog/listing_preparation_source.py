@@ -79,21 +79,26 @@ def collect_before_generation(catalog, job, report, progress, checked_context):
             html,quote,method=collect_quote_page(asin,fetch_amazon_page)
             from .listing_source_evidence import amazon_details
             facts=amazon_details(html,asin)
+            progress(sku,'collecting',f'正在采集 {variant["sku"]} 的商品图片')
+            from .source_images import collect_amazon_images
+            quote['image_collection']=collect_amazon_images(catalog,item['listing_id'],variant['sku'],asin,html)
             captured=quote
             message=('后台报价采集完成' if quote['status']=='captured' else
                      '后台报价尚未完整核验；继续 AI 填充，售价可人工核对')
-            outcome=dict(state=quote['status'],message=message,asin=asin,facts=facts,method=method)
+            outcome=dict(state=quote['status'],message=message,asin=asin,facts=facts,method=method,image_collection=quote['image_collection'])
         except HumanVerificationRequired as exc:
             outcome=dict(state='verification_required',message=str(exc)+'；继续 AI 填充，售价可人工核对',asin=asin)
         except (ValueError, OSError, ListingAIError) as exc:
             outcome=dict(state='failed',message='后台报价采集失败，继续 AI 填充；'+str(exc)[:200],asin=asin)
         with catalog.connect() as db:
             write_lock(db);stored,_=checked_context(db,job)
-            if captured is not None and captured.get('status') in ('captured','partial'):
+            if captured is not None and (captured.get('status') in ('captured','partial') or captured['image_collection']['images']):
                 save_capture(catalog,db,item['listing_id'],variant.get('capture_sku') or None,asin,captured,
                              job.get('actor_id'),f'https://www.amazon.com/dp/{asin}?th=1&psc=1','wraith_background' if method=='wraith_background' else 'generation_background')
                 stored=refresh_amazon(catalog,db,stored,job.get('actor_id'),job['id'])
                 job['revision']=stored['revision']
+            if outcome.get('image_collection'):
+                report['rows'][sku]['image_collection']=outcome['image_collection']
             report['rows'][sku]['source_collection']=outcome
             db.execute('UPDATE listing_generation_jobs SET revision=?,report_json=?,updated_at=? WHERE id=?',
                        (job['revision'],encoded(report),int(time.time()),job['id']))

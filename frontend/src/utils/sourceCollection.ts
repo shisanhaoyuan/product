@@ -63,6 +63,10 @@ export function hasCapturedPrice(
   );
 }
 
+export function hasCollectedImages(record: import('../api/types').SourceCapture | null) {
+  return !!record?.image_collection?.images.length;
+}
+
 export async function collectProductSources(
   listingId: string,
   targets: { sku?: string; asin: string }[],
@@ -90,7 +94,7 @@ export async function collectProductSources(
         ? await catalogApi.sourceCapture(listingId, target.sku, signal)
         : null;
       signal.throwIfAborted();
-      if (old && hasCapturedPrice(old, target.asin)) {
+      if (old && hasCapturedPrice(old, target.asin) && hasCollectedImages(old)) {
         onRecord(target.sku, old);
         continue;
       }

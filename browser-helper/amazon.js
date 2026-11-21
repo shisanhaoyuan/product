@@ -75,7 +75,13 @@
         sourceStable = snippet && snippet === lastSource ? sourceStable + 1 : 0;
         lastSource = snippet;
         if (!snippet || sourceStable < 2) return;
-        const html = asinInput.outerHTML + snippet;
+        const gallery = [...document.scripts].map(script => initialGallery(script.textContent)).find(Boolean);
+        const landing = document.querySelector('img#landingImage');
+        const image = document.createElement('img'); image.id = 'landingImage';
+        for (const name of ['data-old-hires', 'data-a-dynamic-image']) {
+          if (landing?.hasAttribute(name)) image.setAttribute(name, landing.getAttribute(name));
+        }
+        const html = asinInput.outerHTML + snippet + image.outerHTML + (gallery ? `'colorImages': {'initial': ${gallery}}` : '');
         if (html.length > 6 * 1024 * 1024) return;
         const result = await chrome.runtime.sendMessage({ channel: 'catalog-capture-v1', action: 'page', asin, html });
         if (result?.accepted) clearInterval(timer);

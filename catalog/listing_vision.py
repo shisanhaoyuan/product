@@ -135,7 +135,9 @@ def image_evidence(catalog,row,variant,ai,schema=None):
     for url in urls:
         try:
             dimensions={}
-            digest,data=image_data(catalog,url,dimensions)
+            from .source_images import cached_image
+            local=cached_image(catalog,row['listing_id'],row['source_sku'],url) if not url.startswith('/api/products/images/assets/') else ''
+            digest,data=image_data(catalog,local or url,dimensions)
             url_digests[url]=digest
             width,height=dimensions['width'],dimensions['height']
             with catalog.connect() as db:
@@ -143,10 +145,12 @@ def image_evidence(catalog,row,variant,ai,schema=None):
                     (row['listing_id'],row['source_sku'],hashlib.sha256(url.encode()).hexdigest(),digest,width,height,int(time.time())))
             if digest not in [d for d,_ in images]:
                 images.append((digest,data))
-        except Exception:
-            failures.append('一张同 SKU 图片无法安全读取或校验')
+        except Exception as exc:
+            from fastapi import HTTPException
+            reason=str(exc) if isinstance(exc,ListingAIError) else str(exc.detail) if isinstance(exc,HTTPException) else '下载失败或图片文件无效'
+            failures.append('同 SKU 图片读取失败：'+reason)
     if not images:
-        return [],dict(state='failed',images=[],message='图片读取失败，请补采或上传该 SKU 图片')
+        return [],dict(state='failed',images=[],message='图片读取失败：'+(failures[0] if failures else '请补采或上传该 SKU 图片'),warnings=list(dict.fromkeys(failures)))
     capability(catalog,ai)
     from .walmart_listing_schema import sections
     fields={}

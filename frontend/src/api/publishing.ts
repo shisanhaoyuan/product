@@ -133,6 +133,7 @@ export interface GenerationJob {
         preparation_state?: string;
         collection?: { state: string; message?: string; listing_id?: string };
         source_collection?: { state: string; message?: string };
+        image_collection?: import('./types').ImageCollection;
         vision?: { state: string; message?: string; warnings?: string[]; images?: string[] };
         rounds?: {
           state: string;

@@ -9,7 +9,14 @@ export interface StoreHistory {
 }
 export type EvidenceKind = 'persisted_readback' | 'editor_snapshot' | 'source_only';
 export type Fields = Record<string, unknown>;
+export interface ImageCollection {
+  state: string;
+  message: string;
+  images: string[];
+  failures: { index: number; reason: string }[];
+}
 export interface SourceCapture {
+  image_collection?: ImageCollection;
   status: 'captured' | 'partial' | 'verification_required' | 'browser_required';
   asin: string;
   source_url: string;

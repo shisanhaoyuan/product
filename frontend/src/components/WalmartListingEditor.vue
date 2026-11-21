@@ -973,6 +973,19 @@ onBeforeUnmount(() => {
             >前往商品档案处理来源</RouterLink
           >
         </p>
+        <p v-if="generationRow?.image_collection" class="notice" role="status">
+          图片采集：{{ generationRow.image_collection.message }}
+        </p>
+        <details v-if="generationRow?.image_collection?.failures.length">
+          <summary>查看图片采集失败原因</summary>
+          <p
+            v-for="failure in generationRow.image_collection.failures"
+            :key="failure.index"
+            class="muted"
+          >
+            第 {{ failure.index }} 张：{{ failure.reason }}
+          </p>
+        </details>
         <p
           v-if="
             generationRow?.vision && !['disabled', 'complete'].includes(generationRow.vision.state)

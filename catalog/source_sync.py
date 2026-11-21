@@ -82,6 +82,13 @@ def sync_capture(catalog, db, lid, sku, asin, result, actor_id):
         filled.append(f'{target_sku or "主商品"}:{key or field}')
 
     for target_sku, item, shared_seller in targets:
+        collection = result.get('image_collection') or {}
+        if not shared_seller and collection.get('images'):
+            mapping = {r['source_url']: r['url'] for r in collection.get('saved', [])}
+            existing = item.get('images') or []
+            images = list(dict.fromkeys(collection['images'] + [mapping.get(u, u) for u in existing]))
+            if images != existing:
+                add(target_sku, 'images', '', images)
         seller = result.get('seller')
         if not empty(seller):
             if empty(item.get('seller')) or (not shared_seller and inherited(target_sku, 'seller')):

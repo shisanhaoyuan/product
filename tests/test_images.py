@@ -65,6 +65,7 @@ def test_capture_route_binds_stored_asin_and_does_not_save(local, monkeypatch):
         calls.append(asin)
         return {'asin': asin, 'images': ['https://m.media-amazon.com/images/I/test.jpg']}
     monkeypatch.setattr('catalog.images.fetch_amazon_images', capture)
+    monkeypatch.setattr('catalog.listing_vision.fetch_image', lambda url: picture())
     path = f"/api/products/{p['id']}/images/capture"
     assert client.post(path, json={'variant_sku': 'child-0'}).status_code == 200
     assert calls == [p['variants'][0]['asin']]
@@ -123,6 +124,7 @@ def test_parent_image_import_capture_and_edit_isolation(local, monkeypatch):
         calls.append(asin)
         return {'asin': asin, 'images': ['https://m.media-amazon.com/images/I/parent.jpg']}
     monkeypatch.setattr('catalog.images.fetch_amazon_images', capture)
+    monkeypatch.setattr('catalog.listing_vision.fetch_image', lambda url: picture())
     assert client.post(path + '/capture', json={}).status_code == 200
     assert calls == [before['asin']]
     assert detail(client) == saved

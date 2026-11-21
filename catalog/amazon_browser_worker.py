@@ -74,7 +74,28 @@ def collect(asin, engine):
         page.wait_for_timeout(1000)
         verify_page(page, asin)
         # Send only product/offer markup, not scripts, account menus, tokens or cookies.
-        html = page.evaluate('''() => {
+        html = page.evaluate(r'''() => {
+  function initialGallery(script) {
+    const match = /["']colorImages["']\s*:\s*\{\s*["']initial["']\s*:\s*/.exec(script);
+    if (!match) return '';
+    const payload = script.slice(match.index + match[0].length);
+    const wrapped = /^A\.\$\.parseJSON\(\s*('(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")\s*\)/.exec(payload);
+    if (wrapped) return wrapped[0];
+    if (payload[0] !== '[') return '';
+    let depth = 0, quoted = false, escaped = false;
+    for (let i = 0; i < payload.length; i++) {
+      const char = payload[i];
+      if (quoted) {
+        if (escaped) escaped = false;
+        else if (char === '\\') escaped = true;
+        else if (char === '"') quoted = false;
+      } else if (char === '"') quoted = true;
+      else if (char === '[') depth++;
+      else if (char === ']' && --depth === 0) return payload.slice(0, i + 1);
+    }
+    return '';
+  }
+
           const selectors = ['input#ASIN', '#productTitle', '#feature-bullets', '#productDescription',
             '#productOverview_feature_div', '#productDetails_techSpec_section_1', '#productDetails_detailBullets_sections1',
             '#glow-ingress-line2', '#contextualIngressPtLabel_deliveryShortLine',
@@ -88,7 +109,13 @@ def collect(asin, engine):
             root.append(node.cloneNode(true));
           }
           for (const node of root.querySelectorAll('script, style, [id*="recommend"], [id*="sponsored"]')) node.remove();
-          return root.outerHTML;
+          const gallery = [...document.scripts].map(script => initialGallery(script.textContent)).find(Boolean);
+          const landing = document.querySelector('img#landingImage');
+          const image = document.createElement('img'); image.id = 'landingImage';
+          for (const name of ['data-old-hires', 'data-a-dynamic-image']) {
+            if (landing?.hasAttribute(name)) image.setAttribute(name, landing.getAttribute(name));
+          }
+          return root.outerHTML + image.outerHTML + (gallery ? `'colorImages': {'initial': ${gallery}}` : '');
         }''')
         if len(html.encode()) > 6 * 1024 * 1024:
             raise CaptureStopped('failed')

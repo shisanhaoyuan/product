@@ -2,7 +2,11 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import type { SourceCapture } from '../api/types';
 import { catalogApi } from '../api/client';
-import { collectProductSources, hasCapturedPrice } from '../utils/sourceCollection';
+import {
+  collectProductSources,
+  hasCapturedPrice,
+  hasCollectedImages,
+} from '../utils/sourceCollection';
 import { errorMessage, money, safeUrl } from '../utils/display';
 import { useProductEditing } from '../composables/useProductEditing';
 import AppIcon from './AppIcon.vue';
@@ -65,7 +69,12 @@ async function autoCapture() {
   const key = JSON.stringify([props.listingId, props.sku, props.asin]);
   if (!editing?.enabled.value || disabled.value || !props.asin || autoAttempted.has(key)) return;
   if (!props.automatic) return;
-  if (!props.variants?.length && hasCapturedPrice(record.value, props.asin)) return;
+  if (
+    !props.variants?.length &&
+    hasCapturedPrice(record.value, props.asin) &&
+    hasCollectedImages(record.value)
+  )
+    return;
   autoAttempted.add(key);
   await capture(false, true);
 }
@@ -141,12 +150,12 @@ onBeforeUnmount(() => controller?.abort());
         @click="capture(false)"
       >
         <AppIcon name="RotateCcw" />{{
-          busy ? '正在采集…' : record ? '重新采集' : '采集卖家与报价'
+          busy ? '正在采集…' : record ? '重新采集' : '采集报价与图片'
         }}
       </button>
     </div>
     <p v-if="busy" class="muted" role="status">
-      {{ progress || '正在后台采集卖家与原价…' }}
+      {{ progress || '正在后台采集卖家、原价和图片…' }}
     </p>
     <p v-if="!busy && progress" class="muted" role="status">{{ progress }}</p>
     <p v-if="loading" class="muted" role="status">正在读取采集记录…</p>
@@ -157,6 +166,15 @@ onBeforeUnmount(() => controller?.abort());
           <dd>{{ value }}</dd>
         </div>
       </dl>
+      <p v-if="record.image_collection" class="source-capture-meta" role="status">
+        图片采集：{{ record.image_collection.message }}
+      </p>
+      <details v-if="record.image_collection?.failures.length">
+        <summary>查看图片采集失败原因</summary>
+        <p v-for="failure in record.image_collection.failures" :key="failure.index">
+          第 {{ failure.index }} 张：{{ failure.reason }}
+        </p>
+      </details>
       <p v-if="record.sync?.filled.length" class="source-capture-meta" role="status">
         已同步补齐商品档案 {{ record.sync.filled.length }} 处信息。
       </p>
