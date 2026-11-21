@@ -34,6 +34,7 @@ const disabled = computed(
   () => busy.value || loading.value || !!editing?.busy.value || !!editing?.active.value,
 );
 const facts = computed(() => [
+  ...(record.value?.method === 'wraith_background' ? [['采集方式', 'Wraith 后台浏览器']] : []),
   ['来源卖家', record.value?.seller || '未核验'],
   ['商品价格 · USD', record.value?.price ? money(record.value.price) : '未核验'],
   ['运费 · USD', record.value?.shipping != null ? money(record.value.shipping) : '未核验'],
@@ -111,7 +112,7 @@ async function capture(reuse = false, missingOnly = false) {
         },
       );
       if (result.errors.length) error.value = result.errors.join('；');
-      progress.value = `后台采集完成，本次更新 ${result.collected} 个商品／子 SKU`;
+      progress.value = `本次取得 ${result.collected} 条商品／子 SKU 记录，其中 ${result.verifiedPrices} 条已核验来源价格`;
     }
     if (request.signal.aborted) return;
     try {
@@ -199,7 +200,7 @@ onBeforeUnmount(() => controller?.abort());
         <li v-for="issue in record.issues" :key="issue">{{ issue }}</li>
       </ul>
     </template>
-    <p v-else class="muted">暂无来源采集记录</p>
+    <p v-else class="muted">{{ sku ? '该子 SKU 暂无来源采集记录' : '主商品暂无来源采集记录' }}</p>
     <button v-if="busy" class="btn small" @click="controller?.abort()">
       <AppIcon name="X" />取消采集
     </button>

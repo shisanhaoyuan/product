@@ -260,16 +260,11 @@ def amazon_source(html, asin):
 def collect_quote_page(asin, fetch):
     """One HTTP attempt, then at most one configured background browser attempt."""
     from .amazon_browser import configured, fetch_page
-    try:
-        html=fetch(asin)
-        quote=amazon_source(html,asin)
-    except ValueError:
-        if not configured():
-            raise
-    else:
-        if not configured() or (quote.get('status') != 'browser_required' and quote.get('original_price')
-                                and re.search(r'\b10001\b',quote.get('delivery_location') or '')):
-            return html,quote,'server'
+    html=fetch(asin)
+    quote=amazon_source(html,asin)  # Do not switch clients on a block or an identity mismatch.
+    if not configured() or (quote.get('status') != 'browser_required' and quote.get('original_price')
+                            and re.search(r'\b10001\b',quote.get('delivery_location') or '')):
+        return html,quote,'server'
     html=fetch_page(asin)
     quote=amazon_source(html,asin)
     return html,quote,'wraith_background'
@@ -307,7 +302,7 @@ def source_routes(catalog):
 
     def save(lid, sku, asin, result, request, url, method):
         if result['status'] == 'browser_required' and not (result.get('image_collection') or {}).get('images'):
-            return result | {'asin': asin, 'source_url': url}
+            return result | {'asin': asin, 'source_url': url, 'method': method}
         with catalog.connect() as db:
             write_lock(db)
             user = getattr(request.state, 'user', None)
@@ -330,7 +325,9 @@ def source_routes(catalog):
         try:
             html, result, method = collect_quote_page(asin, fetch_amazon_page)
         except HumanVerificationRequired as exc:
-            return {'status': 'verification_required', 'asin': asin, 'source_url': url, 'issues': [str(exc)]}
+            from .amazon_browser import configured
+            reason = str(exc) if configured() else '普通请求遇到人机验证，本服务未启用 Wraith'
+            return {'status': 'verification_required', 'asin': asin, 'source_url': url, 'issues': [reason]}
         except ValueError as exc:
             raise HTTPException(502, str(exc)) from None
         from .source_images import collect_amazon_images

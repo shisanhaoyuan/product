@@ -16,6 +16,7 @@ export interface ImageCollection {
   failures: { index: number; reason: string }[];
 }
 export interface SourceCapture {
+  method?: string;
   image_collection?: ImageCollection;
   status: 'captured' | 'partial' | 'verification_required' | 'browser_required';
   asin: string;

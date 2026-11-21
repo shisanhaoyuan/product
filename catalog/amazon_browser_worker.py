@@ -48,15 +48,17 @@ def ensure_location(page):
 
 
 def collect(asin, engine):
-    from wraith.engine import launch, clear_challenge
+    from wraith.engine import launch
     session = None
     try:
-        session = launch(engine=engine, headless=True, geoip=True)
+        session = launch(engine=engine, headless=True, geoip=False)
         page = session.page
         page.set_default_timeout(5000)
         page.set_default_navigation_timeout(25000)
         url = f'https://www.amazon.com/dp/{asin}?th=1&psc=1'
-        clear_challenge(url, session=session, timeout=30, settle=1)
+        response = page.goto(url, wait_until='domcontentloaded')
+        if response is None or not response.ok:
+            raise CaptureStopped('rate_limited' if response and response.status in (403,429) else 'failed')
         # Wraith success alone is not proof of Amazon identity or a usable quote.
         verify_page(page, asin)
         ensure_location(page)

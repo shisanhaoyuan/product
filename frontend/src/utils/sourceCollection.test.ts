@@ -58,6 +58,15 @@ it('reports captcha without opening a browser or calling browser capture', async
   expect(mock.page).not.toHaveBeenCalled();
   expect(mock.browser).not.toHaveBeenCalled();
 });
+it('shows the server diagnosis for a blocked background attempt', async () => {
+  mock.capture.mockResolvedValue({
+    status: 'verification_required',
+    issues: ['后台浏览器正在处理其他商品'],
+  });
+  await expect(collectSource('one', 'child', new AbortController().signal)).rejects.toThrow(
+    '后台浏览器正在处理其他商品',
+  );
+});
 it('reports failures without looping and continues to other targets', async () => {
   const data = preview();
   data.items[0]!.variants[2]!.capture_required = true;
@@ -103,6 +112,7 @@ it('collects every child independently even when another child is blocked', asyn
   );
   expect(mock.capture.mock.calls.map((c) => c[1])).toEqual([undefined, 'red', 'blue']);
   expect(outcome.collected).toBe(2);
+  expect(outcome.verifiedPrices).toBe(2);
   expect(outcome.errors[0]).toContain('red');
   expect(mock.page).not.toHaveBeenCalled();
   expect(results.mock.calls.map((c) => c[0])).toEqual([undefined, 'blue']);

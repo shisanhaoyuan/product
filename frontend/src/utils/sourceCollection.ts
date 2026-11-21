@@ -14,7 +14,9 @@ export async function collectSource(
   if (['verification_required', 'browser_required'].includes(result.status)) {
     onVerification();
     throw new Error(
-      '后台采集遇到人机验证或报价无法读取，未打开新网页；可稍后重试，或核对售价后点击已验证',
+      [result.method === 'wraith_background' ? 'Wraith 后台采集' : '', ...(result.issues || [])]
+        .filter(Boolean)
+        .join(' · ') || '后台采集遇到人机验证或报价无法读取，未打开新网页',
     );
   }
   return result;
@@ -78,6 +80,7 @@ export async function collectProductSources(
   const errors: string[] = [];
   const seen = new Set<string>();
   let collected = 0;
+  let verifiedPrices = 0;
   for (const target of targets) {
     signal.throwIfAborted();
     const key = JSON.stringify([target.sku, target.asin]);
@@ -102,7 +105,8 @@ export async function collectProductSources(
       if (result.asin !== target.asin) throw new Error('采集期间 ASIN 已变化，请刷新商品');
       onRecord(target.sku, result);
       collected++;
-      if (!hasCapturedPrice(result, target.asin))
+      if (hasCapturedPrice(result, target.asin)) verifiedPrices++;
+      else
         errors.push(
           `${label}：${result.issues?.join('；') || '来源价格信息不完整，可人工核对售价'}`,
         );
@@ -111,5 +115,5 @@ export async function collectProductSources(
       errors.push(`${label}：${errorMessage(e)}`);
     }
   }
-  return { collected, errors };
+  return { collected, verifiedPrices, errors };
 }

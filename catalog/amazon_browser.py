@@ -35,9 +35,11 @@ def fetch_page(asin):
             output = Path(folder) / 'result.json'
             command = [executable, str(Path(__file__).with_name('amazon_browser_worker.py')),
                        asin, engine, str(output)]
-            env = os.environ.copy()
-            if cache := env.get('CATALOG_AMAZON_BROWSER_CACHE'):
+            env = {key: os.environ[key] for key in ('PATH','HOME','LANG','LC_ALL','TMPDIR')
+                   if key in os.environ}
+            if cache := os.environ.get('CATALOG_AMAZON_BROWSER_CACHE'):
                 env['XDG_CACHE_HOME'] = cache
+                env['HOME'] = str(Path(cache).parent)
             process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                        env=env, start_new_session=(os.name == 'posix'))
             try:

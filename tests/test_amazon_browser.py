@@ -30,13 +30,16 @@ def test_browser_fallback_reuses_strict_quote_parser(monkeypatch):
         calls.append(asin)
         return page(asin,offer(original='72.89'))
     monkeypatch.setattr(amazon_browser,'fetch_page',fallback)
-    html,quote,method=collect_quote_page(ASIN,blocked)
+    def dynamic(asin): return page(asin)+'<a id="aod-ingress-link">Other sellers on Amazon</a>'
+    with pytest.raises(HumanVerificationRequired):collect_quote_page(ASIN,blocked)
+    assert not calls
+    html,quote,method=collect_quote_page(ASIN,dynamic)
     assert method=='wraith_background' and quote['original_price']=='72.89'
     assert quote['asin']==ASIN and calls==[ASIN]
     monkeypatch.setattr(amazon_browser,'fetch_page',lambda _:page('B999999999'))
-    with pytest.raises(ValueError,match='ASIN'):collect_quote_page(ASIN,blocked)
+    with pytest.raises(ValueError,match='ASIN'):collect_quote_page(ASIN,dynamic)
     monkeypatch.setattr(amazon_browser,'fetch_page',lambda _:'Robot Check')
-    with pytest.raises(HumanVerificationRequired):collect_quote_page(ASIN,blocked)
+    with pytest.raises(HumanVerificationRequired):collect_quote_page(ASIN,dynamic)
 
 
 def test_dynamic_offer_page_gets_one_browser_attempt(monkeypatch):
