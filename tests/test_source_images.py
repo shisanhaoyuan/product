@@ -243,6 +243,43 @@ def test_partial_erp_failure_recovers_without_losing_good_images(local, monkeypa
     assert result['failures']==initial['failures']  # Failed old links remain auditable.
 
 
+def test_generation_reuses_previously_saved_same_asin_gallery_for_expired_erp_images():
+    from catalog.source_images import reuse_verified_source_gallery, localize_row
+    imported_good=PREFIX+'a'*64
+    asin_images=[PREFIX+'b'*64, PREFIX+'c'*64]
+    dead='https://pg-cdn-a2.datacaciques.com/dead.jpg'
+    initial=dict(state='partial',images=[imported_good],
+        saved=[dict(source_url='https://pg-cdn-a2.datacaciques.com/good.jpg',url=imported_good)],
+        failures=[dict(index=2,reason='图片服务器返回 HTTP 424')],failed_urls=[dead],message='原图采集失败')
+    captured=dict(asin='B000000001',image_collection=dict(
+        images=asin_images,
+        saved=[dict(source_url=f'https://m.media-amazon.com/images/I/{n}.jpg',url=url)
+               for n,url in enumerate(asin_images)],
+    ))
+    result=reuse_verified_source_gallery(initial,captured,'B000000001')
+    assert result['recovery']=='saved_current_asin_gallery'
+    assert result['images']==[imported_good,*asin_images]
+    assert result['failed_urls']==[dead] and result['failures']==initial['failures']
+    assert '替换失效 ERP 图片' in result['message']
+    row=dict(visible=dict(mainImageUrl='https://pg-cdn-a2.datacaciques.com/dead-main.jpg',
+                          productSecondaryImageURL=[dead]))
+    localize_row(row,result)
+    assert row['visible']['mainImageUrl']==imported_good
+    assert asin_images[0] in row['visible']['productSecondaryImageURL']
+    assert dead not in str(row['visible'])
+
+
+def test_saved_gallery_fallback_requires_exact_asin_and_saved_local_assets():
+    from catalog.source_images import reuse_verified_source_gallery
+    dead='https://pg-cdn-a2.datacaciques.com/dead.jpg'
+    initial=dict(images=[],saved=[],failures=[dict(index=1,reason='HTTP 424')],failed_urls=[dead])
+    capture=dict(asin='B000000002',image_collection=dict(
+        images=[PREFIX+'a'*64],saved=[dict(source_url='https://example.com/x.jpg',url=PREFIX+'b'*64)]))
+    assert reuse_verified_source_gallery(initial,capture,'B000000001')==initial
+    capture['asin']='B000000001'
+    assert reuse_verified_source_gallery(initial,capture,'B000000001')==initial
+
+
 def test_failed_hero_and_secondary_removed_even_when_recovery_is_blocked():
     good=PREFIX+'a'*64
     urls=['https://example.com/dead-main.jpg','https://example.com/dead-secondary.jpg',good]

@@ -69,3 +69,47 @@ describe('catalog API boundary', () => {
     });
   });
 });
+
+it.each([502, 503, 504])(
+  'replaces a proxy HTML error with a Chinese message (%s)',
+  async (status) => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(
+            '<html><title>Gateway failure</title><body>nginx<!-- padding --></body></html>',
+            { status, headers: { 'Content-Type': 'text/html' } },
+          ),
+        ),
+    );
+    const error = await request('/api/products/one/source-capture').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).status).toBe(status);
+    expect((error as Error).message).toContain(String(status));
+    expect((error as Error).message).not.toMatch(/html|nginx|padding/);
+  },
+);
+
+it('keeps the backend explanation for a rejected request', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ detail: '子 SKU 不属于当前商品' }), { status: 409 }),
+      ),
+  );
+  await expect(request('/api/products/one/source-capture')).rejects.toThrow(
+    '子 SKU 不属于当前商品',
+  );
+});
+
+it('does not show HTML for other failure statuses', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn().mockResolvedValue(new Response('<html>server error</html>', { status: 500 })),
+  );
+  await expect(request('/api/products')).rejects.toThrow('请求失败（HTTP 500）');
+});

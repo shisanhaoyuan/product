@@ -280,7 +280,11 @@ def run_job(catalog, publisher, jid, ai):
                           *updated['visible'].get('productSecondaryImageURL',[]),
                           *variant.get('content',{}).get('images',[])]
                     image_collection=collect_images(catalog,item['listing_id'],variant['sku'],urls)
-                    if 'source_collection' not in entry:
+                    if 'source_collection' in entry:
+                        from .source_images import reuse_verified_source_gallery
+                        image_collection=reuse_verified_source_gallery(
+                            image_collection,entry['source_collection'],variant.get('asin',''))
+                    else:
                         # The quote stage may already have tried this ASIN; never loop on a blocked page.
                         image_collection=recover_imported_images(catalog,item,variant,urls,image_collection)
                     entry['image_collection']=image_collection

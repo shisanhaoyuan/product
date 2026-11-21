@@ -2,6 +2,15 @@ import { catalogApi } from '../api/client';
 import type { PrelistingPreview } from '../api/types';
 import { errorMessage } from './display';
 
+function captureOutcomeUnknown(error: unknown) {
+  return (
+    error instanceof TypeError ||
+    (error instanceof Error && 'status' in error && [502, 503, 504].includes(Number(error.status)))
+  );
+}
+const interruptedMessage =
+  '本轮后续采集已暂停：上一条请求结果未知，后台可能仍在处理。请稍后查看记录，避免连续重试。';
+
 export async function collectSource(
   listingId: string,
   sku: string | undefined,
@@ -29,7 +38,7 @@ export async function collectMissingPrices(
 ) {
   const errors: string[] = [];
   const seen = new Set<string>();
-  for (const item of preview.items) {
+  targets: for (const item of preview.items) {
     if (item.source !== 'Amazon') continue;
     for (const variant of item.variants) {
       if (!variant.capture_required) continue;
@@ -45,6 +54,10 @@ export async function collectMissingPrices(
       } catch (e) {
         signal.throwIfAborted();
         errors.push(`${variant.sku}：${errorMessage(e)}`);
+        if (captureOutcomeUnknown(e)) {
+          errors.push(interruptedMessage);
+          break targets;
+        }
       }
     }
   }
@@ -113,6 +126,10 @@ export async function collectProductSources(
     } catch (e) {
       signal.throwIfAborted();
       errors.push(`${label}：${errorMessage(e)}`);
+      if (captureOutcomeUnknown(e)) {
+        errors.push(interruptedMessage);
+        break;
+      }
     }
   }
   return { collected, verifiedPrices, errors };

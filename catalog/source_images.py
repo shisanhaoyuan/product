@@ -124,6 +124,43 @@ def recover_imported_images(catalog, item, variant, urls, collection):
         return collection | dict(recovery='amazon_current_asin', message=collection['message']+'；原图补采失败：'+message)
 
 
+def reuse_verified_source_gallery(collection, source_capture, asin):
+    """Replace failed imported CDN images with the already saved same-ASIN gallery."""
+    from .listing_vision import IMPORTED_IMAGE_HOSTS
+    if collection.get('recovery') or not source_capture or source_capture.get('asin') != asin:
+        return collection
+    failed_urls = collection.get('failed_urls') or []
+    def imported(url):
+        try:
+            return urlsplit(url).hostname in IMPORTED_IMAGE_HOSTS
+        except (TypeError, ValueError):
+            return False
+    if not any(imported(url) for url in failed_urls):
+        return collection
+    gallery = source_capture.get('image_collection') or {}
+    saved = [row for row in gallery.get('saved', [])
+             if isinstance(row, dict) and isinstance(row.get('url'), str)
+             and re.fullmatch(re.escape(PREFIX) + r'[a-f0-9]{64}', row['url'])]
+    saved_urls = {row['url'] for row in saved}
+    gallery_images = [url for url in gallery.get('images', [])
+                      if isinstance(url, str) and url in saved_urls]
+    if not gallery_images:
+        return collection
+    images = list(dict.fromkeys([*collection.get('images', []), *gallery_images]))
+    existing_saved = {(row.get('source_url'), row.get('url')) for row in collection.get('saved', [])
+                      if isinstance(row, dict)}
+    recovered_saved = [row for row in saved if (row.get('source_url'), row['url']) not in existing_saved]
+    return collection | dict(
+        state='partial' if collection.get('failures') else 'complete',
+        images=images,
+        saved=[*collection.get('saved', []), *recovered_saved],
+        recovery='saved_current_asin_gallery',
+        recovered_images=gallery_images,
+        message=(f'已复用来源采集保存的同 ASIN 图片 {len(gallery_images)} 张，替换失效 ERP 图片；'
+                 f'目前共 {len(images)} 张服务器图片可用。'),
+    )
+
+
 def localize_row(row, collection):
     """Keep selected successes; omit known failed URLs and fill with verified recovery."""
     mapping = {r['source_url']: r['url'] for r in collection['saved']}

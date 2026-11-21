@@ -196,6 +196,11 @@ def test_quote_and_image_collection_complete_before_ai_for_each_child(amazon,mon
     import io
     from PIL import Image
     c,catalog,_,_,_,base,_=amazon
+    def expired_erp_galleries(rows):
+        for row in rows:
+            row['visible']['mainImageUrl']='https://pg-cdn-a2.datacaciques.com/'+row['source_sku']+'.jpg'
+            row['visible']['productSecondaryImageURL']=[]
+    patch_rows(c,base,expired_erp_galleries)
     fetched=[];downloads=[]
     def fetch(asin):
         fetched.append(asin)
@@ -223,8 +228,12 @@ def test_quote_and_image_collection_complete_before_ai_for_each_child(amazon,mon
     assert len(set(urls))==2 and all(u.startswith('/api/products/images/assets/') for u in urls)
     assert all(c.get(url).status_code==200 for url in urls)
     assert all(r['image_collection']['images'] for r in status['report']['rows'].values())
+    assert all(r['image_collection']['recovery']=='saved_current_asin_gallery'
+               for r in status['report']['rows'].values())
     assert len(downloads)==2  # No repeated external fetch during the image/AI stage.
     for row in doc['rows']:
         product=catalog.get(row['listing_id'])
         child=next(v for v in product['variants'] if v['sku']==row['source_sku'])
         assert child['images'][0]==row['visible']['mainImageUrl']
+    cover=next(p for p in catalog.find()['items'] if p['id']==doc['rows'][0]['listing_id'])
+    assert cover['image'] in urls and c.get(cover['image']).status_code==200

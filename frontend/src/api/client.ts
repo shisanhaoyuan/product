@@ -46,12 +46,21 @@ export async function request<T>(path: string, options?: RequestInit): Promise<T
       }
     }
     const raw = await response.text();
-    let message = raw;
+    const gatewayMessage: Record<number, string> = {
+      502: '网关暂时无法取得服务响应（502），本次处理结果未知，请稍后查看结果。',
+      503: '服务暂时不可用（503），请稍后查看结果，避免连续重试。',
+      504: '服务器等待处理结果超时（504），后台任务可能仍在运行，请稍后查看结果，避免连续重试。',
+    };
+    let message = gatewayMessage[response.status] || `请求失败（HTTP ${response.status}）`;
     try {
       const data = JSON.parse(raw);
-      message = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
+      if (typeof data.detail === 'string' && data.detail.trim()) message = data.detail;
+      else if (data.detail != null) message = JSON.stringify(data.detail);
     } catch {
-      /* The server may return a plain-text error. */
+      // Reverse proxies may return whole HTML error pages; never show their markup.
+      if (!gatewayMessage[response.status] && raw.length <= 1200 && !/<[^>]+>/.test(raw)) {
+        message = raw.trim() || message;
+      }
     }
     throw new ApiError(message || `请求失败 ${response.status}`, response.status);
   }

@@ -38,15 +38,26 @@ def test_http_challenge_detected_before_http_failure(status, monkeypatch):
         fetch_amazon_images('B012345678')
 
 
-def test_verified_browser_gallery_bound_to_child_and_not_saved(local):
+def test_verified_browser_gallery_caches_images_without_editing_product(local, monkeypatch):
+    from test_images import picture
     client, _ = local
     before = detail(client)
     asin = before['variants'][0]['asin']
     url = 'https://m.media-amazon.com/images/I/verified.jpg'
+    downloaded=[]
+    def download(source):
+        downloaded.append(source)
+        assert source==url
+        return picture()
+    monkeypatch.setattr('catalog.listing_vision.fetch_image',download)
     body = {'variant_sku': 'child-0', 'source_url': f'https://www.amazon.com/dp/{asin}',
             'html': f'<input id="ASIN" value="{asin}"><img id="landingImage" data-old-hires="{url}">'}
     path = f"/api/products/{before['id']}/images/capture/browser"
-    assert client.post(path, json=body).json()['images'] == [url]
+    response=client.post(path, json=body)
+    assert response.status_code==200,response.text
+    images=response.json()['images']
+    assert len(images)==1 and images[0].startswith('/api/products/images/assets/')
+    assert client.get(images[0]).status_code==200
     for change in [
         {'variant_sku': 'missing'}, {'source_url': 'https://evil.test/dp/' + asin},
         {'source_url': f'https://www.amazon.com:bad/dp/{asin}'},
@@ -58,3 +69,4 @@ def test_verified_browser_gallery_bound_to_child_and_not_saved(local):
     ]:
         assert client.post(path, json={**body, **change}).status_code in (409, 422)
     assert detail(client) == before
+    assert downloaded==[url]  # Invalid identities must never trigger image downloads.

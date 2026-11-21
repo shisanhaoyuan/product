@@ -168,3 +168,34 @@ it('collects images for an older record even when its price is complete', async 
   );
   expect(mock.capture).toHaveBeenCalledTimes(1);
 });
+
+it.each([502, 503, 504])(
+  'pauses remaining child captures when the previous result is unknown (%s)',
+  async (status) => {
+    mock.capture.mockRejectedValueOnce(Object.assign(new Error('网关请求失败'), { status }));
+    const result = await collectProductSources(
+      'one',
+      [
+        { sku: 'red', asin: 'B000000001' },
+        { sku: 'blue', asin: 'B000000002' },
+      ],
+      new AbortController().signal,
+      false,
+      vi.fn(),
+      vi.fn(),
+    );
+    expect(mock.capture).toHaveBeenCalledTimes(1);
+    expect(result.collected).toBe(0);
+    expect(result.errors.join('；')).toContain('后续采集已暂停');
+  },
+);
+
+it('pauses missing-price collection across products after a network interruption', async () => {
+  const data = preview();
+  data.items.push({ ...data.items[0]!, listing_id: 'next-product' });
+  mock.capture.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+  const result = await collectMissingPrices(data, new AbortController().signal, vi.fn());
+  expect(mock.capture).toHaveBeenCalledTimes(1);
+  expect(result.attempted).toBe(1);
+  expect(result.errors.join('；')).toContain('后续采集已暂停');
+});
