@@ -187,6 +187,10 @@ def feed_item(row, schema, version, origin, *, exemption=False, stock=None):
             visible[key] = public_image(visible[key], origin)
     if 'productSecondaryImageURL' in visible:
         visible['productSecondaryImageURL'] = [public_image(v, origin) for v in visible['productSecondaryImageURL']]
+    if isinstance(visible.get('swatchImages'), list):
+        for swatch in visible['swatchImages']:
+            if isinstance(swatch, dict) and 'swatchImageUrl' in swatch:
+                swatch['swatchImageUrl'] = public_image(swatch['swatchImageUrl'], origin)
     orderable = copy.deepcopy(row['orderable'])
     orderable['sku'] = row['platform_sku']
     identity = row['identification']

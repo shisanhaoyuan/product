@@ -405,6 +405,12 @@ def run_job(catalog, publisher, jid, ai):
                 db.execute('UPDATE listing_generation_jobs SET report_json=?,message=?,updated_at=? WHERE id=?',
                     (encoded(report),'正在保存最终店铺校验结果',int(time.time()),jid))
             validation=validate_document(catalog,job['batch_id'],job['revision'],remote,bound)
+            # Final group normalization can advance the document revision. The
+            # validator returns the exact guarded revision it persisted.
+            job['revision']=validation['revision']
+            with catalog.connect() as db:
+                write_lock(db);checked_context(db,job)
+                db.execute('UPDATE listing_generation_jobs SET revision=? WHERE id=?',(job['revision'],jid))
             for sku,entry in report['rows'].items():
                 if entry['state']=='skipped':
                     continue

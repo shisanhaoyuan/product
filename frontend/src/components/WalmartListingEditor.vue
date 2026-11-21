@@ -20,9 +20,11 @@ import { errorMessage, plain, money } from '../utils/display';
 import { listingSourceImages } from '../utils/listingSourceImages';
 import { claimAutomaticCollection } from '../utils/automaticCollection';
 import { shouldPrepareOnEntry } from '../utils/listingPreparation';
+import { completeGroupCandidates, toggleVariantSelection } from '../utils/listingVariants';
 import { collectMissingPrices, collectListingSources, preferLocalSourceBrowser } from '../utils/sourceCollection';
 import { applyListingDefaults } from '../utils/listingDefaults';
 import ListingSchemaField from './ListingSchemaField.vue';
+import ListingVariantGroup from './ListingVariantGroup.vue';
 import ListingPriceRecovery from './ListingPriceRecovery.vue';
 import ListingStatusNotices from './ListingStatusNotices.vue';
 import ProductImage from './ProductImage.vue';
@@ -343,6 +345,19 @@ const currentSpec = computed(() =>
 const source = computed(() =>
   doc.value?.basis.items.find((i) => i.listing_id === current.value?.listing_id),
 );
+const variantGroup = computed(() => doc.value?.variant_groups?.find((g) => g.listing_id === current.value?.listing_id));
+function setVariantAxes(axes: string[]) {
+  if (!doc.value || !variantGroup.value || locked.value || variantGroup.value.locked) return;
+  for (const row of doc.value.rows.filter((r) => variantGroup.value!.skus.includes(r.platform_sku))) {
+    row.visible.variantAttributeNames = [...axes];
+  }
+}
+function setPrimaryVariant(sku: string) {
+  if (!doc.value || !variantGroup.value || locked.value || variantGroup.value.locked) return;
+  for (const row of doc.value.rows.filter((r) => variantGroup.value!.skus.includes(r.platform_sku))) {
+    row.visible.isPrimaryVariant = row.platform_sku === sku ? 'Yes' : 'No';
+  }
+}
 function setTargetStock(event: Event) {
   if (!current.value || locked.value) return;
   const value = (event.target as HTMLInputElement).value;
@@ -453,6 +468,7 @@ const copyKeys = [
   'mainImageUrl',
   'productSecondaryImageURL',
 ];
+const groupFields = ['variantGroupId', 'variantAttributeNames', 'isPrimaryVariant'];
 const hiddenOrderable = ['sku', 'productIdentifiers', 'inventory', 'SkuUpdate', 'ProductIdUpdate'];
 const visibleProperties = computed(() => currentSpec.value?.sections.visible?.properties || {});
 const required = computed(() => [
@@ -469,12 +485,12 @@ const requiredOrderable = computed(() => [
 ]);
 const mandatoryKeys = computed(() =>
   Object.keys(visibleProperties.value).filter(
-    (k) => required.value.includes(k) && !basic.includes(k) && !copyKeys.includes(k),
+    (k) => required.value.includes(k) && !basic.includes(k) && !copyKeys.includes(k) && !groupFields.includes(k),
   ),
 );
 const optionalKeys = computed(() =>
   Object.keys(visibleProperties.value).filter(
-    (k) => !required.value.includes(k) && !basic.includes(k) && !copyKeys.includes(k),
+    (k) => !required.value.includes(k) && !basic.includes(k) && !copyKeys.includes(k) && !groupFields.includes(k),
   ),
 );
 const orderableKeys = computed(() =>
@@ -501,11 +517,17 @@ const eligible = computed(
       return !s || ['failed', 'rejected', 'unpublished'].includes(s);
     }) || [],
 );
-const validSkus = computed(() =>
+const validSkus = computed(() => completeGroupCandidates(
   (validationCurrent.value ? eligible.value : [])
     .filter((r) => doc.value?.validation.rows?.[r.platform_sku]?.valid)
     .map((r) => r.platform_sku),
-);
+  eligible.value.map((r) => r.platform_sku),
+  doc.value?.variant_groups || [],
+));
+function toggleSubmission(sku: string, event: Event) {
+  selected.value = toggleVariantSelection(selected.value, sku, (event.target as HTMLInputElement).checked,
+    validSkus.value, doc.value?.variant_groups || []);
+}
 const selectedValid = computed(() => selected.value.filter((s) => validSkus.value.includes(s)));
 const rowsToShow = computed(() =>
   (doc.value?.rows || []).filter((r) => {
@@ -1335,6 +1357,19 @@ onBeforeUnmount(() => {
                 >
               </div>
             </div>
+            <ListingVariantGroup
+              v-if="variantGroup"
+              :group="variantGroup"
+              :rows="doc.rows"
+              :active-sku="activeSku"
+              :schema="currentSpec?.sections.visible"
+              :labels="doc.labels"
+              :disabled="locked || busy || generating"
+              @select="activeSku = $event"
+              @axes="setVariantAxes"
+              @primary="setPrimaryVariant"
+              @value="(key, value) => update('visible', key, value)"
+            />
             <div class="listing-field" data-listing-path="fulfillment_center_id">
               <label class="listing-field-label"
                 ><span><i class="listing-required">*</i>沃尔玛发货仓</span
@@ -1909,7 +1944,7 @@ onBeforeUnmount(() => {
             <label
               v-for="row in eligible.filter((r) => validSkus.includes(r.platform_sku))"
               :key="row.platform_sku"
-              ><input v-model="selected" type="checkbox" :value="row.platform_sku" />{{
+              ><input type="checkbox" :checked="selected.includes(row.platform_sku)" @change="toggleSubmission(row.platform_sku, $event)" />{{
                 row.source_sku
               }}
               · {{ row.platform_sku }}</label

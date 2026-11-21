@@ -267,7 +267,10 @@ def public_document(db, bid):
         attempts.append(public)
     pool=dict(db.execute("SELECT count(*) AS total,COALESCE(sum(CASE WHEN source_sku='' AND (brand='' OR brand=?) THEN 1 ELSE 0 END),0) AS available FROM listing_real_identifiers",(p['brand'],)).fetchone())
     from .listing_price_review import reviews
+    from .listing_variants import synchronize
+    groups=synchronize(db,json.loads(row['rows_json']),basis,row['version'],latest_results(db,bid))
     return dict(revision=row['revision'], version=row['version'], rows=json.loads(row['rows_json']),
+                variant_groups=groups,
                 source_price_reviews=reviews(db,row),
                 basis=basis, validation=validation, labels=LABELS,
                 store=p['store'], brand=p['brand'], specs=cached_specs, requirements=requirements, updated_at=row['updated_at'], results=latest_results(db, bid),
@@ -444,12 +447,15 @@ def check_rows(db, doc, session, binding_row, skus=None):
     nodes=cache_value(db,binding_row,'nodes',age=3600) or []
     from .listing_price_review import reviews, eligible
     price_reviews=reviews(db,doc)
+    from .listing_variants import synchronize, POLICY
+    groups=synchronize(db,json.loads(doc['rows_json']),basis,doc['version'],latest_results(db,doc['batch_id']))
+    group_errors={sku:g['errors'] for g in groups for sku in g['skus']}
     for row in json.loads(doc['rows_json']):
         if skus is not None and row['platform_sku'] not in skus:
             continue
         sku = row['platform_sku']; item, variant = by_sku[sku]
         from .listing_prerequisites import evidence_errors, identifier_ownership_errors
-        errors = evidence_errors(db,doc,row,item)
+        errors = evidence_errors(db,doc,row,item) + group_errors.get(sku,[])
         for message in source_issues(item,variant,sku in price_reviews,row.get('target_stock')):
             issue=dict(path='',message=message)
             if eligible(item,variant) and message in (f"{variant['sku']}：{variant['error']}", '缺少已核验的来源售价，不能提交'):
@@ -462,7 +468,9 @@ def check_rows(db, doc, session, binding_row, skus=None):
         if row['visible'].get('brand')!=basis['brand']:
             errors.append(dict(path='visible.brand',message='品牌与本批次目标品牌不一致，请核对'))
         for field,urls in (('mainImageUrl',[row['visible'].get('mainImageUrl')]),
-                           ('productSecondaryImageURL',row['visible'].get('productSecondaryImageURL',[]))):
+                           ('productSecondaryImageURL',row['visible'].get('productSecondaryImageURL',[])),
+                           ('swatchImages',[s.get('swatchImageUrl') for s in row['visible'].get('swatchImages',[]) if isinstance(s,dict)]
+                            if isinstance(row['visible'].get('swatchImages',[]),list) else [])):
             for url in urls if isinstance(urls,list) else []:
                 local=re.fullmatch(r'/api/products/images/assets/([a-f0-9]{64})',url) if isinstance(url,str) else None
                 if local:
@@ -502,7 +510,7 @@ def check_rows(db, doc, session, binding_row, skus=None):
                 errors.append(dict(path='visible.mainImageUrl',message=str(exc)))
         results[sku] = dict(valid=not errors,errors=errors)
     from .listing_prerequisites import resource_digest
-    return dict(feedback_policy='publication_feedback_v1',content_policy='default8_manual_images_copy_origin_v3',title_policy='brand_prefix_v1',feedback_digest=fingerprint(latest_results(db,doc['batch_id'])),resources_digest=resource_digest(db,binding_row),id=uuid.uuid4().hex,revision=doc['revision'],at=int(time.time()),binding_revision=binding_row['revision'],
+    return dict(variant_policy=POLICY,feedback_policy='publication_feedback_v1',content_policy='default8_manual_images_copy_origin_v3',title_policy='brand_prefix_v1',feedback_digest=fingerprint(latest_results(db,doc['batch_id'])),resources_digest=resource_digest(db,binding_row),id=uuid.uuid4().hex,revision=doc['revision'],at=int(time.time()),binding_revision=binding_row['revision'],
                 partner_id=binding_row['partner_id'],rows=results,schema_digests=schema_digests,payloads=payloads,
                 valid_count=sum(r['valid'] for r in results.values()))
 
@@ -544,11 +552,17 @@ def normalize_document_titles(db, doc):
     basis=unchanged_sources(db,doc)
     rows=json.loads(doc['rows_json'])
     changes=normalize_titles(db,rows,basis,latest_results(db,doc['batch_id']),doc['version'])
-    if changes:
+    from .listing_variants import synchronize
+    before_groups=copy.deepcopy(rows)
+    synchronize(db,rows,basis,doc['version'],latest_results(db,doc['batch_id']),apply=True)
+    group_changes=[dict(platform_sku=after['platform_sku'],before=before['visible'],after=after['visible'])
+                   for before,after in zip(before_groups,rows) if before['visible']!=after['visible']]
+    if changes or encoded(rows)!=doc['rows_json']:
         db.execute('UPDATE walmart_listing_documents SET rows_json=?,revision=revision+1,validation_json=?,updated_at=? WHERE batch_id=?',
             (encoded(rows),'{}',now(),doc['batch_id']))
         db.execute('INSERT INTO walmart_listing_events VALUES(?,?,?,?,?,?)',
-            (uuid.uuid4().hex,doc['batch_id'],None,'title_brand_rule',now(),encoded({'rule':'target_brand_and_listing_content','changes':changes})))
+            (uuid.uuid4().hex,doc['batch_id'],None,'variant_group_rule' if group_changes else 'title_brand_rule',now(),
+             encoded({'rule':'target_brand_and_listing_content','changes':changes,'variant_changes':group_changes})))
     return document(db,doc['batch_id'])
 
 
@@ -647,6 +661,8 @@ def publishing_routes(catalog):
                 if any(k in r['orderable'] for k in ('sku','productIdentifiers','inventory','SkuUpdate','ProductIdUpdate')) or any(k in r['extra'] for k in ('Visible','Orderable')):
                     raise HTTPException(422,'店铺 SKU 和商品编码只能通过专用字段设置')
             rule_changes=normalize_titles(db,rows,json.loads(doc['basis_json']),latest,data.version)
+            from .listing_variants import synchronize
+            synchronize(db,rows,json.loads(doc['basis_json']),data.version,latest,apply=True)
             if data.version!=doc['version'] and latest:
                 raise HTTPException(409,'已有提交记录的批次不能切换规格版本，请保留原版本')
             raw=encoded(rows)
@@ -834,6 +850,12 @@ def publishing_routes(catalog):
                         raise HTTPException(409,'确认店铺与批次绑定不一致，未提交')
                     assert_not_sending(db,bound['store_id'])
                     latest=latest_results(db,bid);all_rows={r['platform_sku']:r for r in json.loads(doc['rows_json'])}
+                    from .listing_variants import context as variant_context, plan as variant_plan, submission_errors
+                    variant_state=variant_context(db,list(all_rows.values()),basis,doc['version'])
+                    groups=variant_plan(list(all_rows.values()),basis,latest=latest,**variant_state)
+                    group_errors=submission_errors(groups,data.skus,latest,variant_state['history'])
+                    if group_errors:
+                        raise HTTPException(409,'；'.join(group_errors))
                     from .listing_price_review import reviews
                     price_reviews=reviews(db,doc)
                     chosen=[];entries=active_entries(db)

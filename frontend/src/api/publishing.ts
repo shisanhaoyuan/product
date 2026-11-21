@@ -65,7 +65,25 @@ export interface Attempt {
   results: Record<string, ListingResult>;
   polling?: { state: string; next_at: number; tries: number; last_error: string } | null;
 }
+export interface ListingVariantGroup {
+  listing_id: string;
+  group_id: string;
+  axes: string[];
+  allowed_axes: string[];
+  primary_sku: string;
+  skus: string[];
+  members: {
+    platform_sku: string;
+    source_sku: string;
+    values: Record<string, unknown>;
+    primary: boolean;
+    in_batch: boolean;
+  }[];
+  errors: Issue[];
+  locked: boolean;
+}
 export interface ListingDocument {
+  variant_groups?: ListingVariantGroup[];
   source_price_reviews?: Record<
     string,
     {

@@ -143,6 +143,10 @@ def create_document(catalog, db, bid, data, actor_id):
             brands=[old_brand,info['brand'],*source_brands(source)]
             row['product_type']=template['product_type']
             row['visible']=copy.deepcopy(template['visible'])
+            # Group routing belongs to the destination store, never to the template.
+            from .listing_variants import SYSTEM_FIELDS
+            for key in SYSTEM_FIELDS:
+                row['visible'].pop(key,None)
             row['visible']['brand']=data.brand
             row['visible']['productName']=branded_title(row['visible'].get('productName',''),data.brand,brands)
             for key in ('shortDescription','keyFeatures'):

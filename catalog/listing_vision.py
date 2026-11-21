@@ -256,4 +256,7 @@ def stable_feed_row(db,row):
     result['visible']['mainImageUrl']=stable(row['visible'].get('mainImageUrl'))
     if isinstance(row['visible'].get('productSecondaryImageURL'),list):
         result['visible']['productSecondaryImageURL']=[stable(u) for u in row['visible']['productSecondaryImageURL']]
+    for swatch in result['visible'].get('swatchImages') or []:
+        if isinstance(swatch,dict) and 'swatchImageUrl' in swatch:
+            swatch['swatchImageUrl']=stable(swatch['swatchImageUrl'])
     return result
