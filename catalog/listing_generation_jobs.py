@@ -202,6 +202,8 @@ def run_job(catalog, publisher, jid, ai):
             for key in ('platform_sku','listing_id','source_sku'):
                 if updated[key]!=original[key]:
                     raise ListingAIError('生成结果改变商品身份，已停止保存')
+            if updated.get('target_stock')!=original.get('target_stock'):
+                raise ListingAIError('生成结果改变人工目标库存，已停止保存')
             if updated['identification']!=expected_identity:
                 raise ListingAIError('AI 修改了真实编码或豁免绑定，已停止保存')
             for key in ('price','msrp','inventory','sku','productIdentifiers'):

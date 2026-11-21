@@ -1,4 +1,5 @@
 import copy
+from datetime import datetime, timezone
 import json
 import threading
 import uuid
@@ -600,3 +601,54 @@ def test_removed_product_type_returns_validation_issue_even_with_exemption(publi
     assert checked['validation']['valid_count']==0
     assert all(any(e['path']=='product_type' for e in r['errors']) for r in checked['validation']['rows'].values())
     assert c.post(base+'/submit',json=submission(checked)).status_code==409
+
+
+@pytest.mark.parametrize('quantity',[0,7,25])
+def test_manual_target_stock_is_saved_submitted_and_used_after_ingestion(publishing,quantity):
+    c,catalog,_,_,_,base,remote=publishing
+    doc=ready(publishing,target_stock=quantity)
+    assert doc['validation']['valid_count']==2,doc['validation']
+    assert all(r['target_stock']==quantity for r in c.get(base).json()['rows'])
+    assert all(v['stock']=='10' for i in doc['basis']['items'] for v in i['variants'])
+    attempt=send(publishing,doc)
+    wire=remote.feeds[attempt['feed_id']]
+    assert all(r['Orderable']['inventory'][0]['quantity']==quantity for r in wire['MPItem'])
+    result=c.post(base+f"/attempts/{attempt['id']}/refresh")
+    assert result.status_code==200,result.text
+    assert all(r['stock_verified'] for r in result.json()['results'].values())
+    assert all(remote.stock.get(r['platform_sku'],0)==quantity for r in doc['rows'])
+    locked=c.get(base).json();locked['rows'][0]['target_stock']=12
+    assert c.patch(base,json={k:locked[k] for k in ('revision','version','rows')}).status_code==409
+
+
+@pytest.mark.parametrize('quantity',[-1,1.5,True,'10',1000000000])
+def test_invalid_manual_stock_is_rejected(publishing,quantity):
+    c,_,_,_,_,base,_=publishing
+    doc=c.get(base).json();doc['rows'][0]['target_stock']=quantity
+    assert c.patch(base,json={k:doc[k] for k in ('revision','version','rows')}).status_code==422
+
+
+def test_manual_stock_can_override_source_zero_without_masking_identity_or_price_errors():
+    from catalog.walmart_publishing import source_issues
+    item=dict(source='Amazon',errors=['child：库存缺失或不符合 0 / 10 规则，执行前需核验'],observed_at=datetime.now(timezone.utc).isoformat())
+    variant=dict(sku='child',stock='0',price='20')
+    assert source_issues(item,variant)
+    assert source_issues(item,variant,target_stock=6)==[]
+    assert source_issues(item,variant,target_stock=0)==[]
+    item['errors'].append('供应商 SKU 与价格、库存或详情来源不一致，请重新同步')
+    errors=source_issues(item,variant | {'price':None},target_stock=6)
+    assert any('SKU' in e for e in errors) and any('售价' in e for e in errors)
+
+
+
+def test_refresh_source_preserves_manual_stock_and_clearing_restores_default(publishing):
+    c,_,_,_,_,base,_=publishing
+    doc=ready(publishing,target_stock=23)
+    refreshed=c.post(base+'/refresh-source',json={'revision':doc['revision']})
+    assert refreshed.status_code==200,refreshed.text
+    doc=refreshed.json()
+    assert all(row['target_stock']==23 for row in doc['rows'])
+    for row in doc['rows']:row['target_stock']=None
+    saved=c.patch(base,json={k:doc[k] for k in ('revision','version','rows')})
+    assert saved.status_code==200,saved.text
+    assert all('target_stock' not in row for row in saved.json()['rows'])

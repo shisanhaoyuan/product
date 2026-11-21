@@ -12,7 +12,7 @@ chrome.runtime.onMessage.addListener((data, sender, reply) => {
     if (origin !== 'https://www.amazon.com') {
       const permitted = await chrome.permissions.contains({ origins: [origin + '/*'] });
       if (!permitted) throw new Error('请先通过助手连接商品库网站。');
-      if (data.action === 'probe') return { ready: true, modes: ['images', 'source'] };
+      if (data.action === 'probe') return { ready: true, modes: ['images', 'source'], backgroundSource: true };
       const key = jobKey(sender.tab.id);
       const old = (await chrome.storage.session.get(key))[key];
       if (data.action === 'cancel') {
@@ -22,9 +22,9 @@ chrome.runtime.onMessage.addListener((data, sender, reply) => {
       if (data.action !== 'start' || !/^[A-Z0-9]{10}$/.test(data.asin) ||
           typeof data.requestId !== 'string' || data.requestId.length > 100) throw new Error('无效抓取请求');
       if (old) await finish(key, old, { error: '上一次抓取已被新的请求取消。' });
-      const tab = await chrome.tabs.create({ url: `https://www.amazon.com/dp/${data.asin}?th=1&psc=1`, active: data.mode !== 'source' });
+      const tab = await chrome.tabs.create({ url: `https://www.amazon.com/dp/${data.asin}?th=1&psc=1`, active: data.mode !== 'source' || data.foreground === true });
       await chrome.storage.session.set({ [key]: { owner: sender.tab.id, amazon: tab.id,
-        asin: data.asin, mode: data.mode === 'source' ? 'source' : 'images',
+        asin: data.asin, revealed: data.foreground === true, mode: data.mode === 'source' ? 'source' : 'images',
         requestId: data.requestId, expires: Date.now() + 600000 } });
       return { started: true };
     }
@@ -47,6 +47,8 @@ chrome.runtime.onMessage.addListener((data, sender, reply) => {
       await finish(key, job, { html: data.html, source_url: sender.url, asin: job.asin });
       if (job.revealed || job.mode !== 'source')
         await chrome.tabs.update(job.owner, { active: true }).catch(() => {});
+      if (job.mode === 'source' && !job.revealed)
+        await chrome.tabs.remove(job.amazon).catch(() => {});
       return { accepted: true };
     }
     return {};

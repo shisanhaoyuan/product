@@ -97,6 +97,7 @@ class ListingRow(Input):
     source_sku: str = Field(min_length=1, max_length=200)
     product_type: str = Field(default='', max_length=300)
     fulfillment_center_id: str = Field(default='',max_length=100)
+    target_stock: int | None = Field(default=None, ge=0, le=999999999, strict=True)
     identification: Identification
     visible: dict[str, Any]
     orderable: dict[str, Any]
@@ -362,7 +363,7 @@ def unchanged_sources(db, doc):
     return basis
 
 
-def source_issues(item, variant, price_verified=False):
+def source_issues(item, variant, price_verified=False, target_stock=None):
     # Presentation gaps can be filled in this document. Core evidence cannot be overridden here.
     ignored = ('缺少标题，', '缺少描述，', '缺少卖点，', '缺少商品图片，', '缺少UPC / GTIN', '来源类目缺失，')
     errors = [e for e in item['errors'] if not e.startswith(ignored)]
@@ -370,12 +371,16 @@ def source_issues(item, variant, price_verified=False):
     # Each row owns its source-price warning; another SKU's acknowledgement cannot clear it.
     other_prices = {f"{v['sku']}：{MISSING}" for v in item.get('variants', []) if v.get('sku') != variant.get('sku') and eligible(item,v)}
     errors = [e for e in errors if e not in other_prices]
+    if target_stock is not None:
+        errors = [e for e in errors if not (
+            e.startswith(('Seller 可售库存缺失或异常', 'Seller 可售库存为 ', '赛盈可用库存为 ', '赛盈库存缺失'))
+            or '：库存缺失或不符合 0 / 10 规则' in e)]
     verified = price_verified and eligible(item,variant)
     if verified:
         errors = [e for e in errors if e != f"{variant['sku']}：{MISSING}"]
     if variant.get('price') is None and not verified:
         errors.append('缺少已核验的来源售价，不能提交')
-    if str(variant.get('stock')) != '10':
+    if target_stock is None and str(variant.get('stock')) != '10':
         errors.append('当前无可上架库存或库存未核验，请先更新来源库存')
     try:
         age=time.time() - datetime.fromisoformat(item['observed_at']).timestamp()
@@ -445,7 +450,7 @@ def check_rows(db, doc, session, binding_row, skus=None):
         sku = row['platform_sku']; item, variant = by_sku[sku]
         from .listing_prerequisites import evidence_errors, identifier_ownership_errors
         errors = evidence_errors(db,doc,row,item)
-        for message in source_issues(item,variant,sku in price_reviews):
+        for message in source_issues(item,variant,sku in price_reviews,row.get('target_stock')):
             issue=dict(path='',message=message)
             if eligible(item,variant) and message in (f"{variant['sku']}：{variant['error']}", '缺少已核验的来源售价，不能提交'):
                 issue.update(path='orderable.price',code='source_price_review')
@@ -483,7 +488,7 @@ def check_rows(db, doc, session, binding_row, skus=None):
             try:
                 from .listing_vision import stable_feed_row
                 entry, validation_schema = feed_item(stable_feed_row(db,row),schema,doc['version'],os.environ.get('CATALOG_PUBLIC_ORIGIN',''),exemption=exempt,
-                    stock=int(variant['stock']) if str(variant.get('stock')) in ('0','10') else None)
+                    stock=row.get('target_stock') if row.get('target_stock') is not None else int(variant['stock']) if str(variant.get('stock')) in ('0','10') else None)
                 errors.extend(schema_errors(validation_schema,entry,doc['version']))
                 from .listing_skill_defaults import enforce_origin
                 origin_check=copy.deepcopy(row)
@@ -628,6 +633,9 @@ def publishing_routes(catalog):
         with catalog.connect() as db:
             write_lock(db);batch(db,bid);doc=document(db,bid);revision_check(doc,data.revision)
             rows=[r.model_dump() for r in data.rows];old=json.loads(doc['rows_json'])
+            for r in rows:
+                if r.get('target_stock') is None:
+                    r.pop('target_stock',None)
             key=lambda r:(r['platform_sku'],r['listing_id'],r['source_sku'])
             if len({key(r) for r in rows})!=len(rows) or {key(r) for r in old}!={key(r) for r in rows}:
                 raise HTTPException(409,'不能修改 SKU、店铺及商品对应关系，或增删批次商品')
@@ -840,7 +848,7 @@ def publishing_routes(catalog):
                             raise HTTPException(409,'官方规格已过期或变化，请重新加载并校验')
                         basis_item=next(i for i in basis['items'] if i['listing_id']==row['listing_id'])
                         basis_variant=next(v for v in basis_item['variants'] if v['platform_sku']==sku)
-                        if source_issues(basis_item,basis_variant,sku in price_reviews):
+                        if source_issues(basis_item,basis_variant,sku in price_reviews,row.get('target_stock')):
                             raise HTTPException(409,'来源售价或库存不符合要求，请刷新来源并重新校验')
                         source=json.loads(db.execute('SELECT data_json FROM current_listings WHERE id=?',(row['listing_id'],)).fetchone()[0])
                         if matches(source,entries):
@@ -850,7 +858,7 @@ def publishing_routes(catalog):
                         claim=db.execute('SELECT * FROM walmart_listing_claims WHERE store_id=? AND platform_sku=?',(bound['store_id'],sku)).fetchone()
                         if claim and claim['batch_id']!=bid:
                             raise HTTPException(409,'该店铺 SKU 已由其他批次提交，禁止重复')
-                        frozen_row = row | {'stock':int(basis_variant['stock'])}
+                        frozen_row = row | {'stock':row['target_stock'] if row.get('target_stock') is not None else int(basis_variant['stock'])}
                         if basis_item['source'] in ('GigaB2B', 'GigaB2B_CA', 'Saleyee'):
                             frozen_row['patrol_basis'] = dict(multiplier=basis['multiplier'], landed=basis_variant['base'])
                             if basis_item['source'] == 'Saleyee':
@@ -992,6 +1000,14 @@ def inventory_target(catalog,row):
     if not stored or not current:
         raise WalmartError('商品来源已不存在，暂停库存写入')
     source=json.loads(stored[0]);item=json.loads(current[0])
+    if row.get('target_stock') is not None:
+        candidates=item.get('variants') or [item]
+        if len([v for v in candidates if v['sku']==row['source_sku']])!=1:
+            raise WalmartError('库存来源 SKU 不匹配，暂停写入')
+        quantity=row['target_stock']
+        if type(quantity) is not int or not 0<=quantity<=999999999:
+            raise WalmartError('目标库存必须为 0 到 999999999 的整数')
+        return quantity
     try:
         age=time.time()-datetime.fromisoformat(source['observed_at']).timestamp()
         if age>MAX_SOURCE_AGE or age < -300:

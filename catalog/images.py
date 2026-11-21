@@ -174,7 +174,7 @@ def image_routes(catalog, storage):
     @router.get('/images/helper.zip')
     def helper_download():
         root = Path(__file__).resolve().parent.parent / 'browser-helper'
-        files = ('manifest.json', 'popup.html', 'popup.js', 'bridge.js', 'worker.js', 'amazon.js')
+        files = ('manifest.json', 'popup.html', 'popup.js', 'bridge.js', 'worker.js', 'location-state.js', 'amazon.js')
         if not all((root / name).is_file() for name in files):
             raise HTTPException(503, '验证助手文件缺失，请检查部署')
         output = io.BytesIO()

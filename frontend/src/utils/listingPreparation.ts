@@ -9,9 +9,6 @@ export function shouldPrepareOnEntry(doc: ListingDocument | null, job: Generatio
     ),
   );
   if (!editable.length) return false;
-  if (!job && !doc.basis.items.some((item) => item.reuse_template)) return true;
-  // Entering an editable Amazon listing refreshes quotes before generating its fields.
-  return editable.some((row) =>
-    doc.basis.items.some((item) => item.listing_id === row.listing_id && item.source === 'Amazon'),
-  );
+  // A completed/failed/interrupted attempt is resumed only by an explicit user action.
+  return !job && !doc.basis.items.some((item) => item.reuse_template);
 }

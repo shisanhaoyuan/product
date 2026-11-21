@@ -2,6 +2,7 @@ import { catalogApi } from '../api/client';
 import type { PrelistingPreview } from '../api/types';
 import { errorMessage } from './display';
 import { captureInBrowser } from './browserCapture';
+import { claimAutomaticCollection } from './automaticCollection';
 
 const browserPreferenceKey = 'jiwu-source-browser-10001';
 export function prefersLocalSourceBrowser() {
@@ -23,8 +24,9 @@ export async function collectSourceInBrowser(
   sku: string | undefined,
   asin: string,
   signal: AbortSignal,
+  foreground = false,
 ) {
-  const page = await captureInBrowser(asin, signal, 'source');
+  const page = await captureInBrowser(asin, signal, 'source', foreground);
   signal.throwIfAborted();
   const result = await catalogApi.browserCaptureSource(listingId, sku, page, signal);
   signal.throwIfAborted();
@@ -53,7 +55,6 @@ export async function collectSource(
 ) {
   signal.throwIfAborted();
   if (asin && prefersLocalSourceBrowser()) {
-    onVerification();
     return collectSourceInBrowser(listingId, sku, asin, signal);
   }
   const result = await catalogApi.captureSource(listingId, sku, signal);
@@ -165,10 +166,15 @@ export async function collectProductSources(
         ? await catalogApi.sourceCapture(listingId, target.sku, signal)
         : null;
       signal.throwIfAborted();
-      if (old && hasCapturedPrice(old, target.asin) && hasCollectedImages(old)) {
+      if (old) {
         onRecord(target.sku, old);
         continue;
       }
+      if (
+        missingOnly &&
+        !claimAutomaticCollection('product-target', [listingId, target.sku || '', target.asin])
+      )
+        continue;
       const result = await collectSource(
         listingId,
         target.sku,
@@ -201,18 +207,31 @@ export async function collectListingSources(
   targets: { platform_sku: string; listing_id: string; sku: string; asin: string }[],
   signal: AbortSignal,
   progress: (message: string) => void,
+  foregroundFirst = false,
 ) {
   const receipts: Record<string, string> = {};
   for (const [index, target] of targets.entries()) {
     signal.throwIfAborted();
     progress(`使用商品库采集会话：${target.sku || target.asin} · ${index + 1}/${targets.length}`);
-    const record = await collectSource(
-      target.listing_id,
-      target.sku || undefined,
-      signal,
-      () => progress('等待浏览器设置：请在打开的 Amazon 网页将配送邮编设为 10001，完成后自动继续'),
-      target.asin,
-    );
+    const record =
+      foregroundFirst && index === 0
+        ? await collectSourceInBrowser(
+            target.listing_id,
+            target.sku || undefined,
+            target.asin,
+            signal,
+            true,
+          )
+        : await collectSource(
+            target.listing_id,
+            target.sku || undefined,
+            signal,
+            () =>
+              progress(
+                '等待浏览器设置：请在打开的 Amazon 网页将配送邮编设为 10001，完成后自动继续',
+              ),
+            target.asin,
+          );
     if (record.asin !== target.asin || !record.capture_id)
       throw new Error('未取得本轮商品采集记录，请刷新后重试');
     if (!/\b10001\b/.test(record.delivery_location || ''))

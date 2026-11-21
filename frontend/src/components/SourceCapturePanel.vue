@@ -5,7 +5,6 @@ import { catalogApi } from '../api/client';
 import {
   collectProductSources,
   hasCapturedPrice,
-  hasCollectedImages,
   collectSourceInBrowser,
   prefersLocalSourceBrowser,
   preferLocalSourceBrowser,
@@ -13,6 +12,7 @@ import {
 import { errorMessage, money, safeUrl } from '../utils/display';
 import { useProductEditing } from '../composables/useProductEditing';
 import AppIcon from './AppIcon.vue';
+import { claimAutomaticCollection } from '../utils/automaticCollection';
 
 const props = withDefaults(
   defineProps<{
@@ -34,7 +34,6 @@ const busy = ref(false),
   error = ref(''),
   progress = ref('');
 let controller: AbortController | undefined;
-const autoAttempted = new Set<string>();
 const disabled = computed(
   () => busy.value || loading.value || !!editing?.busy.value || !!editing?.active.value,
 );
@@ -76,16 +75,9 @@ watch(
 );
 
 async function autoCapture() {
-  const key = JSON.stringify([props.listingId, props.sku, props.asin]);
-  if (!editing?.enabled.value || disabled.value || !props.asin || autoAttempted.has(key)) return;
-  if (!props.automatic) return;
-  if (
-    !props.variants?.length &&
-    hasCapturedPrice(record.value, props.asin) &&
-    hasCollectedImages(record.value)
-  )
-    return;
-  autoAttempted.add(key);
+  if (!editing?.enabled.value || disabled.value || !props.asin || !props.automatic) return;
+  if (record.value) return;
+  if (!claimAutomaticCollection('product', [props.listingId, props.sku || '', props.asin])) return;
   await capture(false, true);
 }
 watch(
@@ -111,6 +103,7 @@ async function capture(reuse = false, missingOnly = false, manual = false) {
         props.sku,
         props.asin,
         request.signal,
+        true,
       );
       progress.value = '本机浏览器采集完成，地区设置保留在当前浏览器中。';
     } else if (reuse) {
@@ -183,7 +176,7 @@ onBeforeUnmount(() => controller?.abort());
           v-model="localBrowser"
           type="checkbox"
           :disabled="disabled"
-        />后续使用本机浏览器（保留地区）</label
+        />后续使用同一浏览器后台采集（保留地区）</label
       >
       <a href="/api/products/images/helper.zip" download>下载验证助手</a>
       <a href="/assets/capture-helper.html" target="_blank" rel="noopener">安装说明</a>

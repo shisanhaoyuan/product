@@ -26,6 +26,7 @@ export interface ListingRow {
   source_sku: string;
   product_type: string;
   fulfillment_center_id: string;
+  target_stock?: number | null;
   identification: {
     mode: 'identifier' | 'exemption';
     type: 'GTIN' | 'UPC' | 'EAN' | 'ISBN';

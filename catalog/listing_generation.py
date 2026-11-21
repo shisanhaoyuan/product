@@ -566,7 +566,7 @@ def validate_generated(row, schema, version, origin):
     if not row['fulfillment_center_id']:
         errors.append(dict(path='fulfillment_center_id', message='没有唯一可用的店铺发货仓，请设置店铺默认仓'))
     try:
-        entry, validation_schema = feed_item(row, schema, version, origin, stock=10)
+        entry, validation_schema = feed_item(row, schema, version, origin, stock=row.get('target_stock') if row.get('target_stock') is not None else 10)
         errors.extend(schema_errors(validation_schema, entry, version))
     except (ValueError, KeyError, TypeError) as exc:
         errors.append(dict(path='', message='资料结构不完整，请查看缺失字段'))

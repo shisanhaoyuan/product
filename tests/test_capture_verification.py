@@ -12,7 +12,7 @@ def test_helper_download_contains_current_extension_source(local):
     response = client.get('/api/products/images/helper.zip')
     assert response.status_code == 200
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
-        assert set(archive.namelist()) == {'manifest.json', 'popup.html', 'popup.js', 'bridge.js', 'worker.js', 'amazon.js'}
+        assert set(archive.namelist()) == {'manifest.json', 'popup.html', 'popup.js', 'bridge.js', 'worker.js', 'location-state.js', 'amazon.js'}
 
 
 def test_challenge_returns_explicit_handoff_without_changing_product(local, monkeypatch):

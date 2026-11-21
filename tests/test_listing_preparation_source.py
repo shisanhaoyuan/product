@@ -268,3 +268,13 @@ def test_fresh_ordinary_offer_without_reference_fills_price(amazon,monkeypatch):
     assert all(r['orderable']['price']==172.79 for r in doc['rows'])
     assert all(v['price_basis']=='amazon_regular_no_reference_v1' and v['original'] is None
                for item in doc['basis']['items'] for v in item['variants'])
+
+
+
+def test_fresh_quote_and_ai_preserve_manual_target_inventory(amazon,monkeypatch):
+    c,_,_,_,_,base,_=amazon
+    patch_rows(c,base,lambda rows:[r.update(target_stock=17) for r in rows])
+    monkeypatch.setattr('catalog.images.fetch_amazon_page',lambda asin:page(asin,offer()))
+    doc,status=execute(amazon)
+    assert status['state']=='complete',status
+    assert all(row['target_stock']==17 for row in doc['rows'])

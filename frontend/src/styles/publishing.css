@@ -1121,3 +1121,25 @@
   width: 20px;
   height: 20px;
 }
+
+
+.listing-stock-input {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  color: #54728a;
+  font-size: 16px;
+}
+.listing-stock-input input {
+  width: 100px;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid #bad0e1;
+  border-radius: 8px;
+  background: #fff;
+  color: #204560;
+  font: inherit;
+  font-weight: 600;
+  text-align: center;
+}

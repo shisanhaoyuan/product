@@ -14,6 +14,7 @@ vi.mock('../api/client', () => ({
   },
 }));
 vi.mock('./browserCapture', () => ({ captureInBrowser: mock.page }));
+vi.mock('./automaticCollection', () => ({ claimAutomaticCollection: () => true }));
 import { collectSource, collectMissingPrices, collectProductSources } from './sourceCollection';
 
 function preview(): PrelistingPreview {
@@ -150,7 +151,7 @@ it('skips already captured children and stops remaining child requests when canc
   ).rejects.toThrow();
 });
 
-it('collects images for an older record even when its price is complete', async () => {
+it('does not automatically recollect an existing record just because images are missing', async () => {
   mock.read.mockResolvedValue({
     asin: 'B000000001',
     original_price: '20',
@@ -166,7 +167,7 @@ it('collects images for an older record even when its price is complete', async 
     vi.fn(),
     vi.fn(),
   );
-  expect(mock.capture).toHaveBeenCalledTimes(1);
+  expect(mock.capture).not.toHaveBeenCalled();
 });
 
 it.each([502, 503, 504])(
@@ -220,7 +221,7 @@ it('hands a location failure to the local browser and submits only its matching 
   });
   const result = await collectSource('one', 'child', signal);
   expect(result.status).toBe('captured');
-  expect(mock.page).toHaveBeenCalledWith(page.asin, signal, 'source');
+  expect(mock.page).toHaveBeenCalledWith(page.asin, signal, 'source', false);
   expect(mock.browser).toHaveBeenCalledWith('one', 'child', page, signal);
 });
 
@@ -360,4 +361,37 @@ it('filling stops for manual ZIP setup instead of continuing with another backen
   ).rejects.toThrow('验证助手');
   expect(mock.capture).toHaveBeenCalledTimes(1);
   expect(mock.browser).not.toHaveBeenCalled();
+});
+
+it('manual listing ZIP setup is foreground for the first child only', async () => {
+  const values = new Map<string, string>();
+  vi.stubGlobal('localStorage', {
+    getItem: (k: string) => values.get(k),
+    setItem: (k: string, v: string) => values.set(k, v),
+  });
+  try {
+    const { collectListingSources } = await import('./sourceCollection');
+    mock.page.mockImplementation(async (asin) => ({ asin, html: 'page' }));
+    mock.browser.mockImplementation(async (_lid, _sku, page) => ({
+      asin: page.asin,
+      status: 'captured',
+      delivery_location: '10001',
+      capture_id: page.asin,
+    }));
+    const signal = new AbortController().signal;
+    await collectListingSources(
+      [
+        { platform_sku: 'one', listing_id: 'a', sku: 'red', asin: 'B000000001' },
+        { platform_sku: 'two', listing_id: 'a', sku: 'blue', asin: 'B000000002' },
+      ],
+      signal,
+      vi.fn(),
+      true,
+    );
+    expect(mock.page.mock.calls[0]).toEqual(['B000000001', signal, 'source', true]);
+    expect(mock.page.mock.calls[1]).toEqual(['B000000002', signal, 'source', false]);
+    expect(mock.capture).not.toHaveBeenCalled();
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });

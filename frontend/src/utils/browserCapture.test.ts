@@ -64,7 +64,7 @@ it('requires source support and passes the requested capture mode', async () => 
   const b = browser();
   const old = expect(
     captureInBrowser('B012345678', new AbortController().signal, 'source'),
-  ).rejects.toThrow('新版');
+  ).rejects.toThrow('1.2.3');
   b.deliver({ action: 'reply', ready: true });
   await old;
   const promise = captureInBrowser('B012345678', new AbortController().signal, 'source');
@@ -73,7 +73,13 @@ it('requires source support and passes the requested capture mode', async () => 
     listener({
       source: b.window,
       origin: 'https://catalog.test',
-      data: { ...probe, action: 'reply', ready: true, modes: ['images', 'source'] },
+      data: {
+        ...probe,
+        action: 'reply',
+        ready: true,
+        modes: ['images', 'source'],
+        backgroundSource: true,
+      },
     });
   expect(b.window.postMessage.mock.calls.at(-1)![0]).toMatchObject({
     action: 'start',
@@ -124,4 +130,14 @@ it('does not treat closing a verification page or a timeout as success', async (
     });
   await vi.advanceTimersByTimeAsync(600000);
   await timeout;
+});
+
+it('rejects source-capable old helpers that cannot guarantee background collection', async () => {
+  const b = browser();
+  const failure = expect(
+    captureInBrowser('B012345678', new AbortController().signal, 'source'),
+  ).rejects.toThrow('1.2.3');
+  b.deliver({ action: 'reply', ready: true, modes: ['source'] });
+  await failure;
+  expect(b.window.postMessage.mock.calls.some(([data]) => data.action === 'start')).toBe(false);
 });

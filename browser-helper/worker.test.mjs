@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 async function setup() {
-  const store = {}, sent = [], opened = [], focused = [];
+  const store = {}, sent = [], opened = [], focused = [], closed = [];
   let receive, removed;
   const chrome = {
     runtime: { onMessage: { addListener: fn => receive = fn } },
@@ -15,6 +15,7 @@ async function setup() {
     } },
     tabs: {
       create: async options => { opened.push(options); return { id: 22 }; }, update: async (id,options) => { focused.push({id,...options}); },
+      remove: async tab => { closed.push(tab); },
       sendMessage: async (tab, data) => sent.push({ tab, data }),
       onRemoved: { addListener: fn => removed = fn },
     },
@@ -24,7 +25,7 @@ async function setup() {
   const send = (data, tab = 11, url = 'https://catalog.test/') => new Promise(resolve => receive({
     channel: 'catalog-capture-v1', ...data,
   }, { tab: { id: tab }, url, frameId: 0 }, resolve));
-  return { store, sent, send, removed, opened, focused };
+  return { store, sent, send, removed, opened, focused, closed };
 }
 
 test('only the bound Amazon tab and ASIN may complete a pending job', async () => {
@@ -89,4 +90,17 @@ test('a verified background source capture does not steal foreground focus', asy
   await b.send({ action: 'start', asin: 'B012345678', mode: 'source', requestId: 'source' });
   await b.send({ action: 'page', asin: 'B012345678', html: 'offer' }, 22, 'https://www.amazon.com/dp/B012345678');
   assert.equal(b.focused.length, 0);
+  assert.deepEqual(b.closed, [22]);
+});
+
+
+test('manual foreground applies to one request only, without changing later collection', async () => {
+  const b = await setup();
+  assert.equal((await b.send({ action: 'probe' })).backgroundSource, true);
+  await b.send({ action: 'start', asin: 'B012345678', mode: 'source', foreground: true, requestId: 'manual' });
+  assert.equal(b.opened[0].active, true);
+  await b.send({ action: 'page', asin: 'B012345678', html: '10001' }, 22, 'https://www.amazon.com/dp/B012345678');
+  assert.equal(b.closed.length, 0);
+  await b.send({ action: 'start', asin: 'B012345679', mode: 'source', requestId: 'next' });
+  assert.equal(b.opened[1].active, false);
 });

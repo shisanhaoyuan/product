@@ -22,6 +22,7 @@
   }
   let running = false, misses = 0, openedOffers = false, selectedRegular = false;
   let lastSource = '', sourceStable = 0;
+  const locationState = globalThis.jiwuLocationState();
   const visible = node => node && node.getClientRects().length && getComputedStyle(node).visibility !== 'hidden';
   function sourceSnippet() {
     const regular = [...document.querySelectorAll('label, button, a, span')]
@@ -101,7 +102,9 @@
       if (task.mode === 'source') {
         const delivery = [...document.querySelectorAll('#glow-ingress-line2, #contextualIngressPtLabel_deliveryShortLine')]
           .filter(visible).map(node => node.textContent).join(' ');
-        if (!/\b10001\b/.test(delivery)) {
+        const locationStatus = locationState(delivery, document.readyState === 'complete', Date.now());
+        if (locationStatus === 'pending') return;
+        if (locationStatus === 'invalid') {
           await chrome.runtime.sendMessage({ channel: 'catalog-capture-v1', action: 'attention' });
           lastSource = ''; sourceStable = 0; openedOffers = false;
           if (!document.getElementById('jiwu-location-help')) {

@@ -18,6 +18,7 @@ import { catalogApi as api } from '../api/client';
 import { useAuth } from '../composables/useAuth';
 import { errorMessage, plain, money } from '../utils/display';
 import { listingSourceImages } from '../utils/listingSourceImages';
+import { claimAutomaticCollection } from '../utils/automaticCollection';
 import { shouldPrepareOnEntry } from '../utils/listingPreparation';
 import { collectMissingPrices, collectListingSources, preferLocalSourceBrowser } from '../utils/sourceCollection';
 import { applyListingDefaults } from '../utils/listingDefaults';
@@ -301,18 +302,19 @@ async function pollGeneration() {
       });
     }, 2500);
 }
-async function generate() {
+async function generate(foregroundFirst = false) {
   await run(async () => {
     if (!awaitingSources.value) {
       await save();
       generation.value = await publishingApi.generate(props.bid);
     }
     if (generation.value?.state === 'awaiting_sources') {
+      claimAutomaticCollection('listing', [props.bid, generation.value.id]);
       collectingSources.value = true;
       sourceCollection = new AbortController();
       try {
         const receipts = await collectListingSources(generation.value.report.source_targets || [], sourceCollection.signal,
-          text => { collectionMessage.value = text; });
+          text => { collectionMessage.value = text; }, foregroundFirst);
         if (!live) return;
         generation.value = await publishingApi.resumeSources(props.bid, generation.value.id, receipts);
         collectionMessage.value = '';
@@ -333,7 +335,7 @@ async function cancelSourceCollection() {
 }
 async function setSourceLocation() {
   preferLocalSourceBrowser(true);
-  await generate();
+  await generate(true);
 }
 const currentSpec = computed(() =>
   current.value ? specs.value[current.value.product_type] : undefined,
@@ -341,6 +343,11 @@ const currentSpec = computed(() =>
 const source = computed(() =>
   doc.value?.basis.items.find((i) => i.listing_id === current.value?.listing_id),
 );
+function setTargetStock(event: Event) {
+  if (!current.value || locked.value) return;
+  const value = (event.target as HTMLInputElement).value;
+  current.value.target_stock = value === '' ? null : Number(value);
+}
 const sourceVariant = computed(() =>
   source.value?.variants.find((v) => v.platform_sku === activeSku.value),
 );
@@ -851,7 +858,8 @@ onMounted(async () => {
     doc.value &&
     canEdit.value &&
     aiReady.value &&
-    (awaitingSources.value || shouldPrepareOnEntry(doc.value, generation.value))
+    (awaitingSources.value || shouldPrepareOnEntry(doc.value, generation.value)) &&
+    claimAutomaticCollection('listing', [props.bid, generation.value?.id || 'first'])
   )
     void generate();
 });
@@ -944,7 +952,7 @@ onBeforeUnmount(() => {
               {{
                 collectionMessage || generation?.message ||
                 (aiReady
-                  ? '进入填写页面后使用商品库同一采集会话，再计算售价和生成资料'
+                  ? '首次进入填写页面自动采集并生成；再次进入保留结果，需要更新时点击重新采集'
                   : 'AI 未配置，来源资料仍可正常查看和编辑')
               }}
             </p>
@@ -959,7 +967,7 @@ onBeforeUnmount(() => {
             v-if="canEdit"
             class="btn"
             :disabled="busy || saving || (generating && !awaitingSources)"
-            @click="generate"
+            @click="generate()"
           >
             {{ awaitingSources ? '继续采集并生成' : generation ? '重新采集并生成' : '采集并生成' }}
           </button>
@@ -1199,7 +1207,12 @@ onBeforeUnmount(() => {
             </div>
             <div class="listing-price-overview">
               <strong>{{ money(String(current.orderable.price ?? '')) }}</strong
-              ><span>目标库存 {{ sourceVariant?.stock ?? '待核验' }}</span>
+              >
+              <label class="listing-stock-input">目标库存
+                <input type="number" min="0" max="999999999" step="1" aria-label="目标库存"
+                  :value="current.target_stock ?? sourceVariant?.stock ?? ''"
+                  :disabled="locked || busy" @input="setTargetStock" />
+              </label>
             </div>
           </div>
           <div v-if="issues.length && !dirty" class="listing-issue-list">
@@ -1461,7 +1474,7 @@ onBeforeUnmount(() => {
                 <strong
                   >当前填写售价 {{ money(current.orderable.price as number | undefined) }}</strong
                 >
-                · 目标库存 {{ sourceVariant?.stock ?? '未核验' }}
+                · 目标库存 {{ current.target_stock ?? sourceVariant?.stock ?? '未核验' }}
                 <span
                   v-if="
                     sourceVariant?.price != null &&
@@ -1474,6 +1487,13 @@ onBeforeUnmount(() => {
                 </span>
               </p>
             </div>
+            <label class="field" data-field="target_stock">
+              <span>目标库存（可手动修改）</span>
+              <input type="number" min="0" max="999999999" step="1"
+                :value="current.target_stock ?? sourceVariant?.stock ?? ''"
+                :disabled="locked || busy" @input="setTargetStock" />
+              <small class="muted">填写非负整数，0 表示暂无库存。保存后按此数量提交；来源库存记录不变。</small>
+            </label>
             <ListingPriceRecovery
               v-if="needsSourcePrice"
               :key="activeSku"
