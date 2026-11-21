@@ -1,5 +1,6 @@
 import { request } from './client';
 export interface WalmartProfile {
+  identityVerified?: boolean;
   partnerId: string;
   partnerName: string;
   partnerDisplayName: string;
@@ -8,7 +9,7 @@ export interface WalmartProfile {
 }
 export interface WalmartAccount {
   store_id: number;
-  marketplace: 'US';
+  marketplace: 'US' | 'CA';
   client_hint: string;
   status: 'verified' | 'error' | 'unbound';
   revision: number;
@@ -34,6 +35,7 @@ export interface WalmartConnections {
   execution_enabled: boolean;
 }
 export interface WalmartVerification {
+  marketplace: 'US' | 'CA';
   verification_id: string;
   store_id: number;
   expires_at: number;
@@ -47,10 +49,15 @@ const post = (data: unknown) => ({
 });
 export const walmartApi = {
   accounts: () => request<WalmartConnections>('/api/walmart/accounts'),
-  preview: (store_id: number, client_id: string, client_secret: string) =>
+  preview: (
+    store_id: number,
+    client_id: string,
+    client_secret: string,
+    marketplace: 'US' | 'CA' = 'US',
+  ) =>
     request<WalmartVerification>(
       '/api/walmart/accounts/preview',
-      post({ store_id, client_id, client_secret }),
+      post({ store_id, client_id, client_secret, marketplace }),
     ),
   bind: (store_id: number, verification_id: string) =>
     request<WalmartAccount>(`/api/walmart/accounts/${store_id}/bind`, post({ verification_id })),

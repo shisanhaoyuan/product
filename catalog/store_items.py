@@ -211,7 +211,7 @@ def store_item_routes(catalog):
         with catalog.connect() as db:
             return [dict(r) for r in db.execute(
                 "SELECT s.id,s.name,a.partner_id FROM listing_stores s JOIN walmart_accounts a ON a.store_id=s.id "
-                "WHERE s.active=1 AND a.status='verified' AND a.encrypted_credentials<>'' ORDER BY s.name")]
+                "WHERE s.active=1 AND a.status='verified' AND a.marketplace='US' AND a.encrypted_credentials<>'' ORDER BY s.name")]
 
     @router.get('/{sid}')
     def fetch(sid: int, request: Request, cursor: str = Query('*', min_length=1, max_length=8192),

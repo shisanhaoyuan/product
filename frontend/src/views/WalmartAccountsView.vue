@@ -15,6 +15,7 @@ const data = ref<WalmartConnections>(),
   search = ref(''),
   statusFilter = ref('');
 const selected = ref<WalmartStore | null>(null),
+  marketplace = ref<'US' | 'CA'>('US'),
   clientId = ref(''),
   secret = ref(''),
   verified = ref<WalmartVerification | null>(null),
@@ -43,6 +44,14 @@ const boundCount = computed(() => data.value?.stores.filter((s) => s.account?.bo
 const failedCount = computed(
   () => data.value?.stores.filter((s) => s.account?.status === 'error').length || 0,
 );
+const marketLabel = (market?: string) =>
+  market === 'CA' ? '加拿大站 Walmart CA' : '美国站 Walmart US';
+function selectMarket(value: string) {
+  if (busy.value || selected.value?.account?.bound || !['US', 'CA'].includes(value)) return;
+  marketplace.value = value as 'US' | 'CA';
+  clearPreview();
+  error.value = '';
+}
 function clearSecrets() {
   clientId.value = '';
   secret.value = '';
@@ -56,6 +65,7 @@ function clearPreview() {
 function open(store: WalmartStore) {
   if (busy.value) return;
   selected.value = store;
+  marketplace.value = store.account?.marketplace || 'US';
   clearSecrets();
   clearPreview();
   error.value = '';
@@ -91,6 +101,7 @@ async function preview() {
       selected.value.store_id,
       clientId.value.trim(),
       secret.value.trim(),
+      marketplace.value,
     );
     expiryTimer = setTimeout(
       () => {
@@ -110,13 +121,13 @@ async function bind() {
   busy.value = true;
   error.value = '';
   try {
-    await walmartApi.bind(selected.value.store_id, verified.value.verification_id);
+    const account = await walmartApi.bind(selected.value.store_id, verified.value.verification_id);
     const name = selected.value.name;
     selected.value = null;
     clearPreview();
     clearSecrets();
     await load();
-    message.value = `${name} 已绑定沃尔玛美国站。`;
+    message.value = `${name} 已绑定${marketLabel(account.marketplace)}。`;
   } catch (e) {
     error.value = errorMessage(e);
   } finally {
@@ -178,7 +189,7 @@ onBeforeUnmount(() => {
     <div>
       <p class="eyebrow">STORES / 店铺管理</p>
       <h1>店铺管理</h1>
-      <p class="subtitle">各店铺独立授权，验证实际账号后确认绑定。</p>
+      <p class="subtitle">各店铺独立选择美国或加拿大站，验证 API 授权后确认绑定。</p>
     </div>
   </div>
   <StoreManagementNav />
@@ -197,8 +208,8 @@ onBeforeUnmount(() => {
       ><strong :class="{ 'wm-error-text': failedCount }">{{ failedCount }}</strong>
     </div>
     <div>
-      <span>当前站点</span><strong class="wm-market">Walmart US</strong
-      ><small>美国站 · 仅授权管理</small>
+      <span>支持站点</span><strong class="wm-market">US / CA</strong
+      ><small>美国站 / 加拿大站 · 独立授权</small>
     </div>
   </div>
   <p class="notice notice-space">
@@ -261,9 +272,19 @@ onBeforeUnmount(() => {
         ><div class="wm-profile">
           <span>沃尔玛实际店铺</span
           ><strong>{{
-            s.account.profile.partnerDisplayName || s.account.profile.partnerName
+            s.account.profile.partnerDisplayName ||
+            s.account.profile.partnerName ||
+            '接口未返回店铺名称'
           }}</strong
-          ><small>Partner ID：{{ s.account.profile.partnerId }} · 美国站</small>
+          ><small
+            >{{ marketLabel(s.account.marketplace)
+            }}<template v-if="s.account.profile.partnerId">
+              · Partner ID：{{ s.account.profile.partnerId }}</template
+            ></small
+          >
+          <small v-if="s.account.marketplace === 'CA'"
+            >OAuth 授权已验证；店铺归属由管理员核对。加拿大刊登和商品管理尚未开放。</small
+          >
         </div>
         <dl class="wm-info">
           <div>
@@ -300,7 +321,7 @@ onBeforeUnmount(() => {
       <p v-else class="wm-empty">绑定该店铺的 API 密钥，核对沃尔玛账号名称和编号后保存。</p>
       <footer>
         <button
-          v-if="s.account?.bound"
+          v-if="s.account?.bound && s.account.marketplace === 'US'"
           class="btn"
           :disabled="busy || !s.active"
           @click="
@@ -347,7 +368,7 @@ onBeforeUnmount(() => {
     <section class="wm-dialog" role="dialog" aria-modal="true" aria-labelledby="wm-bind-title">
       <header>
         <div>
-          <p class="eyebrow">WALMART US</p>
+          <p class="eyebrow">WALMART {{ marketplace }}</p>
           <h2 id="wm-bind-title">
             {{ selected.account?.bound ? '更换店铺密钥' : '绑定店铺' }} · {{ selected.name }}
           </h2>
@@ -357,8 +378,26 @@ onBeforeUnmount(() => {
         </button>
       </header>
       <template v-if="!verified"
-        ><p>填写这家店铺在沃尔玛开发者后台的个人 API 密钥。系统只向沃尔玛官方美国站接口验证。</p>
+        ><p>
+          选择该店铺的实际站点，填写对应的正式环境 OAuth 密钥。系统按所选站点向沃尔玛官方接口验证。
+        </p>
         <form autocomplete="off" @submit.prevent="preview">
+          <FilterSelect
+            label="沃尔玛站点"
+            :model-value="marketplace"
+            :disabled="busy || !!selected.account?.bound"
+            :options="[
+              { value: 'US', label: '美国站 Walmart US' },
+              { value: 'CA', label: '加拿大站 Walmart CA' },
+            ]"
+            @update:model-value="selectMarket"
+          />
+          <small v-if="selected.account?.bound">已绑定店铺固定使用原站点，更换站点请先解绑。</small>
+          <p v-if="marketplace === 'CA'" class="notice">
+            加拿大站验证 OAuth
+            授权及接口权限。官方店铺资料接口仅支持美国站，无法自动读取加拿大店铺名称；请核对密钥确实来自
+            {{ selected.name }}。
+          </p>
           <label
             >Client ID<input
               v-model="clientId"
@@ -377,20 +416,28 @@ onBeforeUnmount(() => {
               :disabled="busy" /></label
           ><small>密钥不会回显；验证后清空输入框。更换失败时保留原绑定。</small
           ><button class="btn primary" :disabled="busy || !clientId.trim() || !secret.trim()">
-            {{ busy ? '正在验证…' : '验证密钥并读取店铺' }}
+            {{
+              busy ? '正在验证…' : marketplace === 'CA' ? '验证加拿大站授权' : '验证密钥并读取店铺'
+            }}
           </button>
         </form></template
       >
       <template v-else
         ><div class="wm-verification">
-          <span class="wm-badge wm-badge-good">沃尔玛身份验证通过</span>
-          <h3>{{ verified.profile.partnerDisplayName || verified.profile.partnerName }}</h3>
+          <span class="wm-badge wm-badge-good">{{
+            verified.marketplace === 'CA' ? '加拿大站 OAuth 授权验证通过' : '沃尔玛身份验证通过'
+          }}</span>
+          <h3>
+            {{
+              verified.profile.partnerDisplayName || verified.profile.partnerName || selected.name
+            }}
+          </h3>
           <dl class="wm-info">
-            <div>
+            <div v-if="verified.marketplace === 'US'">
               <dt>Partner ID</dt>
               <dd>{{ verified.profile.partnerId }}</dd>
             </div>
-            <div>
+            <div v-if="verified.marketplace === 'US'">
               <dt>Store ID</dt>
               <dd>{{ verified.profile.partnerStoreId || '未返回' }}</dd>
             </div>
@@ -400,17 +447,22 @@ onBeforeUnmount(() => {
             </div>
             <div>
               <dt>站点</dt>
-              <dd>美国站 Walmart US</dd>
+              <dd>{{ marketLabel(verified.marketplace) }}</dd>
             </div>
           </dl>
         </div>
+        <p v-if="verified.marketplace === 'CA'">
+          API
+          授权有效，但接口未返回实际店铺名称和编号。上方名称为系统店铺名称，请在加拿大卖家后台核对密钥归属后确认。当前仅开放绑定验证，刊登和商品管理尚未接入。
+        </p>
         <p>请对照卖家后台核对实际店铺身份。验证预览 10 分钟内有效。</p>
         <label class="wm-confirm"
           ><input
             v-model="identityConfirmed"
             type="checkbox"
             :disabled="busy || expired"
-          />我确认以上沃尔玛账号属于系统店铺 {{ selected.name }}</label
+          />我确认这些密钥来自{{ marketLabel(verified.marketplace) }}，属于系统店铺
+          {{ selected.name }}</label
         >
         <p v-if="expired" class="wm-error-text">预览已过期，请重新输入密钥验证。</p>
         <div class="wm-dialog-actions">

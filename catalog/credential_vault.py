@@ -35,19 +35,21 @@ def read_key():
         raise VaultError('凭证加密主密钥不可用，请管理员完成一次性初始化或检查文件权限') from None
 
 
-def encrypt(store_id, payload):
+def encrypt(store_id, payload, marketplace='US'):
+    if marketplace not in ('US', 'CA'):
+        raise VaultError('不支持的沃尔玛站点')
     nonce = os.urandom(12)
-    encrypted = AESGCM(read_key()).encrypt(nonce, json.dumps(payload).encode(), f'walmart:US:{store_id}:v1'.encode())
+    encrypted = AESGCM(read_key()).encrypt(nonce, json.dumps(payload).encode(), f'walmart:{marketplace}:{store_id}:v1'.encode())
     return 'v1.' + base64.urlsafe_b64encode(nonce + encrypted).decode()
 
 
-def decrypt(store_id, ciphertext):
+def decrypt(store_id, ciphertext, marketplace='US'):
     key = read_key()
     try:
-        if not ciphertext.startswith('v1.'):
+        if marketplace not in ('US', 'CA') or not ciphertext.startswith('v1.'):
             raise ValueError('version')
         raw = base64.b64decode(ciphertext[3:], altchars=b'-_', validate=True)
-        result = json.loads(AESGCM(key).decrypt(raw[:12], raw[12:], f'walmart:US:{store_id}:v1'.encode()))
+        result = json.loads(AESGCM(key).decrypt(raw[:12], raw[12:], f'walmart:{marketplace}:{store_id}:v1'.encode()))
         if not isinstance(result, dict):
             raise ValueError('payload')
         return result

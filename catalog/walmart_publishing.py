@@ -181,6 +181,8 @@ def binding(db, store_id, expected_partner=None):
     row = account(db, store_id)
     if not row or not row['encrypted_credentials'] or row['status'] != 'verified':
         raise HTTPException(409, '请先绑定并验证目标沃尔玛店铺')
+    if row['marketplace'] != 'US':
+        raise HTTPException(409, '加拿大站已支持 API 绑定验证，刊登和商品管理尚未接入，不能调用美国站操作')
     if expected_partner and row['partner_id'] != expected_partner:
         raise HTTPException(409, '当前绑定店铺与原提交店铺不同，已阻止查询或写入')
     return target, dict(row)

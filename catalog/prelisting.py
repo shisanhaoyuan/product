@@ -282,6 +282,9 @@ def build_preview(catalog, db, data, exclude_batch=None):
     store = db.execute('SELECT * FROM listing_stores WHERE id=? AND active=1', (data.store_id,)).fetchone()
     if not store:
         raise HTTPException(409, '目标店铺不存在或已停用')
+    bound = db.execute('SELECT marketplace,encrypted_credentials FROM walmart_accounts WHERE store_id=?', (data.store_id,)).fetchone()
+    if bound and bound['encrypted_credentials'] and bound['marketplace'] != 'US':
+        raise HTTPException(409, '该店铺绑定的是加拿大站；加拿大刊登尚未接入，暂不能创建预上架批次')
     if not store['sku_code']:
         raise HTTPException(409, '请先在店铺管理中设置该店铺唯一的两位 SKU 编码')
     rows = selected_rows(catalog, db, data)

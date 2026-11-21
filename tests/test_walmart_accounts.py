@@ -250,3 +250,60 @@ def test_successful_key_replacement_only_after_confirmation(local):
     with app.state.catalog.connect() as db:
         assert decrypt(store,db.execute('SELECT encrypted_credentials FROM walmart_accounts').fetchone()[0])=={'client_id':next_id,'client_secret':next_secret}
     assert next_id not in confirmed.text and next_secret not in confirmed.text
+
+
+def test_canada_binding_reverify_and_market_isolation(local):
+    app,c,remote,ids=local;store,other=ids
+    draft=c.post('/api/walmart/accounts/preview',json={
+        'store_id':store,'marketplace':'CA',**INPUT})
+    assert draft.status_code==200,draft.text
+    assert draft.json()['marketplace']=='CA'
+    assert draft.json()['profile']['identityVerified'] is False
+    assert draft.json()['profile']['partnerId']==''
+    result=c.post(f'/api/walmart/accounts/{store}/bind',json={
+        'verification_id':draft.json()['verification_id']})
+    assert result.status_code==200,result.text
+    assert result.json()['marketplace']=='CA' and result.json()['bound']
+    with app.state.catalog.connect() as db:
+        row=db.execute('SELECT * FROM walmart_accounts WHERE store_id=?',(store,)).fetchone()
+        assert decrypt(store,row['encrypted_credentials'],'CA')==INPUT
+        with pytest.raises(VaultError):
+            decrypt(store,row['encrypted_credentials'],'US')
+        from catalog.walmart_publishing import binding
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc:
+            binding(db,store)
+        assert exc.value.status_code==409
+    verified=c.post(f'/api/walmart/accounts/{store}/verify',json={'revision':1})
+    assert verified.status_code==200 and verified.json()['status']=='verified'
+    assert [r.url.path for r in remote.calls]==['/v3/token','/v3/token/detail']*2
+    assert all(r.headers['WM_MARKET']=='ca' for r in remote.calls)
+    duplicate=c.post('/api/walmart/accounts/preview',json={
+        'store_id':other,'marketplace':'CA',**INPUT})
+    assert duplicate.status_code==409
+    # A bound store cannot silently change markets, even with valid credentials.
+    assert preview(c,store).status_code==409
+    assert c.post(f'/api/walmart/accounts/{store}/unbind',json={'revision':2}).status_code==200
+    assert bind(c,store)['marketplace']=='US'
+    assert all(r.headers['WM_MARKET']=='us' for r in remote.calls[-3:])
+
+
+def test_legacy_us_binding_survives_market_migration(local):
+    app,c,remote,ids=local;store=ids[0]
+    before=bind(c,store)
+    from catalog.walmart_accounts import ACCOUNT_TABLE, initialize
+    with app.state.catalog.connect() as db:
+        ciphertext=db.execute('SELECT encrypted_credentials FROM walmart_accounts').fetchone()[0]
+        db.execute(ACCOUNT_TABLE.replace('walmart_accounts(', 'legacy_accounts(').replace(
+            "marketplace IN ('US','CA')", "marketplace='US'"))
+        db.execute('INSERT INTO legacy_accounts SELECT * FROM walmart_accounts')
+        db.execute('DROP TABLE walmart_accounts')
+        db.execute('ALTER TABLE legacy_accounts RENAME TO walmart_accounts')
+        db.execute('DELETE FROM migrations WHERE version=22')
+        initialize(db)
+        initialize(db)
+        row=db.execute('SELECT * FROM walmart_accounts').fetchone()
+        assert row['encrypted_credentials']==ciphertext
+        assert decrypt(store,ciphertext)==INPUT
+        assert row['revision']==before['revision'] and row['marketplace']=='US'
+        assert "'CA'" in db.execute("SELECT sql FROM sqlite_master WHERE name='walmart_accounts'").fetchone()[0]

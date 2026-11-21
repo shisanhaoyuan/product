@@ -1,4 +1,4 @@
-"""Read-only US Marketplace credential verification. No feeds or publish endpoint."""
+"""Read-only US / Canada OAuth verification. No feeds or publish endpoint."""
 import uuid
 import math
 
@@ -17,8 +17,11 @@ class WalmartVerifier:
     def __init__(self, transport=None):
         self.transport = transport
 
-    def verify(self, client_id, client_secret):
+    def verify(self, client_id, client_secret, marketplace='US'):
+        if marketplace not in ('US', 'CA'):
+            raise WalmartError('请选择美国 US 或加拿大 CA 站点')
         with httpx.Client(base_url=BASE_URL, timeout=httpx.Timeout(20, connect=10),
+                          headers={'WM_MARKET': marketplace.lower()},
                           follow_redirects=False, trust_env=False, transport=self.transport) as client:
             token_data = self.call(client, 'POST', '/v3/token', auth=(client_id, client_secret),
                                    data={'grant_type': 'client_credentials'})
@@ -35,6 +38,17 @@ class WalmartVerifier:
             details = self.call(client, 'GET', '/v3/token/detail', headers=headers)
             if details.get('is_valid') is not True:
                 raise WalmartError('沃尔玛返回令牌无效，请检查 API 授权')
+            if details.get('is_channel_match') is False:
+                raise WalmartError('沃尔玛返回授权渠道不匹配，请检查密钥来源')
+            raw_scopes = details.get('scopes')
+            scopes = {k: v for k, v in (raw_scopes.items() if isinstance(raw_scopes, dict) else [])
+                      if k in SCOPES and v in ('full_access', 'view_only', 'no_access')}
+            if marketplace == 'CA':
+                # Global partnerprofile is documented US-only. Token detail does
+                # not document seller identity; do not invent it or decode tokens.
+                return {'profile': dict(partnerId='', partnerName='', partnerDisplayName='',
+                                        partnerStoreId='', accountStatus='', identityVerified=False),
+                        'scopes': scopes}
             raw_profile = self.call(client, 'GET', '/v3/settings/partnerprofile', headers=headers)
         partner = raw_profile.get('partner')
         if not isinstance(partner, dict):
@@ -58,9 +72,6 @@ class WalmartVerifier:
                 status = config.get('status') if isinstance(config, dict) else None
                 if status in ('ACTIVE', 'INACTIVE', 'SUSPENDED', 'TERMINATED', 'ONBOARDING'):
                     profile['accountStatus'] = status
-        raw_scopes = details.get('scopes')
-        scopes = {k: v for k, v in (raw_scopes.items() if isinstance(raw_scopes, dict) else [])
-                  if k in SCOPES and v in ('full_access', 'view_only', 'no_access')}
         return {'profile': profile, 'scopes': scopes}
 
     @staticmethod
@@ -70,11 +81,11 @@ class WalmartVerifier:
         try:
             with client.stream(method, path, headers=headers, **kwargs) as response:
                 if response.status_code in (401, 403):
-                    raise WalmartError('密钥无效或 API 权限不足，请检查对应店铺的密钥和授权')
+                    raise WalmartError('密钥无效或 API 权限不足，请检查所选站点、正式环境密钥和授权')
                 if response.status_code == 429:
                     raise WalmartError('沃尔玛请求频率受限，请稍后重新验证')
                 if response.status_code != 200:
-                    raise WalmartError('沃尔玛验证服务暂时不可用，请稍后重试')
+                    raise WalmartError(f'沃尔玛验证请求失败（HTTP {response.status_code}），请检查站点与授权后重试')
                 raw = bytearray()
                 for chunk in response.iter_bytes():
                     raw.extend(chunk)
@@ -87,6 +98,8 @@ class WalmartVerifier:
                 return result
         except WalmartError:
             raise
-        except (httpx.HTTPError, ValueError):
+        except httpx.HTTPError:
             # Never expose upstream response, request headers, credentials or token.
-            raise WalmartError('连接沃尔玛失败或响应异常，请稍后重试') from None
+            raise WalmartError('连接沃尔玛失败或超时，请检查服务器网络后重试') from None
+        except ValueError:
+            raise WalmartError('沃尔玛返回的响应无法解析，请核对站点后重试') from None
