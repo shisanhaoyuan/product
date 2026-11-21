@@ -273,3 +273,50 @@ def test_vision_reads_only_collected_images_not_failed_old_links(local,monkeypat
         'mainImageUrl':local_url,'productSecondaryImageURL':['https://example.com/dead.jpg']})
     _,report=image_evidence(catalog,row,dict(_collected_images=[local_url]),AI())
     assert report['state']=='complete' and report['warnings']==[]
+
+
+def test_library_cover_uses_stored_sku_images_with_original_gallery_as_fallback(local, monkeypatch):
+    from catalog.models import ImportBundle
+    from test_prelisting import product
+    client, catalog = local
+    dead = 'https://pg-cdn-a2.datacaciques.com/dead.jpg'
+    backup = 'https://example.com/backup.jpg'
+    item = product(9, images=[dead, backup])
+    catalog.ingest(ImportBundle(namespace='test', label='cover', listings=[item]))
+    def summary():
+        return client.get('/api/products', params={'identifiers': item.sku}).json()['items'][0]
+    initial = summary()
+    assert initial['image'] == dead and initial['image_fallbacks'] == [backup]
+    monkeypatch.setattr('catalog.listing_vision.fetch_image', lambda _: picture())
+    asset, = collect_images(catalog, initial['id'], item.variants[0].sku,
+                            ['https://m.media-amazon.com/images/I/recovered.jpg'])['images']
+    result = summary()
+    assert result['image'] == asset and client.get(asset).status_code == 200
+    assert result['image_fallbacks'] == [dead, backup]
+    assert client.get('/api/products/' + initial['id']).json()['images'] == [dead, backup]
+    other = client.get('/api/products', params={'identifiers': 'parent-0'}).json()['items'][0]
+    assert asset not in [other['image'], *other['image_fallbacks']]
+
+
+def test_manual_cover_and_removal_take_precedence_over_collection(local, monkeypatch):
+    client, catalog = local
+    from catalog.models import ImportBundle
+    from test_prelisting import product
+    url = 'https://example.com/cover.jpg'
+    original = 'https://example.com/original.jpg'
+    catalog.ingest(ImportBundle(namespace='test', label='existing gallery',
+                                listings=[product(0, images=[original], observed_at='2026-11-06T10:00:00+00:00')]))
+    lid = detail(client)['id']
+    monkeypatch.setattr('catalog.listing_vision.fetch_image', lambda _: picture())
+    asset, = collect_images(catalog, lid, 'child-0', [url])['images']
+    def cover():
+        row = client.get('/api/products').json()['items'][0]
+        return [row['image'], *row['image_fallbacks']]
+    assert cover() == [asset, original]
+    assert edit(client, {'field': 'images'}, [url]).status_code == 200
+    assert cover() == [asset, url]
+    manual = 'https://example.com/manual.jpg'
+    assert edit(client, {'field': 'images'}, [manual]).status_code == 200
+    assert cover() == [manual]
+    assert edit(client, {'field': 'images'}, []).status_code == 200
+    assert asset not in cover()

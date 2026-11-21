@@ -21,7 +21,11 @@ defineProps<{ product: ProductSummary }>();
       <StatusBadge :type="productStatus(product).type">{{
         productStatus(product).label
       }}</StatusBadge
-      ><ProductImage :src="product.image" :alt="product.title" /><span class="variant-count"
+      ><ProductImage
+        :src="product.image"
+        :fallbacks="product.image_fallbacks"
+        :alt="product.title"
+      /><span class="variant-count"
         ><AppIcon name="Layers" />{{
           product.variant_count ? product.variant_count + ' 个子变体' : '未记录子变体'
         }}</span

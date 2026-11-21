@@ -340,17 +340,20 @@ class Catalog:
                     coverage.setdefault(row['asin'], []).append(dict(store=row['store'],count=row['count']))
             from .product_store_history import histories
             store_history=histories(db,[r['id'] for r in rows])
+            from .product_thumbnails import page_image_evidence, thumbnail_urls
+            evidence = page_image_evidence(db, [r['id'] for r in rows])
             entries = active_entries(db)
             items=[]
             for r in rows:
                 d=json.loads(r["data_json"])
+                covers = thumbnail_urls(d, evidence[r['id']])
                 prices=[v.get('price') for v in d['variants']] if d['variants'] else [d['price']]
                 prices=[p for p in prices if p not in (None,'')]
                 review = d.get('manual_review') or {}
                 items.append({k:d[k] for k in ('asin','sku','source','source_url','seller','store','brand',
                     'template','creator','uploaded_at','observed_at','evidence_kind','save_succeeded',
                     'fill_complete','readback_verified','local_edit')} | dict(manual_review=d.get('manual_review'),id=r['id'],title=d['copy']['title'],
-                    image=d['images'][0] if d['images'] else next((v['images'][0] for v in d['variants'] if v['images']),''),
+                    image=covers[0] if covers else '', image_fallbacks=covers[1:],
                     saleyee_summary={k:d.get('source_facts',{}).get(k) for k in ('inventory','shipping','landed','warnings')} if d['source']=='Saleyee' else None,
                     giga_summary=giga_summary(d.get('source_facts')) if d['source']=='GigaB2B' else None,
                     variant_count=len(d['variants']),prices=prices,currency=(d.get('source_facts',{}).get('currency') or '') if d['source'] in ('GigaB2B','Saleyee') else 'USD',issue_count=0 if review.get('valid') and review.get('complete') else len(d['issues']),category=r['category'],seller_blacklist=matches(d, entries),

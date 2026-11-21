@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { safeUrl } from '../utils/display';
 import AppIcon from './AppIcon.vue';
 const props = withDefaults(
   defineProps<{
     src?: string;
+    fallbacks?: string[];
     alt?: string;
     imageClass?: string;
     lazy?: boolean;
@@ -12,25 +13,35 @@ const props = withDefaults(
   }>(),
   { alt: '商品图片', lazy: true, placeholder: '暂无商品图片' },
 );
-const failed = ref(false);
+const candidates = computed(() => [
+  ...new Set([props.src, ...(props.fallbacks ?? [])].map(safeUrl).filter(Boolean)),
+]);
+const index = ref(0);
 watch(
-  () => props.src,
+  () => JSON.stringify(candidates.value),
   () => {
-    failed.value = false;
+    index.value = 0;
   },
+  { flush: 'sync' },
 );
+const current = computed(() => candidates.value[index.value]);
+function tryNext(event: Event) {
+  if ((event.currentTarget as HTMLImageElement).getAttribute('src') === current.value)
+    index.value++;
+}
 </script>
 <template>
   <img
-    v-if="safeUrl(src) && !failed"
-    :src="safeUrl(src)"
+    v-if="current"
+    :key="current"
+    :src="current"
     :class="imageClass"
     :alt="alt"
     :loading="lazy ? 'lazy' : 'eager'"
     referrerpolicy="no-referrer"
-    @error="failed = true"
+    @error="tryNext"
   />
   <div v-else class="image-placeholder">
-    <span><AppIcon name="ImageOff" /></span>{{ failed ? '图片暂不可用' : placeholder }}
+    <span><AppIcon name="ImageOff" /></span>{{ candidates.length ? '图片暂不可用' : placeholder }}
   </div>
 </template>

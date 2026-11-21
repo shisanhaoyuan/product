@@ -123,6 +123,7 @@ export interface ProductSummary extends EvidenceStatus {
   observed_at: string;
   title: string;
   image: string;
+  image_fallbacks?: string[];
   variant_count: number;
   prices: (string | null)[];
   currency?: string;

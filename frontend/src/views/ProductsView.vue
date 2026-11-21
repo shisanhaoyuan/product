@@ -411,7 +411,12 @@ onBeforeUnmount(() => {
       </h1>
     </div>
     <div class="actions">
-      <RouterLink v-if="isWarehouse" class="btn" :to="source === 'Saleyee' ? '/saleyee-patrol' : '/giga-patrol'">价格与库存巡查</RouterLink>
+      <RouterLink
+        v-if="isWarehouse"
+        class="btn"
+        :to="source === 'Saleyee' ? '/saleyee-patrol' : '/giga-patrol'"
+        >价格与库存巡查</RouterLink
+      >
       <RouterLink class="btn" to="/prelisting">预上架批次</RouterLink>
       <a
         class="btn"
@@ -694,8 +699,11 @@ onBeforeUnmount(() => {
               </td>
               <td>
                 <RouterLink class="table-product" :to="detailPath(product.id)"
-                  ><ProductImage :src="product.image" image-class="table-thumb" /><span
-                    class="table-product-copy"
+                  ><ProductImage
+                    :src="product.image"
+                    :fallbacks="product.image_fallbacks"
+                    image-class="table-thumb"
+                  /><span class="table-product-copy"
                     ><span class="table-product-title">{{ product.title || '暂无标题' }}</span
                     ><span class="category-label" :title="product.category || '未记录类目'">{{
                       product.category || '未记录类目'
