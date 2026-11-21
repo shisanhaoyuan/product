@@ -16,6 +16,12 @@ export interface ImageCollection {
   failures: { index: number; reason: string }[];
 }
 export interface SourceCapture {
+  wraith_test?: {
+    attempts: number;
+    message: string;
+    challenge_seen: boolean;
+    challenge_cleared: boolean;
+  } | null;
   method?: string;
   image_collection?: ImageCollection;
   status: 'captured' | 'partial' | 'verification_required' | 'browser_required';

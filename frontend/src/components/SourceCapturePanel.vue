@@ -34,6 +34,7 @@ const disabled = computed(
   () => busy.value || loading.value || !!editing?.busy.value || !!editing?.active.value,
 );
 const facts = computed(() => [
+  ...(record.value?.wraith_test ? [['验证测试', record.value.wraith_test.message]] : []),
   ...(record.value?.method === 'wraith_background' ? [['采集方式', 'Wraith 后台浏览器']] : []),
   ['来源卖家', record.value?.seller || '未核验'],
   ['商品价格 · USD', record.value?.price ? money(record.value.price) : '未核验'],

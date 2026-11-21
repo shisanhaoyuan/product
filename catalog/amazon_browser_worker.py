@@ -2,6 +2,7 @@
 import json
 import re
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -23,6 +24,43 @@ def verify_page(page, asin):
         raise CaptureStopped('identity_mismatch')
     if not page.locator('#productTitle').count():
         raise CaptureStopped('failed')
+
+
+def challenge_visible(page):
+    from wraith._press_hold import inspect_press_hold
+    html = page.content()
+    active, _ = inspect_press_hold(page, html)
+    text = page.locator('body').inner_text(timeout=3000)
+    return bool(active or re.search(r'captcha|challenge|checkpoint', urlparse(page.url).path, re.I)
+                or page.locator('input#captchacharacters, form[action*="validateCaptcha"]').count()
+                or re.search(r'robot check|enter the characters you see below|verify you are human|not a robot', text, re.I))
+
+
+def verify_or_try(session, asin, report, clear, detect=challenge_visible):
+    """Three bounded Wraith rounds per child, shared across all page stages."""
+    page = session.page
+    while detect(page):
+        if urlparse(page.url).hostname != 'www.amazon.com':
+            raise CaptureStopped('identity_mismatch')
+        report['challenge_seen'] = True
+        report['challenge_cleared'] = False
+        report['product_verified'] = False
+        if report['attempts'] >= 3:
+            raise CaptureStopped('verification_required')
+        report['attempts'] += 1
+        try:
+            clear(f'https://www.amazon.com/dp/{asin}?th=1&psc=1', session=session,
+                  timeout=20, settle=1, press_hold=True)
+        except Exception as exc:
+            if type(exc).__name__ != 'WaapChallengeTimeout':
+                raise
+            # A cookie or return code is insufficient; inspect the page below.
+        if not detect(page):
+            verify_page(page, asin)
+            report['challenge_cleared'] = True
+            break
+    verify_page(page, asin)
+    report['product_verified'] = True
 
 
 def ensure_location(page):
@@ -47,8 +85,8 @@ def ensure_location(page):
         raise CaptureStopped('location_unverified')
 
 
-def collect(asin, engine):
-    from wraith.engine import launch
+def collect(asin, engine, report):
+    from wraith.engine import launch, clear_challenge
     session = None
     try:
         session = launch(engine=engine, headless=True, geoip=False)
@@ -57,12 +95,19 @@ def collect(asin, engine):
         page.set_default_navigation_timeout(25000)
         url = f'https://www.amazon.com/dp/{asin}?th=1&psc=1'
         response = page.goto(url, wait_until='domcontentloaded')
-        if response is None or not response.ok:
+        if (response is None or not response.ok) and not challenge_visible(page):
             raise CaptureStopped('rate_limited' if response and response.status in (403,429) else 'failed')
         # Wraith success alone is not proof of Amazon identity or a usable quote.
-        verify_page(page, asin)
-        ensure_location(page)
-        verify_page(page, asin)
+        verify_or_try(session, asin, report, clear_challenge)
+        try:
+            ensure_location(page)
+        except CaptureStopped:
+            if challenge_visible(page):
+                verify_or_try(session, asin, report, clear_challenge)
+                ensure_location(page)
+            else:
+                raise
+        verify_or_try(session, asin, report, clear_challenge)
         regular = page.get_by_text(re.compile(r'^Regular\s+Price$', re.I))
         for node in regular.all():
             if node.is_visible():
@@ -74,7 +119,7 @@ def collect(asin, engine):
                 page.locator('#aod-offer-list').wait_for(state='visible', timeout=8000)
                 break
         page.wait_for_timeout(1000)
-        verify_page(page, asin)
+        verify_or_try(session, asin, report, clear_challenge)
         # Send only product/offer markup, not scripts, account menus, tokens or cookies.
         html = page.evaluate(r'''() => {
   function initialGallery(script) {
@@ -131,8 +176,10 @@ def main():
     asin, engine, output = sys.argv[1:]
     if not re.fullmatch(r'[A-Z0-9]{10}', asin) or engine not in ('camoufox', 'chromium'):
         raise SystemExit(2)
+    started = time.monotonic()
+    report = dict(attempts=0, challenge_seen=False, challenge_cleared=False, product_verified=False)
     try:
-        result = collect(asin, engine)
+        result = collect(asin, engine, report)
     except CaptureStopped as exc:
         result = dict(status=str(exc))
     except ImportError:
@@ -143,6 +190,8 @@ def main():
                   'rate_limited' if name in ('WaapRateLimitedError', 'WaapHardBlockError') else
                   'verification_required' if name == 'WaapChallengeTimeout' else 'failed')
         result = dict(status=status)
+    report.update(elapsed_seconds=round(time.monotonic()-started, 1), status=result['status'])
+    result['wraith_test'] = report
     Path(output).write_text(json.dumps(result, ensure_ascii=False))
 
 

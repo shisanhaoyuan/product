@@ -6,12 +6,31 @@ import signal
 import subprocess
 import tempfile
 import threading
+import logging
 from pathlib import Path
 
 from .images import HumanVerificationRequired
 
 _GATE = threading.BoundedSemaphore(1)
 MAX_RESULT = 7 * 1024 * 1024
+
+
+class BrowserHTML(str):
+    def __new__(cls, html, report):
+        value = super().__new__(cls, html)
+        value.wraith_test = report
+        return value
+
+
+def test_summary(report):
+    count = report.get('attempts', 0)
+    if report.get('challenge_cleared'):
+        state = '验证后已进入同 ASIN 商品页'
+    elif report.get('challenge_seen'):
+        state = '仍未通过验证' if report.get('status') == 'verification_required' else '验证尝试已停止，商品页未核验'
+    else:
+        state = '浏览器中未观察到人机验证'
+    return f'Wraith 测试：{count}/3 轮；{state}'
 
 
 def configured():
@@ -43,7 +62,7 @@ def fetch_page(asin):
             process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                        env=env, start_new_session=(os.name == 'posix'))
             try:
-                process.wait(timeout=110)
+                process.wait(timeout=240)
             except subprocess.TimeoutExpired:
                 raise HumanVerificationRequired('后台浏览器采集超时，尚未取得有效报价') from None
             finally:
@@ -68,9 +87,16 @@ def fetch_page(asin):
                 'location_unverified': '后台浏览器未能确认配送地区 10001，未采用报价',
                 'failed': '后台浏览器采集失败，未取得可核验的报价',
             }
+            raw = result.get('wraith_test') or {}
+            report = {key: raw[key] for key in ('attempts','challenge_seen','challenge_cleared',
+                      'product_verified','elapsed_seconds','status') if key in raw}
+            report['message'] = test_summary(report)
+            logging.getLogger(__name__).info('Wraith ASIN %s: %s', asin, json.dumps(report, ensure_ascii=False))
             if result.get('status') != 'ok' or not isinstance(result.get('html'), str):
-                raise HumanVerificationRequired(messages.get(result.get('status'), messages['failed']))
-            return result['html']
+                error = HumanVerificationRequired(report['message'] + '；' + messages.get(result.get('status'), messages['failed']))
+                error.wraith_test = report
+                raise error
+            return BrowserHTML(result['html'], report)
     except OSError:
         raise HumanVerificationRequired('后台浏览器无法启动，请检查运行权限和依赖') from None
     finally:

@@ -167,7 +167,8 @@ def test_two_variants_of_one_product_use_their_own_captured_prices(publishing,mo
 def test_wraith_recovery_flows_into_pricing_and_ai(amazon,monkeypatch):
     c,_,_,_,_,base,_=amazon
     patch_rows(c,base,empty_prices)
-    monkeypatch.setattr('catalog.images.fetch_amazon_page',lambda asin:page(asin)+'<a id="aod-ingress-link">Other sellers on Amazon</a>')
+    def blocked(asin):raise HumanVerificationRequired('Amazon 要求人机验证')
+    monkeypatch.setattr('catalog.images.fetch_amazon_page',blocked)
     monkeypatch.setenv('CATALOG_AMAZON_BROWSER_PYTHON','configured')
     monkeypatch.setattr('catalog.amazon_browser.fetch_page',lambda asin:page(asin,offer(original='72.89')))
     doc,status=execute(amazon)

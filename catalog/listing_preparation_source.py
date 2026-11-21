@@ -86,8 +86,13 @@ def collect_before_generation(catalog, job, report, progress, checked_context):
             message=('后台报价采集完成' if quote['status']=='captured' else
                      '后台报价尚未完整核验；继续 AI 填充，售价可人工核对')
             outcome=dict(state=quote['status'],message=message,asin=asin,facts=facts,method=method,image_collection=quote['image_collection'])
+            if quote.get('wraith_test'):
+                outcome['wraith_test'] = quote['wraith_test']
+                outcome['message'] += '；' + quote['wraith_test']['message']
         except HumanVerificationRequired as exc:
             outcome=dict(state='verification_required',message=str(exc)+'；继续 AI 填充，售价可人工核对',asin=asin)
+            if getattr(exc, 'wraith_test', None):
+                outcome['wraith_test'] = exc.wraith_test
         except (ValueError, OSError, ListingAIError) as exc:
             outcome=dict(state='failed',message='后台报价采集失败，继续 AI 填充；'+str(exc)[:200],asin=asin)
         with catalog.connect() as db:

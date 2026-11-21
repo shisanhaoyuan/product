@@ -260,13 +260,22 @@ def amazon_source(html, asin):
 def collect_quote_page(asin, fetch):
     """One HTTP attempt, then at most one configured background browser attempt."""
     from .amazon_browser import configured, fetch_page
-    html=fetch(asin)
-    quote=amazon_source(html,asin)  # Do not switch clients on a block or an identity mismatch.
-    if not configured() or (quote.get('status') != 'browser_required' and quote.get('original_price')
-                            and re.search(r'\b10001\b',quote.get('delivery_location') or '')):
-        return html,quote,'server'
+    trigger = 'dynamic_offer'
+    try:
+        html=fetch(asin)
+        quote=amazon_source(html,asin)
+    except HumanVerificationRequired:
+        if not configured():
+            raise
+        trigger = 'http_verification'
+    else:
+        if not configured() or (quote.get('status') != 'browser_required' and quote.get('original_price')
+                                and re.search(r'\b10001\b',quote.get('delivery_location') or '')):
+            return html,quote,'server'
     html=fetch_page(asin)
     quote=amazon_source(html,asin)
+    if report := getattr(html, 'wraith_test', None):
+        quote['wraith_test'] = report | {'trigger': trigger}
     return html,quote,'wraith_background'
 
 
@@ -281,6 +290,8 @@ def save_capture(catalog, db, lid, sku, asin, result, actor_id, url, method):
         raise HTTPException(409, '抓取期间商品身份发生变化，结果未保存')
     db.execute('INSERT INTO source_captures VALUES(?,?,?,?,?,?,?)',
                (uuid.uuid4().hex, lid, sku or '', asin, result['captured_at'], actor_id, json.dumps(result, ensure_ascii=False)))
+    if result['status'] == 'verification_required':
+        return result  # Persist the experiment, never replace source facts with failed verification.
     from .source_sync import sync_capture
     result['sync'] = sync_capture(catalog, db, lid, sku, asin, result, actor_id)
     return result
@@ -327,7 +338,8 @@ def source_routes(catalog):
         except HumanVerificationRequired as exc:
             from .amazon_browser import configured
             reason = str(exc) if configured() else '普通请求遇到人机验证，本服务未启用 Wraith'
-            return {'status': 'verification_required', 'asin': asin, 'source_url': url, 'issues': [reason]}
+            result = {'status': 'verification_required', 'asin': asin, 'source_url': url, 'issues': [reason], 'wraith_test': getattr(exc, 'wraith_test', None)}
+            return save(lid, data.variant_sku, asin, result, request, url, 'wraith_background') if result['wraith_test'] else result
         except ValueError as exc:
             raise HTTPException(502, str(exc)) from None
         from .source_images import collect_amazon_images

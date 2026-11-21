@@ -184,3 +184,22 @@ def test_background_child_capture_persists_partial_quotes_separately(local,monke
     assert client.get(path,params={'variant_sku':children[0]['sku']}).json()['price']=='10.00'
     assert client.get(path,params={'variant_sku':children[1]['sku']}).json()['price']=='20.00'
     assert client.get(path).json() is None
+
+
+def test_wraith_failed_experiment_is_readable_without_overwriting_product(local, monkeypatch):
+    client, catalog = local
+    before = detail(client)
+    path = f"/api/products/{before['id']}/source-capture"
+    def blocked(*args):
+        error = HumanVerificationRequired('Wraith 测试：3/3 轮；仍未通过验证')
+        error.wraith_test = dict(attempts=3, message=str(error), challenge_seen=True, challenge_cleared=False)
+        raise error
+    from catalog.images import HumanVerificationRequired
+    monkeypatch.setattr('catalog.source_capture.collect_quote_page', blocked)
+    monkeypatch.setattr('catalog.amazon_browser.configured', lambda:True)
+    child = before['variants'][0]['sku']
+    response = client.post(path, json={'variant_sku':child}).json()
+    assert response['status']=='verification_required' and response['wraith_test']['attempts']==3
+    assert client.get(path, params={'variant_sku':child}).json()['wraith_test']==response['wraith_test']
+    assert client.get(path).json() is None
+    assert detail(client)==before

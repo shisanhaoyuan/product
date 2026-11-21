@@ -31,8 +31,9 @@ def test_browser_fallback_reuses_strict_quote_parser(monkeypatch):
         return page(asin,offer(original='72.89'))
     monkeypatch.setattr(amazon_browser,'fetch_page',fallback)
     def dynamic(asin): return page(asin)+'<a id="aod-ingress-link">Other sellers on Amazon</a>'
-    with pytest.raises(HumanVerificationRequired):collect_quote_page(ASIN,blocked)
-    assert not calls
+    assert collect_quote_page(ASIN,blocked)[2]=='wraith_background'
+    assert calls==[ASIN]
+    calls.clear()
     html,quote,method=collect_quote_page(ASIN,dynamic)
     assert method=='wraith_background' and quote['original_price']=='72.89'
     assert quote['asin']==ASIN and calls==[ASIN]
@@ -123,3 +124,87 @@ def test_worker_does_not_accept_success_cookie_or_wrong_product():
     with pytest.raises(CaptureStopped,match='identity_mismatch'):verify_page(p,ASIN)
     p.url='https://other.example/dp/'+ASIN
     with pytest.raises(CaptureStopped,match='identity_mismatch'):verify_page(p,ASIN)
+
+
+@pytest.mark.parametrize('clears_on,expected', [(1,1),(2,2),(3,3),(None,3)])
+def test_verification_round_limit_and_early_success(monkeypatch, clears_on, expected):
+    from types import SimpleNamespace
+    from catalog import amazon_browser_worker as worker
+    page=SimpleNamespace(url='https://www.amazon.com/dp/'+ASIN, blocked=True)
+    session=SimpleNamespace(page=page)
+    report=dict(attempts=0,challenge_seen=False,challenge_cleared=False,product_verified=False)
+    calls=[]
+    def clear(url, **kwargs):
+        calls.append(url)
+        assert kwargs['timeout']==20 and kwargs['session'] is session
+        if len(calls)==clears_on:page.blocked=False
+    monkeypatch.setattr(worker,'verify_page',lambda page,asin:None)
+    if clears_on:
+        worker.verify_or_try(session,ASIN,report,clear,lambda p:p.blocked)
+        assert report['challenge_cleared'] and report['product_verified']
+    else:
+        with pytest.raises(worker.CaptureStopped,match='verification_required'):
+            worker.verify_or_try(session,ASIN,report,clear,lambda p:p.blocked)
+        assert not report['challenge_cleared']
+    assert len(calls)==report['attempts']==expected
+    if not clears_on:
+        with pytest.raises(worker.CaptureStopped):
+            worker.verify_or_try(session,ASIN,report,clear,lambda p:p.blocked)
+        assert len(calls)==3  # Later stages do not reset the same child's counter.
+
+
+def test_timeout_rounds_do_not_accept_wraith_success_alone(monkeypatch):
+    from types import SimpleNamespace
+    from catalog import amazon_browser_worker as worker
+    class WaapChallengeTimeout(Exception): pass
+    page=SimpleNamespace(url='https://www.amazon.com/dp/'+ASIN)
+    def clear(*args,**kwargs): raise WaapChallengeTimeout()
+    report=dict(attempts=0)
+    with pytest.raises(worker.CaptureStopped,match='verification_required'):
+        worker.verify_or_try(SimpleNamespace(page=page),ASIN,report,clear,lambda p:True)
+    assert report['attempts']==3 and not report['challenge_cleared']
+
+
+def test_wrong_product_after_verification_is_not_success(monkeypatch):
+    from types import SimpleNamespace
+    from catalog import amazon_browser_worker as worker
+    page=SimpleNamespace(url='https://www.amazon.com/dp/'+ASIN,blocked=True)
+    def clear(*a,**k):page.blocked=False
+    def wrong(*a):raise worker.CaptureStopped('identity_mismatch')
+    monkeypatch.setattr(worker,'verify_page',wrong)
+    report=dict(attempts=0)
+    with pytest.raises(worker.CaptureStopped,match='identity_mismatch'):
+        worker.verify_or_try(SimpleNamespace(page=page),ASIN,report,clear,lambda p:p.blocked)
+    assert not report['challenge_cleared'] and report['attempts']==1
+
+
+def test_browser_report_reaches_quote_and_failure_diagnostics(runner,monkeypatch):
+    result,_,_=runner
+    result['html']=page(ASIN,offer(original='72.89'))
+    result['wraith_test']=dict(attempts=2,challenge_seen=True,challenge_cleared=True,product_verified=True,status='ok')
+    _,quote,_=collect_quote_page(ASIN,blocked)
+    assert quote['wraith_test']['attempts']==2
+    assert quote['wraith_test']['trigger']=='http_verification'
+    result.update(status='verification_required')
+    result['wraith_test'].update(attempts=3,challenge_cleared=False,status='verification_required')
+    with pytest.raises(HumanVerificationRequired,match='3/3') as exc:
+        collect_quote_page(ASIN,blocked)
+    assert exc.value.wraith_test['attempts']==3
+
+
+def test_new_child_gets_own_attempt_budget_and_no_challenge_never_calls_solver(monkeypatch):
+    from types import SimpleNamespace
+    from catalog import amazon_browser_worker as worker
+    monkeypatch.setattr(worker,'verify_page',lambda page,asin:None)
+    calls=[]
+    def clear(url,**kwargs): calls.append(url)
+    for asin in [ASIN,'B000000071']:
+        report=dict(attempts=0)
+        session=SimpleNamespace(page=SimpleNamespace(url='https://www.amazon.com/dp/'+asin))
+        with pytest.raises(worker.CaptureStopped):
+            worker.verify_or_try(session,asin,report,clear,lambda p:True)
+        assert report['attempts']==3
+    assert len(calls)==6 and calls.count(calls[0])==3
+    report=dict(attempts=0)
+    worker.verify_or_try(session,asin,report,clear,lambda p:False)
+    assert report['attempts']==0 and len(calls)==6
