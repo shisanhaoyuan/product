@@ -4,11 +4,37 @@ import re
 import sys
 import time
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 
 class CaptureStopped(Exception):
     pass
+
+
+def continue_gate(page):
+    """Only a visible Amazon interstitial, never login/cart/product-page controls."""
+    url = urlparse(page.url)
+    if (url.scheme != 'https' or url.hostname != 'www.amazon.com'
+            or re.search(r'^/(?:ap/|gp/(?:cart|buy)/|checkout)', url.path)
+            or not hasattr(page, 'locator')):
+        return None
+    if page.locator('#productTitle, input[type="password"], input[type="email"], input#captchacharacters').count():
+        return None
+    for node in page.locator('button, input[type="submit"], input[type="button"], a').all():
+        label = node.get_attribute('value') or node.inner_text(timeout=1000)
+        if not re.fullmatch(r'\s*continue(?:\s+shopping|\s+to\s+amazon)?\s*', label, re.I):
+            continue
+        if not node.is_visible() or not node.is_enabled():
+            continue
+        destination = node.get_attribute('href') or node.get_attribute('formaction')
+        if destination:
+            target = urlparse(urljoin(page.url, destination))
+            if target.scheme != 'https' or target.hostname != 'www.amazon.com':
+                continue
+            if re.search(r'^/(?:ap/|gp/(?:cart|buy)/|checkout)', target.path):
+                continue
+        return node
+    return None
 
 
 def verify_page(page, asin):
@@ -27,6 +53,8 @@ def verify_page(page, asin):
 
 
 def challenge_visible(page):
+    if continue_gate(page) is not None:
+        return True
     from wraith._press_hold import inspect_press_hold
     html = page.content()
     active, _ = inspect_press_hold(page, html)
@@ -39,7 +67,10 @@ def challenge_visible(page):
 def verify_or_try(session, asin, report, clear, detect=challenge_visible):
     """Three bounded Wraith rounds per child, shared across all page stages."""
     page = session.page
-    while detect(page):
+    while True:
+        gate = continue_gate(page)
+        if gate is None and not detect(page):
+            break
         if urlparse(page.url).hostname != 'www.amazon.com':
             raise CaptureStopped('identity_mismatch')
         report['challenge_seen'] = True
@@ -49,13 +80,18 @@ def verify_or_try(session, asin, report, clear, detect=challenge_visible):
             raise CaptureStopped('verification_required')
         report['attempts'] += 1
         try:
-            clear(f'https://www.amazon.com/dp/{asin}?th=1&psc=1', session=session,
-                  timeout=20, settle=1, press_hold=True)
+            if gate is not None:
+                gate.click(timeout=5000)
+                page.wait_for_timeout(1000)
+                page.wait_for_load_state('domcontentloaded', timeout=15000)
+            else:
+                clear(f'https://www.amazon.com/dp/{asin}?th=1&psc=1', session=session,
+                      timeout=20, settle=1, press_hold=True)
         except Exception as exc:
-            if type(exc).__name__ != 'WaapChallengeTimeout':
+            if type(exc).__name__ not in ('WaapChallengeTimeout', 'TimeoutError'):
                 raise
             # A cookie or return code is insufficient; inspect the page below.
-        if not detect(page):
+        if continue_gate(page) is None and not detect(page):
             verify_page(page, asin)
             report['challenge_cleared'] = True
             break

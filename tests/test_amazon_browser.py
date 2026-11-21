@@ -12,6 +12,66 @@ from test_source_capture import page, offer
 ASIN='B000000070'
 
 
+class ContinueButton:
+    def __init__(self, label='Continue', href=None, visible=True):
+        self.label=label;self.href=href;self.visible=visible
+    def get_attribute(self,key):return self.href if key=='href' else None
+    def inner_text(self,**kwargs):return self.label
+    def is_visible(self):return self.visible
+    def is_enabled(self):return True
+
+
+def test_continue_interstitial_scope_and_button_selection():
+    from types import SimpleNamespace
+    from catalog.amazon_browser_worker import continue_gate
+    button=ContinueButton()
+    page=SimpleNamespace(url='https://www.amazon.com/errors/validateCaptcha', product=False,
+                         buttons=[ContinueButton('Continue',visible=False),button])
+    def locator(selector):
+        return SimpleNamespace(count=lambda:int(page.product),all=lambda:page.buttons)
+    page.locator=locator
+    assert continue_gate(page) is button
+    page.product=True
+    assert continue_gate(page) is None
+    page.product=False
+    for url in ['https://www.amazon.com/ap/signin','https://other.example/continue',
+                'https://www.amazon.com/gp/cart/view.html']:
+        page.url=url
+        assert continue_gate(page) is None
+    page.url='https://www.amazon.com/errors/validateCaptcha'
+    for label,href in [('Continue to checkout',None),('Continue','https://evil.example/'),
+                       ('Continue','/ap/signin')]:
+        page.buttons=[ContinueButton(label,href)]
+        assert continue_gate(page) is None
+
+
+@pytest.mark.parametrize('clears_on',[1,3,None])
+def test_continue_clicks_share_three_attempt_budget_and_verify_asin(monkeypatch,clears_on):
+    from types import SimpleNamespace
+    from catalog import amazon_browser_worker as worker
+    page=SimpleNamespace(url='https://www.amazon.com/dp/'+ASIN,blocked=True)
+    calls=[];verified=[]
+    def click(**kwargs):
+        calls.append('click')
+        if len(calls)==clears_on:page.blocked=False
+    button=SimpleNamespace(click=click)
+    page.wait_for_timeout=lambda _:None
+    page.wait_for_load_state=lambda *a,**k:None
+    monkeypatch.setattr(worker,'continue_gate',lambda p:button if p.blocked else None)
+    monkeypatch.setattr(worker,'verify_page',lambda p,asin:verified.append(asin))
+    def no_solver(*a,**k):raise AssertionError('Continue should use its existing button')
+    report=dict(attempts=0)
+    if clears_on:
+        worker.verify_or_try(SimpleNamespace(page=page),ASIN,report,no_solver,lambda p:p.blocked)
+        assert report['product_verified'] and report['challenge_cleared']
+        assert set(verified)=={ASIN}
+    else:
+        with pytest.raises(worker.CaptureStopped,match='verification_required'):
+            worker.verify_or_try(SimpleNamespace(page=page),ASIN,report,no_solver,lambda p:p.blocked)
+        assert not verified
+    assert report['attempts']==len(calls)==(clears_on or 3)
+
+
 def blocked(asin):
     raise HumanVerificationRequired('Amazon 要求人机验证')
 
