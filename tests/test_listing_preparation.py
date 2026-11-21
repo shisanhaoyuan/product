@@ -21,7 +21,7 @@ from catalog.listing_source_evidence import amazon_details, supplement_facts
 from catalog.listing_vision import allowed_image_url, capability, fetch_image, image_data, image_evidence
 from catalog.prelisting import encoded
 from catalog.walmart_listing_schema import sections
-from test_listing_generation import AI, listing
+from test_listing_generation import AI, listing, generation_image_downloads
 from test_walmart_publishing import publishing, spec, PT, ready, send, submission
 from test_auth import team
 from test_walmart_accounts import vault
@@ -61,7 +61,8 @@ def test_closed_loop_saves_reopens_validates_is_idempotent_and_never_publishes(p
         assert (old['source_sku'],old['platform_sku'],old['identification'])==(new['source_sku'],new['platform_sku'],new['identification'])
         assert old['orderable']['price']==new['orderable']['price']
         assert old['orderable']['msrp']==new['orderable']['msrp']
-        assert old['visible']['mainImageUrl']==new['visible']['mainImageUrl']
+        assert new['visible']['mainImageUrl'].startswith('/api/products/images/assets/')
+        assert c.get(new['visible']['mainImageUrl']).status_code == 200
     assert catalog.export()==source and not remote.posts and not remote.stock
 
 

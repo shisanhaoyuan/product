@@ -289,6 +289,7 @@ def run_job(catalog, publisher, jid, ai):
                     variant=copy.deepcopy(variant)
                     if image_collection['images']:
                         variant.setdefault('content',{})['images']=image_collection['images']
+                        variant['_collected_images']=image_collection['images']
                     progress(sku,'generating',f'正在生成 {sku} 刊登资料')
                     try:
                         pt,decision=choose_type(updated,item,facts,types,ai)

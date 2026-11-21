@@ -1,4 +1,5 @@
 import type { EvidenceStatus } from '../api/types';
+import { Parser } from 'htmlparser2';
 
 export const evidenceLabels = {
   persisted_readback: '独立回读',
@@ -10,12 +11,30 @@ export const text = (value: unknown): string =>
     ? JSON.stringify(value, null, 2)
     : String(value ?? '');
 export function plain(value: unknown): string {
-  const doc = new DOMParser().parseFromString(String(value ?? ''), 'text/html');
-  doc.querySelectorAll('script,style,iframe,object').forEach((node) => node.remove());
-  doc
-    .querySelectorAll('p,div,li,br,h1,h2,h3,h4')
-    .forEach((node) => node.appendChild(doc.createTextNode('\n')));
-  return (doc.body.textContent || '').trim();
+  // Parse text without creating browser DOM nodes: source CSS/resources never run or load.
+  const ignored = new Set(['script', 'style', 'iframe', 'object', 'template']);
+  const blocks = new Set(['p', 'div', 'li', 'br', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'tr']);
+  let hiddenDepth = 0;
+  let result = '';
+  const lineBreak = () => {
+    if (result && !result.endsWith('\n')) result += '\n';
+  };
+  const parser = new Parser({
+    onopentag(name) {
+      if (ignored.has(name)) hiddenDepth++;
+      if (!hiddenDepth && blocks.has(name)) lineBreak();
+    },
+    ontext(value) {
+      if (!hiddenDepth) result += value;
+    },
+    onclosetag(name) {
+      if (ignored.has(name)) hiddenDepth--;
+      if (!hiddenDepth && blocks.has(name)) lineBreak();
+      if (!hiddenDepth && (name === 'td' || name === 'th')) result += ' ';
+    },
+  });
+  parser.end(String(value ?? ''));
+  return result.trim();
 }
 export function safeUrl(value: unknown): string {
   if (typeof value === 'string' && /^\/api\/products\/images\/assets\/[a-f0-9]{64}$/.test(value))

@@ -131,8 +131,8 @@ def capability(catalog,ai):
 def image_evidence(catalog,row,variant,ai,schema=None):
     if not getattr(ai.settings,'vision',False):
         return [],dict(state='disabled',images=[])
-    urls=list(dict.fromkeys([row['visible'].get('mainImageUrl',''),
-        *row['visible'].get('productSecondaryImageURL',[]),*variant.get('content',{}).get('images',[])]))
+    urls=list(dict.fromkeys(variant.get('_collected_images', [row['visible'].get('mainImageUrl',''),
+        *row['visible'].get('productSecondaryImageURL',[]),*variant.get('content',{}).get('images',[])])))
     urls=[u for u in urls if isinstance(u,str) and u][:32]
     if not urls:
         return [],dict(state='missing',images=[],message='同 SKU 没有可供判断的图片')

@@ -73,7 +73,8 @@ def collect_images(catalog, lid, sku, urls):
         message += f'，{len(failures)} 张失败：' + failures[0]['reason']
     if len(candidates) > 32:
         message += '；本次最多采集前 32 张，其余原图保留'
-    return dict(state=state, message=message, images=images, saved=saved, failures=failures)
+    return dict(state=state, message=message, images=images, saved=saved, failures=failures,
+                failed_urls=[r['source_url'] for r in results if not r.get('url')])
 
 
 def collect_amazon_images(catalog, lid, sku, asin, html):
@@ -86,11 +87,11 @@ def collect_amazon_images(catalog, lid, sku, asin, html):
 
 
 def recover_imported_images(catalog, item, variant, urls, collection):
-    """One current-ASIN gallery attempt when every imported ERP image failed."""
+    """One current-ASIN gallery attempt for failed ERP images, retaining successes."""
     from .listing_vision import IMPORTED_IMAGE_HOSTS
     from .images import HumanVerificationRequired, fetch_amazon_page
     from .source_capture import collect_quote_page
-    if collection['images'] or item.get('source') != 'Amazon':
+    if item.get('source') != 'Amazon' or collection.get('recovery') or not collection.get('failures'):
         return collection
     asin = variant.get('asin', '')
     if not re.fullmatch(r'[A-Z0-9]{10}', asin):
@@ -100,28 +101,41 @@ def recover_imported_images(catalog, item, variant, urls, collection):
             return urlsplit(url).hostname in IMPORTED_IMAGE_HOSTS
         except ValueError:
             return False
-    if not any(imported(u) for u in urls if isinstance(u, str)):
+    failed_urls = collection.get('failed_urls')
+    if failed_urls is None:
+        candidates = list(dict.fromkeys(u for u in urls if isinstance(u, str) and u))
+        failed_urls = [candidates[f['index']-1] for f in collection['failures']
+                       if 0 < f.get('index', 0) <= len(candidates)]
+    if not any(imported(u) for u in failed_urls):
         return collection
     try:
         html, _, _ = collect_quote_page(asin, fetch_amazon_page)
         recovered = collect_amazon_images(catalog, item['listing_id'], variant['sku'], asin, html)
-        recovered['recovery'] = 'amazon_current_asin'
-        recovered['previous_failures'] = collection['failures']
-        recovered['message'] = '数字酋长图片不可用，已按当前 ASIN 补采：' + recovered['message']
-        return recovered
+        images = list(dict.fromkeys(collection['images'] + recovered['images']))
+        return collection | dict(
+            state='partial' if images else 'failed', images=images,
+            saved=collection['saved'] + recovered['saved'], recovery='amazon_current_asin',
+            recovered_images=recovered['images'], failed_urls=failed_urls + recovered.get('failed_urls', []),
+            recovery_failures=recovered['failures'],
+            message=f'原图片已保存 {len(collection["images"])} 张；当前 ASIN 补采保存 {len(recovered["images"])} 张。'
+                    + (f'共 {len(images)} 张可用，失效旧链接已从本次刊登选择中移除。' if images else recovered['message']))
     except (ValueError, OSError, ListingAIError) as exc:
         message = 'Amazon 要求人机验证，请完成验证或上传当前 SKU 图片' if isinstance(exc, HumanVerificationRequired) else str(exc)[:200]
         return collection | dict(recovery='amazon_current_asin', message=collection['message']+'；原图补采失败：'+message)
 
 
 def localize_row(row, collection):
-    """Keep selection and order, replace successfully collected URLs only."""
+    """Keep selected successes; omit known failed URLs and fill with verified recovery."""
     mapping = {r['source_url']: r['url'] for r in collection['saved']}
     visible = row['visible']
+    original_count = len(visible.get('productSecondaryImageURL', [])) + bool(visible.get('mainImageUrl'))
+    failed = set(collection.get('failed_urls', []))
     visible['mainImageUrl'] = mapping.get(visible.get('mainImageUrl'), visible.get('mainImageUrl', ''))
     if isinstance(visible.get('productSecondaryImageURL'), list):
         visible['productSecondaryImageURL'] = list(dict.fromkeys(
-            mapping.get(url, url) for url in visible['productSecondaryImageURL']))
+            mapping.get(url, url) for url in visible['productSecondaryImageURL'] if url not in failed))
+    if visible['mainImageUrl'] in failed:
+        visible['mainImageUrl'] = ''
     # Replace a failed hero with a verified image, preserving user-selected extras.
     if visible['mainImageUrl'] not in collection['images'] and collection['images']:
         visible['mainImageUrl'] = collection['images'][0]
@@ -130,3 +144,9 @@ def localize_row(row, collection):
     if isinstance(visible.get('productSecondaryImageURL'), list):
         visible['productSecondaryImageURL'] = [u for u in visible['productSecondaryImageURL']
                                               if u != visible['mainImageUrl']]
+    if collection.get('recovered_images'):
+        selected = list(dict.fromkeys([visible['mainImageUrl'], *visible.get('productSecondaryImageURL', []),
+                                       *collection['recovered_images']]))
+        selected = [u for u in selected if u][:max(8, original_count)]
+        visible['mainImageUrl'] = selected[0] if selected else ''
+        visible['productSecondaryImageURL'] = selected[1:]

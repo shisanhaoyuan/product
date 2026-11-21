@@ -200,7 +200,7 @@ def test_erp_image_failure_recovers_exact_asin_without_overwriting_prices(local,
     initial=dict(state='failed',images=[],saved=[],failures=[dict(index=1,reason='HTTP 424')],message='图片下载失败')
     item=dict(source='Amazon',listing_id=p['id'])
     result=recover_imported_images(catalog,item,child,['https://ps-cdn-s3.datacaciques.com/dead.jpg'],initial)
-    assert result['state']=='complete' and result['recovery']=='amazon_current_asin'
+    assert result['state']=='partial' and result['recovery']=='amazon_current_asin'
     assert calls==[child['asin']] and c.get(result['images'][0]).status_code==200
     assert detail(c)==p  # Recovery is scoped to the listing gallery; no price/product overlay mutations.
     assert recover_imported_images(catalog,item,child,['https://ps-cdn-s3.datacaciques.com/dead.jpg'],result)==result
@@ -213,10 +213,63 @@ def test_erp_recovery_captcha_does_not_loop_or_borrow_other_sku(local, monkeypat
     c,catalog=local;p=detail(c);child=p['variants'][0];calls=[]
     def quote(asin,fetch):calls.append(asin);raise HumanVerificationRequired('captcha')
     monkeypatch.setattr('catalog.source_capture.collect_quote_page',quote)
-    initial=dict(state='failed',images=[],saved=[],failures=[],message='HTTP 424')
+    initial=dict(state='failed',images=[],saved=[],failures=[dict(index=1,reason='HTTP 424')],message='HTTP 424')
     item=dict(source='Amazon',listing_id=p['id']);urls=['https://pg-cdn-a2.datacaciques.com/dead.jpg']
     result=recover_imported_images(catalog,item,child,urls,initial)
     assert len(calls)==1 and result['state']=='failed' and '人机验证' in result['message']
     recover_imported_images(catalog,item|{'source':'Saleyee'},child,urls,initial)
     recover_imported_images(catalog,item,child|{'asin':''},urls,initial)
     assert len(calls)==1 and detail(c)==p
+
+
+def test_partial_erp_failure_recovers_without_losing_good_images(local, monkeypatch):
+    from catalog.source_images import recover_imported_images
+    c,catalog=local;p=detail(c);child=p['variants'][0]
+    good=PREFIX+'a'*64;new=PREFIX+'b'*64
+    urls=['https://pg-cdn-a2.datacaciques.com/good.jpg','https://pg-cdn-a2.datacaciques.com/dead.jpg']
+    initial=dict(state='partial',images=[good],saved=[dict(source_url=urls[0],url=good)],
+                 failures=[dict(index=2,reason='HTTP 424')],failed_urls=[urls[1]],message='partial')
+    calls=[]
+    def fetch(asin,fetcher):calls.append(asin);return gallery(asin),{},'server'
+    monkeypatch.setattr('catalog.source_capture.collect_quote_page',fetch)
+    monkeypatch.setattr('catalog.source_images.collect_amazon_images',lambda *args:dict(
+        images=[new],saved=[dict(source_url='https://m.media-amazon.com/images/I/new.jpg',url=new)],
+        failures=[],failed_urls=[],message='saved'))
+    result=recover_imported_images(catalog,dict(source='Amazon',listing_id=p['id']),child,urls,initial)
+    assert calls==[child['asin']] and result['images']==[good,new]
+    row=dict(visible=dict(mainImageUrl=urls[0],productSecondaryImageURL=[urls[1]]))
+    localize_row(row,result)
+    assert row['visible']==dict(mainImageUrl=good,productSecondaryImageURL=[new])
+    assert result['failures']==initial['failures']  # Failed old links remain auditable.
+
+
+def test_failed_hero_and_secondary_removed_even_when_recovery_is_blocked():
+    good=PREFIX+'a'*64
+    urls=['https://example.com/dead-main.jpg','https://example.com/dead-secondary.jpg',good]
+    collection=dict(images=[good],saved=[dict(source_url=good,url=good)],failed_urls=urls[:2])
+    row=dict(visible=dict(mainImageUrl=urls[0],productSecondaryImageURL=urls[1:]))
+    localize_row(row,collection)
+    assert row['visible']==dict(mainImageUrl=good,productSecondaryImageURL=[])
+    row=dict(visible=dict(mainImageUrl=urls[0],productSecondaryImageURL=urls[1:2]))
+    localize_row(row,dict(images=[],saved=[],failed_urls=urls[:2]))
+    assert row['visible']==dict(mainImageUrl='',productSecondaryImageURL=[])
+
+
+def test_vision_reads_only_collected_images_not_failed_old_links(local,monkeypatch):
+    from types import SimpleNamespace
+    from catalog.listing_vision import image_evidence
+    c,catalog=local;p=detail(c)
+    monkeypatch.setattr('catalog.listing_vision.fetch_image',lambda url:picture())
+    collection=collect_images(catalog,p['id'],'child-0',['https://example.com/good.jpg'])
+    local_url=collection['images'][0]
+    def fail(url):raise AssertionError('must not download failed URL again')
+    monkeypatch.setattr('catalog.listing_vision.fetch_image',fail)
+    monkeypatch.setattr('catalog.listing_vision.capability',lambda *args:None)
+    class AI:
+        settings=SimpleNamespace(vision=True,model='test')
+        def query(self,purpose,payload):
+            return dict(source_sku='child-0',observations=[])
+    row=dict(listing_id=p['id'],source_sku='child-0',product_type='Chairs',visible={
+        'mainImageUrl':local_url,'productSecondaryImageURL':['https://example.com/dead.jpg']})
+    _,report=image_evidence(catalog,row,dict(_collected_images=[local_url]),AI())
+    assert report['state']=='complete' and report['warnings']==[]

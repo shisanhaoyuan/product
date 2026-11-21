@@ -2,7 +2,7 @@ import json
 
 from catalog.images import HumanVerificationRequired
 from catalog.listing_generation_jobs import start_job, run_job
-from test_listing_generation import AI
+from test_listing_generation import AI, generation_image_downloads
 from test_listing_price_review import amazon
 from test_walmart_publishing import publishing, submission
 from test_giga_prelisting import warehouse

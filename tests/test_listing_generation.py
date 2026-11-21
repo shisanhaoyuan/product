@@ -16,6 +16,20 @@ from test_giga_prelisting import warehouse
 from test_giga import settings
 
 
+@pytest.fixture(autouse=True)
+def generation_image_downloads(request, monkeypatch):
+    # Full generation now removes failed image URLs. Supply actual test image bytes
+    # for fixture URLs so non-image tests exercise a successful offline collection.
+    if 'publishing' not in request.fixturenames:
+        return
+    from urllib.parse import urlsplit
+    from catalog.listing_vision import fetch_image
+    from test_images import picture
+    monkeypatch.setenv('CATALOG_PUBLIC_ORIGIN', 'https://catalog.example.test')
+    monkeypatch.setattr('catalog.listing_vision.fetch_image',
+                        lambda url: picture() if urlsplit(url).hostname == 'example.com' else fetch_image(url))
+
+
 class AI:
     settings = SimpleNamespace(model='gpt-6-astra')
     def __init__(self):
@@ -163,7 +177,11 @@ def test_category_failure_points_to_type_even_with_existing_wrong_type(publishin
     report=c.get(base+'/generation').json()['job']
     assert report['state']=='complete'
     assert all(r['issues'][0]['path']=='product_type' for r in report['report']['rows'].values())
-    assert c.get(base).json()['rows']==before['rows']
+    after=c.get(base).json()['rows']
+    from catalog.source_images import localize_row
+    for row in before['rows']:
+        localize_row(row, report['report']['rows'][row['platform_sku']]['image_collection'])
+    assert after==before['rows']  # Only the verified image localization precedes category choice.
 
 
 def test_persistent_job_preserves_identity_prices_and_never_publishes(publishing):
