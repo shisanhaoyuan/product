@@ -2,7 +2,7 @@ import type { GenerationJob, ListingDocument } from '../api/publishing';
 
 // Called once on entry/prepare, never from the status polling loop.
 export function shouldPrepareOnEntry(doc: ListingDocument | null, job: GenerationJob | null) {
-  if (!doc || (job && ['queued', 'running'].includes(job.state))) return false;
+  if (!doc || (job && ['awaiting_sources', 'queued', 'running'].includes(job.state))) return false;
   const editable = doc.rows.filter((row) =>
     ['unsubmitted', 'failed', 'rejected', 'unpublished'].includes(
       doc.results[row.platform_sku]?.status || 'unsubmitted',

@@ -22,23 +22,31 @@ chrome.runtime.onMessage.addListener((data, sender, reply) => {
       if (data.action !== 'start' || !/^[A-Z0-9]{10}$/.test(data.asin) ||
           typeof data.requestId !== 'string' || data.requestId.length > 100) throw new Error('无效抓取请求');
       if (old) await finish(key, old, { error: '上一次抓取已被新的请求取消。' });
-      const tab = await chrome.tabs.create({ url: `https://www.amazon.com/dp/${data.asin}?th=1&psc=1`, active: true });
+      const tab = await chrome.tabs.create({ url: `https://www.amazon.com/dp/${data.asin}?th=1&psc=1`, active: data.mode !== 'source' });
       await chrome.storage.session.set({ [key]: { owner: sender.tab.id, amazon: tab.id,
         asin: data.asin, mode: data.mode === 'source' ? 'source' : 'images',
         requestId: data.requestId, expires: Date.now() + 600000 } });
       return { started: true };
     }
-    if (!['page', 'task'].includes(data.action)) return {};
+    if (!['page', 'task', 'attention'].includes(data.action)) return {};
     const jobs = await chrome.storage.session.get(null);
     for (const [key, job] of Object.entries(jobs)) {
       if (!key.startsWith('capture:') || job.amazon !== sender.tab.id) continue;
       if (job.expires < Date.now()) { await finish(key, job, { error: '验证等待已超时，请重新抓取。' }); break; }
       if (data.action === 'task') return { asin: job.asin, mode: job.mode };
+      if (data.action === 'attention') {
+        if (!job.revealed) {
+          await chrome.storage.session.set({ [key]: { ...job, revealed: true } });
+          await chrome.tabs.update(job.amazon, { active: true }).catch(() => {});
+        }
+        return { accepted: true };
+      }
       if (data.asin !== job.asin || typeof data.html !== 'string' || data.html.length > 6 * 1024 * 1024) break;
       const url = new URL(sender.url);
       if (!new RegExp(`/(?:[^/]+/)?dp/${job.asin}/?$`).test(url.pathname)) break;
       await finish(key, job, { html: data.html, source_url: sender.url, asin: job.asin });
-      await chrome.tabs.update(job.owner, { active: true }).catch(() => {});
+      if (job.revealed || job.mode !== 'source')
+        await chrome.tabs.update(job.owner, { active: true }).catch(() => {});
       return { accepted: true };
     }
     return {};

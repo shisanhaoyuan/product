@@ -195,3 +195,29 @@ export async function collectProductSources(
   }
   return { collected, verifiedPrices, errors };
 }
+
+// Both catalog and filling use collectSource, including its remembered browser and manual handoff.
+export async function collectListingSources(
+  targets: { platform_sku: string; listing_id: string; sku: string; asin: string }[],
+  signal: AbortSignal,
+  progress: (message: string) => void,
+) {
+  const receipts: Record<string, string> = {};
+  for (const [index, target] of targets.entries()) {
+    signal.throwIfAborted();
+    progress(`使用商品库采集会话：${target.sku || target.asin} · ${index + 1}/${targets.length}`);
+    const record = await collectSource(
+      target.listing_id,
+      target.sku || undefined,
+      signal,
+      () => progress('等待浏览器设置：请在打开的 Amazon 网页将配送邮编设为 10001，完成后自动继续'),
+      target.asin,
+    );
+    if (record.asin !== target.asin || !record.capture_id)
+      throw new Error('未取得本轮商品采集记录，请刷新后重试');
+    if (!/\b10001\b/.test(record.delivery_location || ''))
+      throw new Error('配送邮编尚未设为 10001，请点击“打开网页设置 10001 并继续”');
+    receipts[target.platform_sku] = record.capture_id;
+  }
+  return receipts;
+}

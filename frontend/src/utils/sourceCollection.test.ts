@@ -305,3 +305,59 @@ it('accepts ordinary pricing only with a verified offer and absent reference pri
     false,
   );
 });
+
+it('filling uses the catalog browser preference for every child and returns fresh receipts', async () => {
+  const values = new Map<string, string>();
+  vi.stubGlobal('localStorage', {
+    getItem: (k: string) => values.get(k),
+    setItem: (k: string, v: string) => values.set(k, v),
+  });
+  try {
+    const { preferLocalSourceBrowser, collectListingSources } = await import('./sourceCollection');
+    preferLocalSourceBrowser(true);
+    mock.page.mockImplementation(async (asin) => ({
+      asin,
+      html: 'page',
+      source_url: `https://www.amazon.com/dp/${asin}`,
+    }));
+    mock.browser.mockImplementation(async (_lid, _sku, page) => ({
+      asin: page.asin,
+      status: 'captured',
+      delivery_location: '10001',
+      capture_id: page.asin,
+    }));
+    const targets = [
+      { platform_sku: 'one', listing_id: 'a', sku: 'red', asin: 'B000000001' },
+      { platform_sku: 'two', listing_id: 'a', sku: 'blue', asin: 'B000000002' },
+    ];
+    const receipts = await collectListingSources(targets, new AbortController().signal, vi.fn());
+    expect(receipts).toEqual({ one: 'B000000001', two: 'B000000002' });
+    expect(mock.capture).not.toHaveBeenCalled();
+    expect(mock.read).not.toHaveBeenCalled();
+    expect(mock.page).toHaveBeenCalledTimes(2);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+it('filling stops for manual ZIP setup instead of continuing with another backend', async () => {
+  const { collectListingSources } = await import('./sourceCollection');
+  mock.capture.mockResolvedValue({
+    asin: 'B000000001',
+    status: 'partial',
+    issues: ['配送地区未核验为 10001'],
+  });
+  mock.page.mockRejectedValue(new Error('请先安装并连接浏览器验证助手。'));
+  await expect(
+    collectListingSources(
+      [
+        { platform_sku: 'one', listing_id: 'a', sku: 'red', asin: 'B000000001' },
+        { platform_sku: 'two', listing_id: 'a', sku: 'blue', asin: 'B000000002' },
+      ],
+      new AbortController().signal,
+      vi.fn(),
+    ),
+  ).rejects.toThrow('验证助手');
+  expect(mock.capture).toHaveBeenCalledTimes(1);
+  expect(mock.browser).not.toHaveBeenCalled();
+});

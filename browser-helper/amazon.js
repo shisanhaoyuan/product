@@ -86,6 +86,11 @@
     try {
       const task = await chrome.runtime.sendMessage({ channel: 'catalog-capture-v1', action: 'task' });
       if (!task?.asin) { if (++misses >= 4) stop(); return; }
+      if (document.querySelector('form[action*="validateCaptcha"], input#captchacharacters') ||
+          /sorry, we just need to make sure|click the button below to continue shopping/i.test(document.body?.innerText || '')) {
+        await chrome.runtime.sendMessage({ channel: 'catalog-capture-v1', action: 'attention' });
+        return;
+      }
       const asins = [...document.querySelectorAll('input#ASIN')].map(el => el.value);
       const asin = asins[0];
       if (asin !== task.asin || asins.some(value => value !== asin) ||
@@ -97,6 +102,7 @@
         const delivery = [...document.querySelectorAll('#glow-ingress-line2, #contextualIngressPtLabel_deliveryShortLine')]
           .filter(visible).map(node => node.textContent).join(' ');
         if (!/\b10001\b/.test(delivery)) {
+          await chrome.runtime.sendMessage({ channel: 'catalog-capture-v1', action: 'attention' });
           lastSource = ''; sourceStable = 0; openedOffers = false;
           if (!document.getElementById('jiwu-location-help')) {
             const banner = document.createElement('div');

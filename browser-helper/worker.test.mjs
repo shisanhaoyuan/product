@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 async function setup() {
-  const store = {}, sent = [];
+  const store = {}, sent = [], opened = [], focused = [];
   let receive, removed;
   const chrome = {
     runtime: { onMessage: { addListener: fn => receive = fn } },
@@ -14,7 +14,7 @@ async function setup() {
       set: async value => Object.assign(store, value), remove: async key => { delete store[key]; },
     } },
     tabs: {
-      create: async () => ({ id: 22 }), update: async () => {},
+      create: async options => { opened.push(options); return { id: 22 }; }, update: async (id,options) => { focused.push({id,...options}); },
       sendMessage: async (tab, data) => sent.push({ tab, data }),
       onRemoved: { addListener: fn => removed = fn },
     },
@@ -24,7 +24,7 @@ async function setup() {
   const send = (data, tab = 11, url = 'https://catalog.test/') => new Promise(resolve => receive({
     channel: 'catalog-capture-v1', ...data,
   }, { tab: { id: tab }, url, frameId: 0 }, resolve));
-  return { store, sent, send, removed };
+  return { store, sent, send, removed, opened, focused };
 }
 
 test('only the bound Amazon tab and ASIN may complete a pending job', async () => {
@@ -67,4 +67,26 @@ test('source mode is announced and remains bound to its requesting tab', async (
   assert.equal((await b.send({ action: 'task' }, 33, url)).mode, undefined);
   await b.send({ action: 'page', asin: 'B012345678', html: 'offer' }, 22, url);
   assert.equal(b.sent[0].data.requestId, 'source');
+});
+
+
+test('source collection stays in background until the bound page needs manual ZIP setup', async () => {
+  const b = await setup();
+  await b.send({ action: 'start', asin: 'B012345678', mode: 'source', requestId: 'source' });
+  assert.equal(b.opened[0].active, false);
+  const url = 'https://www.amazon.com/dp/B012345678';
+  await b.send({ action: 'attention' }, 33, url);
+  assert.equal(b.focused.length, 0);
+  await b.send({ action: 'attention' }, 22, url);
+  await b.send({ action: 'attention' }, 22, url);
+  assert.deepEqual(b.focused, [{ id: 22, active: true }]);
+  await b.send({ action: 'page', asin: 'B012345678', html: '10001 offer' }, 22, url);
+  assert.equal(b.focused[1].id, 11);
+});
+
+test('a verified background source capture does not steal foreground focus', async () => {
+  const b = await setup();
+  await b.send({ action: 'start', asin: 'B012345678', mode: 'source', requestId: 'source' });
+  await b.send({ action: 'page', asin: 'B012345678', html: 'offer' }, 22, 'https://www.amazon.com/dp/B012345678');
+  assert.equal(b.focused.length, 0);
 });

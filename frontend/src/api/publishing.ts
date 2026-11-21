@@ -120,9 +120,10 @@ export interface GenerationJob {
   id: string;
   revision: number;
   batch_id: string;
-  state: 'queued' | 'running' | 'complete' | 'failed' | 'interrupted';
+  state: 'awaiting_sources' | 'queued' | 'running' | 'complete' | 'failed' | 'interrupted';
   message: string;
   report: {
+    source_targets?: { platform_sku: string; listing_id: string; sku: string; asin: string }[];
     model?: string;
     total?: number;
     validated_at?: number;
@@ -180,6 +181,16 @@ export const publishingApi = {
       ai: { configured: boolean; model: string; host: string };
     }>(path(bid) + '/generation'),
   generate: (bid: string) => request<GenerationJob>(path(bid) + '/generation', body('POST')),
+  resumeSources: (bid: string, jid: string, captures: Record<string, string>) =>
+    request<GenerationJob>(
+      `${path(bid)}/generation/${encodeURIComponent(jid)}/sources`,
+      body('POST', { captures }),
+    ),
+  cancelSources: (bid: string, jid: string) =>
+    request<GenerationJob>(
+      `${path(bid)}/generation/${encodeURIComponent(jid)}/cancel-sources`,
+      body('POST'),
+    ),
   read: (bid: string) => request<ListingDocument | null>(path(bid)),
   prepare: (bid: string) => request<ListingDocument>(path(bid) + '/prepare', body('POST')),
   save: (bid: string, doc: ListingDocument) =>

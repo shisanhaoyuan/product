@@ -30,7 +30,7 @@ describe('automatic preparation on editor entry', () => {
   });
   it('does not duplicate active jobs or touch submitted rows', () => {
     const doc = document();
-    for (const state of ['queued', 'running'] as const)
+    for (const state of ['awaiting_sources', 'queued', 'running'] as const)
       expect(shouldPrepareOnEntry(doc, { state } as GenerationJob)).toBe(false);
     for (const status of ['processing', 'published', 'unknown', 'stock_pending']) {
       doc.results.sku = { status } as ListingDocument['results'][string];

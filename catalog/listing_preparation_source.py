@@ -62,6 +62,9 @@ def refresh_amazon(catalog, db, doc, actor_id=None, job_id=None, refreshed_sku=N
 
 
 def collect_before_generation(catalog, job, report, progress, checked_context):
+    if report.get('source_mode') == 'shared':
+        from .listing_shared_collection import apply_sources
+        return apply_sources(catalog,job,report,progress,checked_context)
     from .source_capture import collect_quote_page, save_capture
     from .images import fetch_amazon_page, HumanVerificationRequired
     from .walmart_publishing import document, latest_results, EDITABLE

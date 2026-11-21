@@ -28,8 +28,8 @@ def empty_prices(rows):
 def execute(env, ai=None):
     c,catalog,_,_,b,base,_=env
     ai=ai or AI()
-    job=start_job(catalog,c.app.state.walmart_publisher,b['id'],ai=ai,schedule=False)
-    assert start_job(catalog,c.app.state.walmart_publisher,b['id'],ai=ai,schedule=False)['id']==job['id']
+    job=start_job(catalog,c.app.state.walmart_publisher,b['id'],ai=ai,schedule=False,source_mode='server')
+    assert start_job(catalog,c.app.state.walmart_publisher,b['id'],ai=ai,schedule=False,source_mode='server')['id']==job['id']
     run_job(catalog,c.app.state.walmart_publisher,job['id'],ai)
     status=c.get(base+'/generation').json()['job']
     return c.get(base).json(),status

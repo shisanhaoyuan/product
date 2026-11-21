@@ -286,19 +286,22 @@ def collect_quote_page(asin, fetch):
 
 def save_capture(catalog, db, lid, sku, asin, result, actor_id, url, method):
     """Persist with the caller's transaction so generation can atomically rebase its snapshot."""
-    result = dict(result, source_url=url, captured_at=datetime.now(timezone.utc).isoformat(),
+    capture_id = uuid.uuid4().hex
+    result = dict(result, capture_id=capture_id, source_url=url, captured_at=datetime.now(timezone.utc).isoformat(),
                   variant_sku=sku or '', method=method)
     row = db.execute('SELECT data_json FROM listings WHERE id=?', (lid,)).fetchone()
     product = json.loads(row[0]) if row else {}
     target = product if not sku else next((v for v in product.get('variants', []) if v['sku'] == sku), {})
     if target.get('asin') != asin or product.get('source', '').casefold() != 'amazon':
         raise HTTPException(409, '抓取期间商品身份发生变化，结果未保存')
+    result['source_digest_before'] = db.execute('SELECT digest FROM current_listings WHERE id=?',(lid,)).fetchone()[0]
     db.execute('INSERT INTO source_captures VALUES(?,?,?,?,?,?,?)',
-               (uuid.uuid4().hex, lid, sku or '', asin, result['captured_at'], actor_id, json.dumps(result, ensure_ascii=False)))
-    if result['status'] == 'verification_required':
-        return result  # Persist the experiment, never replace source facts with failed verification.
-    from .source_sync import sync_capture
-    result['sync'] = sync_capture(catalog, db, lid, sku, asin, result, actor_id)
+               (capture_id, lid, sku or '', asin, result['captured_at'], actor_id, json.dumps(result, ensure_ascii=False)))
+    if result['status'] != 'verification_required':
+        from .source_sync import sync_capture
+        result['sync'] = sync_capture(catalog, db, lid, sku, asin, result, actor_id)
+    result['source_digest_after'] = db.execute('SELECT digest FROM current_listings WHERE id=?',(lid,)).fetchone()[0]
+    db.execute('UPDATE source_captures SET data_json=? WHERE id=?',(json.dumps(result,ensure_ascii=False),capture_id))
     return result
 
 
@@ -340,6 +343,8 @@ def source_routes(catalog):
         url = f'https://www.amazon.com/dp/{asin}?th=1&psc=1'
         try:
             html, result, method = collect_quote_page(asin, fetch_amazon_page)
+            from .listing_source_evidence import amazon_details
+            result['listing_facts'] = amazon_details(html, asin)
         except HumanVerificationRequired as exc:
             from .amazon_browser import configured
             reason = str(exc) if configured() else '普通请求遇到人机验证，本服务未启用 Wraith'
@@ -387,6 +392,8 @@ def source_routes(catalog):
             if not Document(data.html).root.ids('catalog-main-offer', 'ppd', 'desktop_buybox', 'buybox', 'aod-offer-list'):
                 raise ValueError('浏览器未返回报价区域；请更新验证助手后重新采集')
             result = amazon_source(data.html, v['asin'])
+            from .listing_source_evidence import amazon_details
+            result['listing_facts'] = amazon_details(data.html, v['asin'])
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
         from .source_images import collect_amazon_images

@@ -30,6 +30,7 @@ export interface SourceCapture {
   asin: string;
   source_url: string;
   captured_at?: string;
+  capture_id?: string;
   variant_sku?: string;
   seller?: string | null;
   price?: string | null;

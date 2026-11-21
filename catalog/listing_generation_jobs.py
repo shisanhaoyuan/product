@@ -60,20 +60,20 @@ def public_job(row, db=None):
 
 def latest(db, bid):
     row = db.execute('SELECT * FROM listing_generation_jobs WHERE batch_id=? ORDER BY started_at DESC,id DESC LIMIT 1', (bid,)).fetchone()
-    if row and row['state'] in ('queued','running') and row['updated_at'] < time.time()-600:
-        db.execute("UPDATE listing_generation_jobs SET state='interrupted',message=? WHERE id=? AND state IN ('queued','running')",
+    if row and row['state'] in ('queued','running','awaiting_sources') and row['updated_at'] < time.time()-(3600 if row['state']=='awaiting_sources' else 600):
+        db.execute("UPDATE listing_generation_jobs SET state='interrupted',message=? WHERE id=? AND state IN ('queued','running','awaiting_sources')",
                    ('生成任务已中断，已保存的商品资料保留，请重新生成未完成项', row['id']))
         row = db.execute('SELECT * FROM listing_generation_jobs WHERE id=?', (row['id'],)).fetchone()
     return row
 
 
-def start_job(catalog, publisher, bid, actor_id=None, ai=None, schedule=True):
+def start_job(catalog, publisher, bid, actor_id=None, ai=None, schedule=True, source_mode='shared'):
     ai = ai or ListingAIClient()
     with catalog.connect() as db:
         write_lock(db)
         current = batch(db,bid)
         prior = latest(db,bid)
-        if prior and prior['state'] in ('queued','running'):
+        if prior and prior['state'] in ('queued','running','awaiting_sources'):
             return public_job(prior)
         doc = public_document(db,bid)
         if not doc:
@@ -121,14 +121,20 @@ def start_job(catalog, publisher, bid, actor_id=None, ai=None, schedule=True):
                         a=current.get(parts[0]) if len(parts)==1 else current.get(parts[0],{}).get(parts[1])
                         if a!=b:
                             evidence['manual_locked']=True
+        from .listing_shared_collection import source_targets
+        targets=source_targets(basis,statuses) if source_mode=='shared' else []
+        state='awaiting_sources' if targets else 'queued'
+        if targets:
+            # Earlier validation cannot authorize submission while new quotes are pending.
+            db.execute('UPDATE walmart_listing_documents SET validation_json=? WHERE batch_id=?',('{}',bid))
         jid, timestamp = uuid.uuid4().hex, int(time.time())
         started = max(int(time.time()*1000), prior['started_at']+1 if prior else 0)
         db.execute('INSERT INTO listing_generation_jobs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
-            (jid,bid,'queued',stored['revision'],basis['store']['id'],bound['partner_id'],bound['revision'],identity,
-             actor_id,encoded({'rules_version':RULES_VERSION,'model':ai.settings.model,'rows':{},'previous_fields':previous_fields,'resources_digest':resource_digest(db,bound)}),
-             '准备后台采集、计算售价、AI 填充与校验',started,timestamp))
+            (jid,bid,state,stored['revision'],basis['store']['id'],bound['partner_id'],bound['revision'],identity,
+             actor_id,encoded({'rules_version':RULES_VERSION,'model':ai.settings.model,'rows':{},'previous_fields':previous_fields,'resources_digest':resource_digest(db,bound),'source_mode':source_mode,'source_targets':targets,'source_digests':{i['listing_id']:i['source_digest'] for i in basis['items']}}),
+             '等待商品库采集会话；邮编失效时请在打开的网页设置 10001' if targets else '准备后台采集、计算售价、AI 填充与校验',started,timestamp))
         row = db.execute('SELECT * FROM listing_generation_jobs WHERE id=?',(jid,)).fetchone()
-    if schedule:
+    if schedule and state=='queued':
         POOL.submit(run_job,catalog,publisher,jid,ai)
     return public_job(row)
 
@@ -136,15 +142,15 @@ def start_job(catalog, publisher, bid, actor_id=None, ai=None, schedule=True):
 def auto_start(catalog, publisher, bid, actor_id=None):
     try:
         if ListingAISettings().configured:
-            start_job(catalog,publisher,bid,actor_id)
+            start_job(catalog,publisher,bid,actor_id,source_mode='shared')
     except (ValueError, HTTPException):
         # Unbound stores remain valid draft batches. The editor explains the prerequisite.
         return
 
 
-def checked_context(db, job):
+def checked_context(db, job, check_sources=True):
     active = db.execute('SELECT state FROM listing_generation_jobs WHERE id=?', (job['id'],)).fetchone()
-    if not active or active['state'] not in ('queued','running'):
+    if not active or active['state'] not in ('queued','running','awaiting_sources'):
         raise ListingAIError('生成任务已停止，旧任务不会继续覆盖资料')
     if job.get('actor_id') is not None:
         actor=db.execute('SELECT role,active,must_change_password FROM users WHERE id=?',(job['actor_id'],)).fetchone()
@@ -157,7 +163,8 @@ def checked_context(db, job):
     stored = document(db,job['batch_id'])
     if stored['revision'] != job['revision']:
         raise ListingAIError('资料已被其他操作修改，已停止覆盖；请重新生成缺项')
-    unchanged_sources(db,stored)
+    if check_sources:
+        unchanged_sources(db,stored)
     if job.get('resources_digest') and resource_digest(db,bound)!=job['resources_digest']:
         raise ListingAIError('生成前提配置或真实编码池已改变，已停止覆盖，请重新生成')
     return stored, bound
@@ -448,5 +455,25 @@ def generation_routes(catalog, publisher):
     def start(bid: str,request: Request):
         # Re-read app.state so tests and provider adapters can inject their client.
         return start_job(catalog,request.app.state.walmart_publisher,bid,
-                         getattr(request.state,'user',{}).get('id'))
+                         getattr(request.state,'user',{}).get('id'),source_mode='shared')
+
+    from .listing_shared_collection import SourceReceipts, resume_sources
+
+    @router.post('/{jid}/sources')
+    def resume(bid: str, jid: str, data: SourceReceipts, request: Request):
+        return resume_sources(catalog,request.app.state.walmart_publisher,bid,jid,data.captures,
+                              getattr(request.state,'user',{}).get('id'))
+
+    @router.post('/{jid}/cancel-sources')
+    def cancel_sources(bid: str, jid: str, request: Request):
+        with catalog.connect() as db:
+            write_lock(db)
+            row=db.execute('SELECT * FROM listing_generation_jobs WHERE id=? AND batch_id=?',(jid,bid)).fetchone()
+            if not row or row['actor_id']!=getattr(request.state,'user',{}).get('id'):
+                raise HTTPException(409,'该采集任务不属于当前批次或操作者')
+            if row['state']!='awaiting_sources':
+                raise HTTPException(409,'任务已进入生成阶段，请刷新查看进度')
+            db.execute("UPDATE listing_generation_jobs SET state='interrupted',message=?,updated_at=? WHERE id=?",
+                       ('本轮采集已停止，可重新采集；商品库已取得的记录保留',int(time.time()),jid))
+            return public_job(db.execute('SELECT * FROM listing_generation_jobs WHERE id=?',(jid,)).fetchone())
     return router

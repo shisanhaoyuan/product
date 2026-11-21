@@ -19,7 +19,7 @@ import { useAuth } from '../composables/useAuth';
 import { errorMessage, plain, money } from '../utils/display';
 import { listingSourceImages } from '../utils/listingSourceImages';
 import { shouldPrepareOnEntry } from '../utils/listingPreparation';
-import { collectMissingPrices } from '../utils/sourceCollection';
+import { collectMissingPrices, collectListingSources, preferLocalSourceBrowser } from '../utils/sourceCollection';
 import { applyListingDefaults } from '../utils/listingDefaults';
 import ListingSchemaField from './ListingSchemaField.vue';
 import ListingPriceRecovery from './ListingPriceRecovery.vue';
@@ -217,7 +217,10 @@ async function closeCodePool() {
       await load();
     });
 }
-const generating = computed(() => ['queued', 'running'].includes(generation.value?.state || ''));
+const collectingSources = ref(false);
+const collectionMessage = ref('');
+const awaitingSources = computed(() => generation.value?.state === 'awaiting_sources');
+const generating = computed(() => ['awaiting_sources', 'queued', 'running'].includes(generation.value?.state || ''));
 const generationProcessed = computed(() =>
   Object.values(generation.value?.report.rows || {}).filter(row =>
     ['complete', 'review', 'failed', 'skipped'].includes(row.state),
@@ -300,10 +303,37 @@ async function pollGeneration() {
 }
 async function generate() {
   await run(async () => {
-    await save();
-    generation.value = await publishingApi.generate(props.bid);
+    if (!awaitingSources.value) {
+      await save();
+      generation.value = await publishingApi.generate(props.bid);
+    }
+    if (generation.value?.state === 'awaiting_sources') {
+      collectingSources.value = true;
+      sourceCollection = new AbortController();
+      try {
+        const receipts = await collectListingSources(generation.value.report.source_targets || [], sourceCollection.signal,
+          text => { collectionMessage.value = text; });
+        if (!live) return;
+        generation.value = await publishingApi.resumeSources(props.bid, generation.value.id, receipts);
+        collectionMessage.value = '';
+      } finally { collectingSources.value = false; }
+    }
     await pollGeneration();
   });
+}
+async function cancelSourceCollection() {
+  const job = generation.value;
+  if (job?.state !== 'awaiting_sources') return;
+  sourceCollection?.abort();
+  try {
+    generation.value = await publishingApi.cancelSources(props.bid, job.id);
+    collectionMessage.value = '';
+    await pollGeneration();
+  } catch (e) { error.value = errorMessage(e); }
+}
+async function setSourceLocation() {
+  preferLocalSourceBrowser(true);
+  await generate();
 }
 const currentSpec = computed(() =>
   current.value ? specs.value[current.value.product_type] : undefined,
@@ -821,7 +851,7 @@ onMounted(async () => {
     doc.value &&
     canEdit.value &&
     aiReady.value &&
-    shouldPrepareOnEntry(doc.value, generation.value)
+    (awaitingSources.value || shouldPrepareOnEntry(doc.value, generation.value))
   )
     void generate();
 });
@@ -912,13 +942,13 @@ onBeforeUnmount(() => {
             }}</strong>
             <p>
               {{
-                generation?.message ||
+                collectionMessage || generation?.message ||
                 (aiReady
-                  ? '进入填写页面后自动补采缺失报价，并生成刊登资料'
+                  ? '进入填写页面后使用商品库同一采集会话，再计算售价和生成资料'
                   : 'AI 未配置，来源资料仍可正常查看和编辑')
               }}
             </p>
-            <p class="muted">后台采集 → 计算售价 → AI 填充 → 校验；遇到采集异常仍继续生成文案与属性。</p>
+            <p class="muted">商品库同一会话采集 → 计算售价 → AI 填充 → 校验；邮编失效时打开网页设置 10001，完成后自动继续。</p>
             <small v-if="generation"
               >已处理 {{ generationProcessed }} /
               {{ generation.report.total ?? doc.rows.length }} 个 SKU ·
@@ -928,11 +958,17 @@ onBeforeUnmount(() => {
           <button
             v-if="canEdit"
             class="btn"
-            :disabled="busy || saving || generating"
+            :disabled="busy || saving || (generating && !awaitingSources)"
             @click="generate"
           >
-            {{ generation ? '重新采集并生成' : '采集并生成' }}
+            {{ awaitingSources ? '继续采集并生成' : generation ? '重新采集并生成' : '采集并生成' }}
           </button>
+        </div>
+        <div v-if="awaitingSources" class="notice">
+          <p>正在沿用商品库的采集方式。若邮编失效，可打开同一浏览器设置；浏览器会保留 Cookie，后续子商品继续使用。</p>
+          <button class="btn" :disabled="busy || collectingSources" @click="setSourceLocation">打开网页设置 10001 并继续</button>
+          <button class="btn" @click="cancelSourceCollection">停止本轮采集</button>
+          <a class="btn" href="/api/products/images/helper.zip" download>下载浏览器验证助手</a>
         </div>
         <div class="preparation-summary">
           <span
