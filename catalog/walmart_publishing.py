@@ -554,7 +554,7 @@ def normalize_document_titles(db, doc):
     changes=normalize_titles(db,rows,basis,latest_results(db,doc['batch_id']),doc['version'])
     from .listing_variants import synchronize
     before_groups=copy.deepcopy(rows)
-    synchronize(db,rows,basis,doc['version'],latest_results(db,doc['batch_id']),apply=True)
+    variant_groups=synchronize(db,rows,basis,doc['version'],latest_results(db,doc['batch_id']),apply=True)
     group_changes=[dict(platform_sku=after['platform_sku'],before=before['visible'],after=after['visible'])
                    for before,after in zip(before_groups,rows) if before['visible']!=after['visible']]
     if changes or encoded(rows)!=doc['rows_json']:
@@ -562,7 +562,7 @@ def normalize_document_titles(db, doc):
             (encoded(rows),'{}',now(),doc['batch_id']))
         db.execute('INSERT INTO walmart_listing_events VALUES(?,?,?,?,?,?)',
             (uuid.uuid4().hex,doc['batch_id'],None,'variant_group_rule' if group_changes else 'title_brand_rule',now(),
-             encoded({'rule':'target_brand_and_listing_content','changes':changes,'variant_changes':group_changes})))
+             encoded({'rule':'target_brand_and_listing_content','changes':changes,'variant_changes':group_changes,'variant_rules':{g['listing_id']:g['rule_mappings'] for g in variant_groups}})))
     return document(db,doc['batch_id'])
 
 
@@ -662,7 +662,7 @@ def publishing_routes(catalog):
                     raise HTTPException(422,'店铺 SKU 和商品编码只能通过专用字段设置')
             rule_changes=normalize_titles(db,rows,json.loads(doc['basis_json']),latest,data.version)
             from .listing_variants import synchronize
-            synchronize(db,rows,json.loads(doc['basis_json']),data.version,latest,apply=True)
+            variant_groups=synchronize(db,rows,json.loads(doc['basis_json']),data.version,latest,apply=True)
             if data.version!=doc['version'] and latest:
                 raise HTTPException(409,'已有提交记录的批次不能切换规格版本，请保留原版本')
             raw=encoded(rows)
@@ -671,7 +671,7 @@ def publishing_routes(catalog):
             if raw!=doc['rows_json'] or data.version!=doc['version']:
                 db.execute('UPDATE walmart_listing_documents SET revision=revision+1,version=?,rows_json=?,validation_json=?,updated_at=? WHERE batch_id=?',
                     (data.version,raw,'{}',now(),bid))
-                event(db,bid,request,'edit',{'revision':doc['revision']+1,'before':old,'after':rows,'rule_changes':rule_changes})
+                event(db,bid,request,'edit',{'revision':doc['revision']+1,'before':old,'after':rows,'rule_changes':rule_changes,'variant_rules':{g['listing_id']:g['rule_mappings'] for g in variant_groups}})
             return public_document(db,bid)
 
     @router.post('/verify-source-price')

@@ -65,12 +65,21 @@ export interface Attempt {
   results: Record<string, ListingResult>;
   polling?: { state: string; next_at: number; tries: number; last_error: string } | null;
 }
+export interface ListingVariantRule {
+  source: string;
+  target: string;
+  method: string;
+  reason: string;
+  source_values: Record<string, string>;
+  values: Record<string, unknown>;
+}
 export interface ListingVariantGroup {
   listing_id: string;
   group_id: string;
   axes: string[];
   allowed_axes: string[];
   primary_sku: string;
+  rule_mappings?: ListingVariantRule[];
   skus: string[];
   members: {
     platform_sku: string;

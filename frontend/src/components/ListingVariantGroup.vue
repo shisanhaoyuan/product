@@ -56,6 +56,23 @@ function display(value: unknown) {
       <span class="group-badge">{{ group.locked ? '沿用已提交分组' : '自动分组' }}</span>
     </header>
     <small class="group-id">组编号：{{ group.group_id }}</small>
+    <div class="skill-mapping">
+      <strong>自动匹配规则</strong>
+      <p>优先同名属性，再匹配可自定义字段；必要时用 ** 合并同一规格的原始属性值。</p>
+      <p v-if="!group.locked">
+        保存或重新校验时，系统会按来源规格修复无法区分的选项，不会将两项都为 1 的总数作为差异。
+      </p>
+      <details v-if="group.rule_mappings?.length">
+        <summary>查看属性对应依据（{{ group.rule_mappings.length }} 项）</summary>
+        <div v-for="(rule, index) in group.rule_mappings" :key="index" class="mapping-row">
+          <strong>{{ rule.source }} → {{ labels[rule.target] || rule.target }}</strong>
+          <span>{{ rule.reason }}</span>
+          <small v-if="rule.source_values[activeSku]"
+            >当前规格原值：{{ rule.source_values[activeSku] }}</small
+          >
+        </div>
+      </details>
+    </div>
     <div class="group-errors" v-if="group.errors.length">
       <p v-for="(issue, index) in group.errors" :key="index">{{ issue.message }}</p>
     </div>
@@ -168,6 +185,23 @@ p {
   display: block;
   margin: 10px 0 16px;
   overflow-wrap: anywhere;
+}
+.skill-mapping {
+  margin: 12px 0;
+  padding: 12px 14px;
+  background: #e4eff6;
+  border-radius: 10px;
+}
+.skill-mapping summary {
+  cursor: pointer;
+  margin-top: 8px;
+}
+.mapping-row {
+  display: grid;
+  gap: 4px;
+  padding: 10px 0;
+  border-top: 1px solid #c6d9e6;
+  margin-top: 8px;
 }
 .group-errors {
   padding: 10px 14px;

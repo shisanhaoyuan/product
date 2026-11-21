@@ -67,13 +67,15 @@ def test_duplicate_and_unsupported_discriminators_do_not_silently_become_standal
     rows, basis, schemas = family(('Brown', 'Brown'))
     result = plan(rows, basis, schemas, apply=True)[0]
     assert result['errors'] and not result['axes']
-    # Single vs two-pack uses a factual allowed axis, not invented colors.
+    # The Skill keeps factual pack values in a custom field; no invented discriminator.
     for n, variant in enumerate(basis['items'][0]['variants']):
         variant['content']['attributes']['Item Package Quantity'] = str(n+1)
     result = plan(rows, basis, schemas, apply=True)[0]
-    assert not result['errors'] and result['axes'] == ['multipackQuantity']
+    assert not result['errors'] and result['axes'] == ['color']
+    assert [r['visible']['color'] for r in rows] == ['Brown**1', 'Brown**2']
+    assert 'multipackQuantity' not in result['allowed_axes']
     sections(schemas[PT], PT)['visible']['properties']['variantAttributeNames']['items']['enum'] = ['color']
-    assert plan(rows, basis, schemas, apply=True)[0]['errors']
+    assert not plan(rows, basis, schemas, apply=True)[0]['errors']
 
 
 def test_combinations_require_more_than_one_axis_and_missing_values_block():
@@ -81,10 +83,10 @@ def test_combinations_require_more_than_one_axis_and_missing_values_block():
     for n, v in enumerate(basis['items'][0]['variants']):
         v['content']['attributes']['multipackQuantity'] = n % 2 + 1
     group = plan(rows, basis, schemas, apply=True)[0]
-    assert not group['errors'] and set(group['axes']) == {'color', 'multipackQuantity'}
-    rows[0]['visible'].pop('multipackQuantity')
-    assert any('组合包装' in e['message'] or '多件装' in e['message'] for e in plan(rows, basis, schemas)[0]['errors'])
-    rows[0]['visible']['multipackQuantity'] = 2
+    assert not group['errors'] and group['axes'] == ['color']
+    rows[0]['visible'].pop('color')
+    assert any('颜色' in e['message'] for e in plan(rows, basis, schemas)[0]['errors'])
+    rows[0]['visible']['color'] = rows[1]['visible']['color']
     assert any('重复' in e['message'] for e in plan(rows, basis, schemas)[0]['errors'])
 
 

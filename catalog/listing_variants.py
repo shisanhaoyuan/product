@@ -11,7 +11,7 @@ from referencing.exceptions import NoSuchResource
 
 from .walmart_listing_schema import LABELS, sections, precise_validator
 
-POLICY = 'source_parent_variants_v1'
+POLICY = 'source_parent_variants_skill_v2'
 SYSTEM_FIELDS = ('variantGroupId', 'variantAttributeNames', 'isPrimaryVariant')
 EDITABLE = {'unsubmitted', 'failed', 'rejected', 'unpublished'}
 ALIASES = {
@@ -158,25 +158,54 @@ def plan(rows, basis, schemas, *, sources=None, history=None, latest=None, apply
             return value not in (None, '', [], {}) and valid_attribute(props[key], value)
         def combinations(keys):
             return [tuple(value_key(r['visible'].get(k)) for k in keys) for r in members]
-        if not axes and allowed:
-            candidates = [k for k in allowed if all(valid_value(r, k) for r in members)
-                          and len({value_key(r['visible'][k]) for r in members}) > 1]
+        def choose_axes(candidate_rows, candidates_allowed):
+            candidates = [k for k in candidates_allowed if all(valid_value(r, k) for r in candidate_rows)
+                          and len({value_key(r['visible'][k]) for r in candidate_rows}) > 1]
+            def combinations(keys):
+                return [tuple(value_key(r['visible'].get(k)) for k in keys) for r in candidate_rows]
+            selected = []
             # Bound search by the actual spec's attribute limit; never manufacture a discriminator.
             limit = min(len(candidates), props['variantAttributeNames'].get('maxItems', len(candidates)))
-            if len(set(combinations(candidates))) == len(members):
+            if len(set(combinations(candidates))) == len(candidate_rows):
                 choices = itertools.chain.from_iterable(itertools.combinations(candidates, size)
                                                         for size in range(1, limit + 1))
-                axes = next((list(keys) for keys in itertools.islice(choices, 2048)
-                             if len(set(combinations(keys))) == len(members)), [])
-                if not axes:
+                selected = next((list(keys) for keys in itertools.islice(choices, 2048)
+                             if len(set(combinations(keys))) == len(candidate_rows)), [])
+                if not selected:
                     # Avoid exponential work for unusually large official enums.
                     reduced = list(candidates)
                     for key in reversed(candidates):
                         remaining = [k for k in reduced if k != key]
-                        if len(set(combinations(remaining))) == len(members):
+                        if len(set(combinations(remaining))) == len(candidate_rows):
                             reduced = remaining
                     if len(reduced) <= limit:
-                        axes = reduced
+                        selected = reduced
+            return selected
+        from .listing_variant_rules import mapped_source, name as rule_name, FORBIDDEN
+        # Existing submitted families retain their original routing. New families
+        # use the user's latest Skill rule: Multipack Quantity is not a group axis.
+        if not historical:
+            allowed = [k for k in allowed if rule_name(k) not in FORBIDDEN]
+        proposals, mappings = mapped_source(current, content, allowed, props)
+        axes_valid = (bool(axes) and len(set(axes)) == len(axes) and all(k in allowed for k in axes)
+                      and all(valid_value(r,k) for r in members for k in axes)
+                      and len(set(combinations(axes))) == len(members))
+        if apply and not historical and not legacy and not errors and not axes_valid and len(members) > 1 and all(
+                latest.get(r['platform_sku'],{}).get('status','unsubmitted') in EDITABLE for r in current):
+            mapped_keys = list(dict.fromkeys(m['target'] for m in mappings))
+            replacement_axes = choose_axes(proposals, mapped_keys)
+            if replacement_axes:
+                for row, proposed in zip(current,proposals):
+                    for key in replacement_axes:
+                        row['visible'][key] = proposed['visible'][key]
+                axes = replacement_axes
+        if not axes and allowed:
+            axes = choose_axes(members, allowed)
+        # Show only provenance for values actually retained, never a proposal
+        # that failed official type/enum/length checks or a later manual edit.
+        applied_targets = {k for k in axes if all(r['visible'].get(k) == p['visible'].get(k)
+                           for r,p in zip(current,proposals)) and any(m['target']==k for m in mappings)}
+        rule_mappings = [m for m in mappings if m['target'] in applied_targets]
         if not axes:
             issue('无法用当前类目允许的属性区分子 SKU；请补齐真实颜色、尺寸或包装数量等差异，不能直接作为独立商品提交')
         elif any(k not in allowed for k in axes) or len(set(axes)) != len(axes):
@@ -188,7 +217,7 @@ def plan(rows, basis, schemas, *, sources=None, history=None, latest=None, apply
                         issue(f"{row['source_sku']}：请填写有效的{LABELS.get(key, key)}以区分变体", 'visible.' + key)
             combos = combinations(axes)
             if len(set(combos)) != len(combos):
-                issue('同组子 SKU 的差异属性组合重复，请核对真实规格；例如单件与两件装应使用类目允许的包装数量属性')
+                issue('同组子 SKU 的差异属性组合重复，请核对真实规格；系统将按 Skill 匹配来源规格；请核对是否保留了原始颜色、尺寸等差异')
         previous_primary = {r['platform_sku'] for r in historical if r['visible'].get('isPrimaryVariant') == 'Yes'}
         chosen_primary = [r['platform_sku'] for r in members if r['visible'].get('isPrimaryVariant') == 'Yes']
         primary = next(iter(previous_primary)) if len(previous_primary) == 1 else (chosen_primary[0] if len(chosen_primary) == 1 else min(current_skus))
@@ -208,14 +237,14 @@ def plan(rows, basis, schemas, *, sources=None, history=None, latest=None, apply
                     url = content.get(row['platform_sku'], {}).get('swatch_image') or row['visible'].get('mainImageUrl')
                     if url:
                         row['visible']['swatchImages'] = [dict(swatchVariantAttribute='color', swatchImageUrl=url)]
-            elif any(row['visible'].get(k) != v for k, v in expected.items()):
+            elif not errors and any(row['visible'].get(k) != v for k, v in expected.items()):
                 issue(f"{row['source_sku']}：变体组字段不完整或不一致，请保存后重新校验", 'visible.variantGroupId')
         groups.append(dict(listing_id=lid, group_id=gid, axes=axes, allowed_axes=allowed, primary_sku=primary,
                            skus=[r['platform_sku'] for r in current],
                            members=[dict(platform_sku=r['platform_sku'], source_sku=r['source_sku'],
                                          values={k:r['visible'].get(k) for k in axes},
                                          primary=r['platform_sku']==primary, in_batch=r['platform_sku'] in current_skus)
-                                    for r in members], errors=errors, locked=bool(historical or legacy)))
+                                    for r in members], errors=errors, rule_mappings=rule_mappings, locked=bool(historical or legacy)))
     if apply:
         original[:] = rows
     return groups
