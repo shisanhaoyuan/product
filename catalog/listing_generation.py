@@ -190,7 +190,7 @@ def source_facts(source, item, variant):
     facts['source_brands'] = source_brands(source)
     if source.get('brand'):
         facts['source_brand'] = source['brand']
-    if source.get('source') not in ('GigaB2B', 'Saleyee'):
+    if source.get('source') not in ('GigaB2B', 'GigaB2B_CA', 'Saleyee'):
         if source.get('variants'):
             own = [v for v in source['variants'] if v.get('sku') == variant['sku']]
             if len(own) != 1:
@@ -207,7 +207,7 @@ def source_facts(source, item, variant):
                    'CategoryFirstNameEN', 'CategorySecondNameEN', 'CategoryThirdNameEN', 'MapGroupList')
         facts.update({f'detail.{k}': detail[k] for k in allowed if k in detail and not empty(detail[k])})
         # Spec/Goods dimensions have no documented units: do not guess inches or pounds.
-    if source.get('source') == 'GigaB2B':
+    if source.get('source') in ('GigaB2B', 'GigaB2B_CA'):
         detail = ((source.get('source_facts') or {}).get('giga') or {}).get('detail') or {}
         if source.get('sku') != variant['sku'] or detail.get('sku') != variant['sku']:
             raise ListingAIError('云仓详情与当前来源 SKU 不一致，已停止生成')

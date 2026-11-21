@@ -34,7 +34,7 @@ const composerSelection = ref<PrelistingSelection>({}),
 const route = useRoute(),
   router = useRouter();
 const isWarehouse = computed(() => isSupplier(source.value));
-const isGiga = computed(() => route.path === '/giga-products');
+const isGiga = computed(() => ['/giga-products', '/giga-canada-products'].includes(route.path));
 const currentSource = computed(() => sourceFromPath(route.path));
 const source = computed(() => currentSource.value.source);
 const libraryPath = computed(() => currentSource.value.path);
@@ -403,6 +403,9 @@ onBeforeUnmount(() => {
 });
 </script>
 <template>
+  <p v-if="source === 'GigaB2B_CA'" class="notice">
+    加拿大独立商品库，价格保留 API 返回币种。Walmart 加拿大站接入后开放预上架。
+  </p>
   <div class="page-heading">
     <div>
       <p class="eyebrow">CATALOG / 商品管理</p>
@@ -414,7 +417,13 @@ onBeforeUnmount(() => {
       <RouterLink
         v-if="isWarehouse"
         class="btn"
-        :to="source === 'Saleyee' ? '/saleyee-patrol' : '/giga-patrol'"
+        :to="
+          source === 'Saleyee'
+            ? '/saleyee-patrol'
+            : source === 'GigaB2B_CA'
+              ? '/giga-canada-patrol'
+              : '/giga-patrol'
+        "
         >价格与库存巡查</RouterLink
       >
       <RouterLink class="btn" to="/prelisting">预上架批次</RouterLink>
@@ -627,7 +636,8 @@ onBeforeUnmount(() => {
         <span>已选 {{ selectedCount }} 件</span
         ><button
           class="btn primary"
-          :disabled="loading || selectedCount < 1 || selectedCount > 500"
+          :disabled="source === 'GigaB2B_CA' || loading || selectedCount < 1 || selectedCount > 500"
+          :title="source === 'GigaB2B_CA' ? '等待 Walmart 加拿大站接入后开放' : undefined"
           @click="openComposer"
         >
           预上架
@@ -737,7 +747,7 @@ onBeforeUnmount(() => {
                 <span v-if="isGiga" class="giga-table-price">预计总额（含打包）</span
                 >{{
                   priceRange(
-                    product.source === 'GigaB2B'
+                    ['GigaB2B', 'GigaB2B_CA'].includes(product.source || '')
                       ? product.giga_summary?.estimated_totals || []
                       : product.prices,
                     product.currency ?? 'USD',

@@ -146,7 +146,7 @@ class Catalog:
                 raw = encoded(data)
                 digest = hashlib.sha256(raw.encode()).hexdigest()
                 lid = hashlib.sha256(f"{bundle.namespace}:{item.external_id}".encode()).hexdigest()[:24]
-                identity = f"{bundle.namespace}:{item.sku}" if item.source in ("GigaB2B", "Saleyee") and not item.asin else item.asin
+                identity = f"{bundle.namespace}:{item.sku}" if item.source in ("GigaB2B", "GigaB2B_CA", "Saleyee") and not item.asin else item.asin
                 pid = hashlib.sha256(f"{item.source}:{identity}".encode()).hexdigest()[:24]
                 old = db.execute("SELECT * FROM listings WHERE id=?", (lid,)).fetchone()
                 if old:
@@ -239,7 +239,8 @@ class Catalog:
             args.append(source)
         if inventory_status == 'out_of_stock':
             # Filter source stock before pagination; local edits are not supplier availability.
-            paths = [('GigaB2B', ['source_facts','giga','inventory','sellerInventoryInfo','sellerAvailableInventory']),
+            paths = [('GigaB2B_CA', ['source_facts','giga','inventory','sellerInventoryInfo','sellerAvailableInventory']),
+                     ('GigaB2B', ['source_facts','giga','inventory','sellerInventoryInfo','sellerAvailableInventory']),
                      ('Saleyee', ['source_facts','inventory'])]
             choices = []
             for supplier, parts in paths:
@@ -355,8 +356,8 @@ class Catalog:
                     'fill_complete','readback_verified','local_edit')} | dict(manual_review=d.get('manual_review'),id=r['id'],title=d['copy']['title'],
                     image=covers[0] if covers else '', image_fallbacks=covers[1:],
                     saleyee_summary={k:d.get('source_facts',{}).get(k) for k in ('inventory','shipping','landed','warnings')} if d['source']=='Saleyee' else None,
-                    giga_summary=giga_summary(d.get('source_facts')) if d['source']=='GigaB2B' else None,
-                    variant_count=len(d['variants']),prices=prices,currency=(d.get('source_facts',{}).get('currency') or '') if d['source'] in ('GigaB2B','Saleyee') else 'USD',issue_count=0 if review.get('valid') and review.get('complete') else len(d['issues']),category=r['category'],seller_blacklist=matches(d, entries),
+                    giga_summary=giga_summary(d.get('source_facts')) if d['source'] in ('GigaB2B', 'GigaB2B_CA') else None,
+                    variant_count=len(d['variants']),prices=prices,currency=(d.get('source_facts',{}).get('currency') or '') if d['source'] in ('GigaB2B','GigaB2B_CA','Saleyee') else 'USD',issue_count=0 if review.get('valid') and review.get('complete') else len(d['issues']),category=r['category'],seller_blacklist=matches(d, entries),
                     listing_count=sum(s['count'] for s in coverage.get(d['asin'], [])) or 1,
                     store_history=store_history[r['id']],listing_stores=coverage.get(d['asin'], [dict(store=d['store'],count=1)])))
             return dict(items=items,total=total,page=page,page_size=page_size)
@@ -369,7 +370,7 @@ class Catalog:
             data = json.loads(r[0])
             from .product_store_history import histories
             return data | dict(id=listing_id,category=r['category'],store_history=histories(db,[listing_id])[listing_id],
-                giga_summary=giga_summary(data.get('source_facts')) if data['source']=='GigaB2B' else None,
+                giga_summary=giga_summary(data.get('source_facts')) if data['source'] in ('GigaB2B', 'GigaB2B_CA') else None,
                 seller_blacklist=matches(json.loads(r[0]), active_entries(db)),history=[dict(h) for h in db.execute(
                 "SELECT id,observed_at,evidence_kind,digest FROM snapshots WHERE listing_id=? ORDER BY observed_at DESC",(listing_id,))])
 

@@ -36,18 +36,28 @@ class GigaError(ValueError):
 
 
 class GigaSettings:
-    def __init__(self):
-        self.environment = os.environ.get('CATALOG_GIGA_ENVIRONMENT', 'sandbox')
-        self.client_id = os.environ.get('CATALOG_GIGA_CLIENT_ID', '').strip()
-        self.secret = os.environ.get('CATALOG_GIGA_CLIENT_SECRET', '').strip()
+    def __init__(self, region='US'):
+        if region not in ('US', 'CA'):
+            raise ValueError('Unsupported GIGA region')
+        self.region = region
+        self.source = 'GigaB2B_CA' if region == 'CA' else 'GigaB2B'
+        prefix = 'CATALOG_GIGA_CA_' if region == 'CA' else 'CATALOG_GIGA_'
+        self.environment = os.environ.get(prefix + 'ENVIRONMENT', 'sandbox')
+        self.client_id = os.environ.get(prefix + 'CLIENT_ID', '').strip()
+        self.secret = os.environ.get(prefix + 'CLIENT_SECRET', '').strip()
         self.configured = bool(self.client_id and self.secret and self.environment in HOSTS)
         # Isolate accounts and sandbox data without exposing their client IDs.
         account = hashlib.sha256(self.client_id.encode()).hexdigest()[:16]
-        self.namespace = f'giga.{self.environment}.{account}'
+        self.namespace = f'giga.{self.environment}.{account}' if region == 'US' else f'giga.ca.{self.environment}.{account}'
 
     def public(self):
-        return {'configured': self.configured, 'environment': self.environment if self.environment in HOSTS else 'invalid',
+        return {'region': self.region, 'source': self.source, 'configured': self.configured, 'environment': self.environment if self.environment in HOSTS else 'invalid',
                 'scope': '仅同步 Buyer 收藏夹或有囤货库存的商品', 'page_size': 100}
+
+
+class GigaCanadaSettings(GigaSettings):
+    def __init__(self):
+        super().__init__('CA')
 
 
 def sign(client_id, secret, path, timestamp, nonce):
@@ -139,7 +149,7 @@ def amount(value):
     return format(number, 'f')
 
 
-def listing_from_api(sku, detail, price, stock, namespace, now):
+def listing_from_api(sku, detail, price, stock, namespace, now, region='US'):
     for row in (detail, price, stock):
         if row.get('sku') != sku:
             raise GigaError('商品 SKU 对应失败，本页未保存')
@@ -162,9 +172,10 @@ def listing_from_api(sku, detail, price, stock, namespace, now):
     facts = dict(sku=sku, price=original, shipping=shipping, currency=price.get('currency'), seller=seller,
                  inventory=quantity, inventory_basis='sellerAvailableInventory', price_basis='price',
                  giga={'detail': detail, 'price': price, 'inventory': stock})
-    return Listing(external_id=sku, asin='', sku=sku, source='GigaB2B',
+    if region == 'CA': facts['region'] = 'CA'
+    return Listing(external_id=sku, asin='', sku=sku, source='GigaB2B_CA' if region == 'CA' else 'GigaB2B',
                    # No documented product permalink: do not invent one.
-                   source_url='', store='大建云仓来源库', template=f'GIGA:{sku}',
+                   source_url='', store='大建云仓来源库 Canada' if region == 'CA' else '大建云仓来源库', template=f'GIGA:{sku}',
                    brand=brands[0] if len(set(brands)) == 1 else '', seller=seller,
                    observed_at=now, uploaded_at=now, evidence_kind='source_only',
                    copy={'title': detail.get('productName') or sku,
@@ -224,7 +235,7 @@ def sync_page(catalog, settings, page, actor_id=None, client=None):
         prices = indexed(client.query('price', {'skus': skus}), skus, '价格')
         stocks = indexed(client.query('stock', {'skus': skus}), skus, '库存')
         now = datetime.now(timezone.utc).isoformat()
-        listings = [listing_from_api(s, detail[s], prices[s], stocks[s], settings.namespace, now) for s in skus]
+        listings = [listing_from_api(s, detail[s], prices[s], stocks[s], settings.namespace, now, settings.region) for s in skus]
         with catalog.connect() as db:
             for item in listings:
                 old = db.execute('SELECT data_json FROM listings WHERE namespace=? AND external_id=?', (settings.namespace, item.external_id)).fetchone()
@@ -239,7 +250,7 @@ def sync_page(catalog, settings, page, actor_id=None, client=None):
         if time.monotonic() > getattr(client, 'deadline', float('inf')):
             raise GigaError('本页处理超时，请重试')
         imported = catalog.ingest(ImportBundle(namespace=settings.namespace,
-            label=f'大建云仓 {settings.environment} · 第 {page} 页', listings=listings), actor_id=actor_id)
+            label=f'大建云仓 {settings.region} {settings.environment} · 第 {page} 页', listings=listings), actor_id=actor_id)
         return imported | dict(page=page, total_pages=pages, next_page=page + 1 if page < pages else None, count=len(skus))
 
 
@@ -248,16 +259,17 @@ class SyncPageInput(BaseModel):
     page: int = Field(default=1, ge=1, le=10000)
 
 
-def giga_routes(catalog):
-    router = APIRouter(prefix='/api/integrations/giga')
+def giga_routes(catalog, region='US'):
+    settings_type = GigaCanadaSettings if region == 'CA' else GigaSettings
+    router = APIRouter(prefix='/api/integrations/giga-canada' if region == 'CA' else '/api/integrations/giga')
 
     @router.get('')
     def status():
-        return GigaSettings().public()
+        return settings_type().public()
 
     @router.post('/sync')
     def sync(data: SyncPageInput, request: Request):
-        settings = GigaSettings()
+        settings = settings_type()
         if not settings.configured:
             raise HTTPException(503, '尚未配置大建云仓 API，请由管理员配置服务器环境变量')
         user = getattr(request.state, 'user', None)

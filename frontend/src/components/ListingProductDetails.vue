@@ -189,7 +189,7 @@ onBeforeUnmount(() => {
             <h3>商品参数</h3>
             <ReadableAttributes :value="attributes" />
             <GigaSourceFacts
-              v-if="product.source === 'GigaB2B'"
+              v-if="['GigaB2B', 'GigaB2B_CA'].includes(product.source || '')"
               :facts="sourceRecord.source_facts"
               :summary="product.giga_summary"
             />

@@ -218,7 +218,7 @@ def apply_batch(catalog, run_id, namespace, targets, price_rows, price_error,
 def run_patrol(catalog, settings=None, client=None, *, publisher=None):
     settings = settings or GigaSettings()
     saleyee = isinstance(settings, SaleyeeSettings)
-    source = 'Saleyee' if saleyee else 'GigaB2B'
+    source = 'Saleyee' if saleyee else settings.source
     batch_size = 30 if saleyee else 100
     fetch = saleyee_patrol.fetch_rows if saleyee else fetch_rows
     name = settings.namespace + '.patrol'
@@ -251,7 +251,8 @@ def run_patrol(catalog, settings=None, client=None, *, publisher=None):
                     apply_batch(catalog, run_id, settings.namespace, batch, prices, price_error,
                                 stocks, stock_error, account_token, run_token, source)
                     from .giga_walmart_sync import sync_batch
-                    sync_batch(catalog, run_id, settings.namespace, batch, account_token, run_token, publisher)
+                    if source != 'GigaB2B_CA':
+                        sync_batch(catalog, run_id, settings.namespace, batch, account_token, run_token, publisher)
             with catalog.connect() as db:
                 write_lock(db)
                 row = db.execute('SELECT * FROM giga_patrol_runs WHERE id=?', (run_id,)).fetchone()
@@ -304,7 +305,8 @@ def visible_run(db, row):
 
 
 def patrol_routes(catalog, provider='giga'):
-    settings_type = SaleyeeSettings if provider == 'saleyee' else GigaSettings
+    from .giga import GigaCanadaSettings
+    settings_type = SaleyeeSettings if provider == 'saleyee' else GigaCanadaSettings if provider == 'giga-canada' else GigaSettings
     router = APIRouter(prefix=f'/api/integrations/{provider}/patrol')
 
     @router.get('')
@@ -338,7 +340,7 @@ def patrol_routes(catalog, provider='giga'):
 def main():
     parser = argparse.ArgumentParser(description='供应商每周价格和库存巡查')
     parser.add_argument('--env-file', type=Path)
-    parser.add_argument('--source', choices=('giga', 'saleyee'))
+    parser.add_argument('--source', choices=('giga', 'giga-canada', 'saleyee'))
     args = parser.parse_args()
     if args.env_file:
         from .config import load_env_file
@@ -346,7 +348,8 @@ def main():
     from .db import Catalog
     path = os.environ.get('CATALOG_DATABASE_URL') or os.environ.get('CATALOG_DB', Path(__file__).resolve().parent.parent/'data/catalog.db')
     catalog = Catalog(path)
-    providers = {'giga': GigaSettings(), 'saleyee': SaleyeeSettings()}
+    from .giga import GigaCanadaSettings
+    providers = {'giga': GigaSettings(), 'giga-canada': GigaCanadaSettings(), 'saleyee': SaleyeeSettings()}
     active = [args.source] if args.source else [k for k, v in providers.items() if v.configured]
     if not active:
         print('尚未配置巡查来源')

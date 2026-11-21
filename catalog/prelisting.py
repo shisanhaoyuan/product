@@ -105,7 +105,7 @@ class StoreState(StoreCodeInput):
 
 
 class Filters(StrictInput):
-    source: Literal['', 'Amazon', 'GigaB2B', 'Saleyee'] = ''
+    source: Literal['', 'Amazon', 'GigaB2B', 'GigaB2B_CA', 'Saleyee'] = ''
     deduplicate: bool = False
     q: str = Field(default='', max_length=300)
     identifiers: str = Field(default='', max_length=6000)
@@ -289,7 +289,9 @@ def build_preview(catalog, db, data, exclude_batch=None):
     items, seen, seen_variants, conflict = [], set(), set(), False
     for row in rows:
         d = json.loads(row['data_json'])
-        is_supplier = d['source'] in ('GigaB2B', 'Saleyee')
+        if d['source'] == 'GigaB2B_CA':
+            raise HTTPException(409, '加拿大云仓商品需使用 Walmart 加拿大站店铺；加拿大站刊登接入后开放预上架，不能提交到美国站')
+        is_supplier = d['source'] in ('GigaB2B', 'GigaB2B_CA', 'Saleyee')
         key = (seller_key(d['source']), claim_identity(d))
         errors, warnings = [], ['使用历史核验记录；正式执行前需重新采集价格和库存']
         edits = d.get('local_edit', {})
@@ -358,8 +360,8 @@ def build_preview(catalog, db, data, exclude_batch=None):
                   total=len(items), variant_count=sum(len(d['variants']) for d in items),
                   ready_count=sum(d['status'] == 'ready' for d in items), can_create=not conflict,
                   execution_enabled=False,
-                  price_rule=('giga_regular_landed_v1' if all(i['source'] == 'GigaB2B' for i in items)
-                              else 'source_specific_v1' if any(i['source'] in ('GigaB2B', 'Saleyee') for i in items)
+                  price_rule=('giga_regular_landed_v1' if all(i['source'] in ('GigaB2B', 'GigaB2B_CA') for i in items)
+                              else 'source_specific_v1' if any(i['source'] in ('GigaB2B', 'GigaB2B_CA', 'Saleyee') for i in items)
                               else 'amazon_captured_original_v1' if all(i['source'] == 'Amazon' for i in items)
                               else 'source_specific_v1'), sku_rule=platform_sku.RULE)
     from .listing_templates import annotate_preview

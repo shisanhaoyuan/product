@@ -7,7 +7,7 @@ from .giga_presentation import summary, obj
 
 def claim_identity(item):
     # The existing claim column is named asin; GIGA has no ASIN.
-    return 'sku:' + item['sku'] if item['source'] in ('GigaB2B', 'Saleyee') else item['asin']
+    return 'sku:' + item['sku'] if item['source'] in ('GigaB2B', 'GigaB2B_CA', 'Saleyee') else item['asin']
 
 
 def has_text(value):
@@ -20,7 +20,7 @@ def prepare(item, source, multiplier):
     facts = obj(source.get('source_facts'))
     giga = obj(facts.get('giga'))
     detail, price, inventory = (obj(giga.get(key)) for key in ('detail', 'price', 'inventory'))
-    valid_identity = source.get('source') == 'GigaB2B' and source.get('sku') == item['sku'] and all(
+    valid_identity = source.get('source') in ('GigaB2B', 'GigaB2B_CA') and source.get('sku') == item['sku'] and all(
         value.get('sku') == item['sku'] for value in (detail, price, inventory))
     if not valid_identity:
         errors.append('供应商 SKU 与价格、库存或详情来源不一致，请重新同步')
@@ -31,8 +31,9 @@ def prepare(item, source, multiplier):
     info = summary(facts)
     totals = info['estimated_totals']
     base = final = None
-    if info['currency'].upper() != 'USD':
-        errors.append('缺少 USD 币种的来源价格，请重新同步')
+    expected_currency = 'CAD' if item['source'] == 'GigaB2B_CA' else 'USD'
+    if info['currency'].upper() != expected_currency:
+        errors.append(f'缺少 {expected_currency} 币种的来源价格，请重新同步')
     elif info['unit_price'] is None or Decimal(info['unit_price']) <= 0:
         errors.append('来源普通单价缺失或不是有效正数')
     elif len(totals) != 1:

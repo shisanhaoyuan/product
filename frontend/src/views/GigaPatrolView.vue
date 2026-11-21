@@ -4,8 +4,18 @@ import { useRoute } from 'vue-router';
 import { request } from '../api/client';
 import { errorMessage } from '../utils/display';
 const route = useRoute();
-const provider = () => route.path === '/saleyee-patrol' ? 'saleyee' : 'giga';
-const supplier = () => provider() === 'saleyee' ? '赛盈' : '大建云仓';
+const provider = () =>
+  route.path === '/saleyee-patrol'
+    ? 'saleyee'
+    : route.path === '/giga-canada-patrol'
+      ? 'giga-canada'
+      : 'giga';
+const supplier = () =>
+  provider() === 'saleyee'
+    ? '赛盈'
+    : provider() === 'giga-canada'
+      ? '大建云仓 Canada'
+      : '大建云仓 US';
 interface Action {
   id: string;
   store_name: string;
@@ -137,14 +147,18 @@ async function open(run: Run, targetPage = 1) {
     if (!pending.signal.aborted) error.value = errorMessage(e);
   }
 }
-watch(() => route.path, () => {
-  detailController?.abort();
-  selected.value = undefined;
-  items.value = [];
-  data.value = undefined;
-  page.value = 1;
-  load();
-}, { immediate: true });
+watch(
+  () => route.path,
+  () => {
+    detailController?.abort();
+    selected.value = undefined;
+    items.value = [];
+    data.value = undefined;
+    page.value = 1;
+    load();
+  },
+  { immediate: true },
+);
 onBeforeUnmount(() => {
   controller?.abort();
   detailController?.abort();
@@ -179,8 +193,15 @@ onBeforeUnmount(() => {
         部署后在服务器运行 deploy/install-giga-patrol.sh
         启用每周巡查。页面打开或关闭不影响服务器定时任务。
       </p>
-      <p class="subtitle">
-        巡查来源价格和库存后，自动更新已上架的对应店铺商品：成本上涨时按{{ provider() === 'saleyee' ? '采购价×原上架倍率（不另加运费）' : '（单价＋运费）×原上架倍率' }}计算，仅上调售价；供应商明确无库存时清零。不重新上架，不自动降价或补库存。
+      <p v-if="provider() === 'giga-canada'" class="subtitle">
+        每周独立巡查加拿大来源价格与库存；加拿大站刊登接入前，不向沃尔玛店铺写入价格或库存。
+      </p>
+      <p v-else class="subtitle">
+        巡查来源价格和库存后，自动更新已上架的对应店铺商品：成本上涨时按{{
+          provider() === 'saleyee'
+            ? '采购价×原上架倍率（不另加运费）'
+            : '（单价＋运费）×原上架倍率'
+        }}计算，仅上调售价；供应商明确无库存时清零。不重新上架，不自动降价或补库存。
       </p>
     </div>
     <div class="table-scroll">
@@ -245,7 +266,8 @@ onBeforeUnmount(() => {
                   item.sku
                 }}</RouterLink>
                 <p v-if="item.after.quote" class="quote-info">
-                  站点 {{ item.after.quote[0] }} · 仓库 {{ item.after.quote[1] }} · 物流 {{ item.after.quote[2] }}
+                  站点 {{ item.after.quote[0] }} · 仓库 {{ item.after.quote[1] }} · 物流
+                  {{ item.after.quote[2] }}
                 </p>
               </td>
               <td>

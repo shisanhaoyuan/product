@@ -48,7 +48,7 @@ defineProps<{ product: ProductSummary }>();
         卖家已拉黑 · {{ product.seller_blacklist.length }} 位（含子变体）
       </p>
       <GigaQuickFacts
-        v-if="product.source === 'GigaB2B'"
+        v-if="['GigaB2B', 'GigaB2B_CA'].includes(product.source || '')"
         :summary="product.giga_summary"
       /><SaleyeeQuickFacts v-if="product.source === 'Saleyee'" :summary="product.saleyee_summary" />
       <ListingCoverage v-if="!isSupplier(product.source)" :product="product" />
@@ -70,12 +70,14 @@ defineProps<{ product: ProductSummary }>();
     <div class="card-footer">
       <div>
         <span class="price-caption"
-          >{{ product.source === 'GigaB2B' ? '预计总额（含打包）' : '售价' }} /
-          {{ product.currency ?? 'USD' }}</span
+          >{{
+            ['GigaB2B', 'GigaB2B_CA'].includes(product.source || '') ? '预计总额（含打包）' : '售价'
+          }}
+          / {{ product.currency ?? 'USD' }}</span
         ><span class="price"
           >{{
             priceRange(
-              product.source === 'GigaB2B'
+              ['GigaB2B', 'GigaB2B_CA'].includes(product.source || '')
                 ? product.giga_summary?.estimated_totals || []
                 : product.prices,
               product.currency ?? 'USD',

@@ -43,10 +43,12 @@ const current = computed(() =>
           ? '店铺管理 · 店铺资料'
           : route.path === '/saleyee-patrol'
             ? '赛盈价格与库存巡查'
-          : route.path === '/giga-patrol'
-            ? '云仓价格与库存巡查'
-            : [...catalogSources, ...navigation].find((item) => item.path === route.path)?.name ||
-              '商品库',
+            : route.path === '/giga-canada-patrol'
+              ? '云仓 Canada 价格与库存巡查'
+              : route.path === '/giga-patrol'
+                ? '云仓 US 价格与库存巡查'
+                : [...catalogSources, ...navigation].find((item) => item.path === route.path)
+                    ?.name || '商品库',
 );
 const activeCatalogPath = computed(() => catalogSources.find((item) => active(item.path))?.path);
 function active(path: string) {
@@ -54,7 +56,9 @@ function active(path: string) {
   if (path === '/listing-stores')
     return ['/listing-stores', '/walmart-accounts'].includes(route.path);
   if (path === '/saleyee-products') return route.path.startsWith('/saleyee-');
-  if (path === '/giga-products') return route.path.startsWith('/giga-');
+  if (path === '/giga-canada-products') return route.path.startsWith('/giga-canada-');
+  if (path === '/giga-products')
+    return route.path.startsWith('/giga-') && !route.path.startsWith('/giga-canada-');
   if (path === '/review')
     return (
       route.path === '/review' || (route.path === '/products' && route.query.status === 'review')

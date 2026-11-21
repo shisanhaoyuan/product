@@ -5,7 +5,7 @@ import re
 
 def source_brands(source):
     values = [source.get('brand')]
-    if source.get('source') == 'GigaB2B':
+    if source.get('source') in ('GigaB2B', 'GigaB2B_CA'):
         detail = ((source.get('source_facts') or {}).get('giga') or {}).get('detail') or {}
         values.extend(b.get('brandName') for b in detail.get('brandInfo') or [] if isinstance(b, dict))
     return list(dict.fromkeys(v.strip() for v in values if isinstance(v, str) and v.strip()))

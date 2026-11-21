@@ -218,7 +218,7 @@ def source_category_hints(source):
     fields = source.get('fields') or {}
     detail = ((source.get('source_facts') or {}).get('giga') or {}).get('detail') or {}
     values = [category(source), fields.get('dc_productType')]
-    if source.get('source') == 'GigaB2B':
+    if source.get('source') in ('GigaB2B', 'GigaB2B_CA'):
         values.extend([detail.get('category'), detail.get('categoryPath')])
     return list(dict.fromkeys(v.strip() for v in values if isinstance(v, str) and v.strip()))
 
@@ -426,6 +426,8 @@ def feedback_errors(db,doc,row,spec):
 
 def check_rows(db, doc, session, binding_row, skus=None):
     basis = unchanged_sources(db, doc)
+    if any(i['source'] == 'GigaB2B_CA' for i in basis['items']):
+        raise HTTPException(409, '加拿大云仓商品不能通过 Walmart 美国站接口提交')
     by_sku = {v['platform_sku']: (i,v) for i in basis['items'] for v in i['variants']}
     results, payloads, schema_digests = {}, {}, {}
     taxonomy = cache_value(db,binding_row,'taxonomy',age=3600)
@@ -847,7 +849,7 @@ def publishing_routes(catalog):
                         if claim and claim['batch_id']!=bid:
                             raise HTTPException(409,'该店铺 SKU 已由其他批次提交，禁止重复')
                         frozen_row = row | {'stock':int(basis_variant['stock'])}
-                        if basis_item['source'] in ('GigaB2B', 'Saleyee'):
+                        if basis_item['source'] in ('GigaB2B', 'GigaB2B_CA', 'Saleyee'):
                             frozen_row['patrol_basis'] = dict(multiplier=basis['multiplier'], landed=basis_variant['base'])
                             if basis_item['source'] == 'Saleyee':
                                 from .saleyee_patrol import quote_key
@@ -994,7 +996,7 @@ def inventory_target(catalog,row):
             raise ValueError()
     except (ValueError,TypeError,KeyError):
         raise WalmartError('来源库存超过 24 小时未更新，暂不自动写入；请同步来源后查询并同步库存。不影响平台发布状态') from None
-    if item['source'] in ('GigaB2B', 'Saleyee'):
+    if item['source'] in ('GigaB2B', 'GigaB2B_CA', 'Saleyee'):
         if item['source'] == 'Saleyee':
             from .saleyee_prelisting import prepare
         else:

@@ -73,7 +73,10 @@ export function productStatus(product: EvidenceStatus & { source?: string }) {
       ? { label: '已核验完整', type: 'good' }
       : { label: '待复核', type: 'warn' };
   if (product.local_edit?.changed) return { label: '本地已修改', type: 'warn' };
-  if (product.source === 'GigaB2B' && product.evidence_kind === 'source_only')
+  if (
+    ['GigaB2B', 'GigaB2B_CA'].includes(product.source || '') &&
+    product.evidence_kind === 'source_only'
+  )
     return { label: '云仓来源资料', type: 'good' };
   return product.fill_complete
     ? { label: '已核验完整', type: 'good' }

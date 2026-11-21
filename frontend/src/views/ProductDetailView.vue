@@ -325,7 +325,8 @@ onBeforeUnmount(() => {
         <button
           v-if="isSupplier(product.source) && canEdit"
           class="btn primary"
-          :disabled="!!editActive || editBusy"
+          :disabled="product.source === 'GigaB2B_CA' || !!editActive || editBusy"
+          :title="product.source === 'GigaB2B_CA' ? '等待 Walmart 加拿大站接入后开放' : undefined"
           @click="wholeProductPlan = true"
         >
           预上架此商品
@@ -526,7 +527,7 @@ onBeforeUnmount(() => {
       </section>
     </div>
     <GigaSourceFacts
-      v-if="product.source === 'GigaB2B'"
+      v-if="['GigaB2B', 'GigaB2B_CA'].includes(product.source || '')"
       :facts="product.source_facts"
       :summary="product.giga_summary"
     />

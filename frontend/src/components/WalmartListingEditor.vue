@@ -967,7 +967,7 @@ onBeforeUnmount(() => {
           <RouterLink
             v-if="generationRow.collection.listing_id"
             :to="
-              (source?.source === 'GigaB2B' ? '/giga-product/' : '/product/') +
+              sourceInfo(source?.source).detail +
               generationRow.collection.listing_id
             "
             >前往商品档案处理来源</RouterLink
@@ -1398,7 +1398,7 @@ onBeforeUnmount(() => {
             <div class="listing-subheading">
               <h4>价格与履约</h4>
               <p>原产国（实质性转变）固定 China（中国），按用户规则填写，非来源核验结论。</p>
-              <template v-if="source?.source === 'GigaB2B'">
+              <template v-if="['GigaB2B', 'GigaB2B_CA'].includes(source?.source || '')">
                 <p v-if="sourceVariant?.shipping_fee != null">
                   来源单价 {{ money(sourceVariant?.unit_price) }} ＋ 运费（含打包费）
                   {{ money(sourceVariant?.shipping_fee) }} ＝ 含运费基准

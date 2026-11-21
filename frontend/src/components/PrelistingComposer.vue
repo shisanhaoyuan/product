@@ -274,13 +274,13 @@ async function create() {
           {{
             source === 'Saleyee'
               ? '赛盈采购价（不另加运费）'
-              : source === 'GigaB2B'
+              : ['GigaB2B', 'GigaB2B_CA'].includes(source || '')
                 ? '来源普通单价＋物流费（含打包）'
                 : '来源采集原价'
           }}
           × 本次倍率<br />
           <span>{{
-            source === 'GigaB2B' || source === 'Saleyee'
+            ['GigaB2B', 'GigaB2B_CA'].includes(source || '') || source === 'Saleyee'
               ? '供应商按供应商 SKU 独立计价 · 保留两位小数'
               : '按当前 SKU／ASIN 计价 · 保留两位小数 · 缺少原价自动采集'
           }}</span>

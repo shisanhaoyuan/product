@@ -16,7 +16,8 @@ const { auth } = useAuth();
     <a class="btn" href="/docs" target="_blank" rel="noopener">API 文档 ↗</a>
   </div>
   <div class="integration-grid">
-    <GigaIntegration />
+    <GigaIntegration region="US" />
+    <GigaIntegration region="CA" />
     <SaleyeeIntegration />
     <section class="section">
       <div class="section-head">

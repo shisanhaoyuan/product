@@ -6,7 +6,7 @@ CATEGORY_SQL = f"""CASE
     WHEN json_extract(data_json,'$.source')='Saleyee'
       AND json_type(data_json,'$.fields."Saleyee category"')='text'
     THEN trim(json_extract(data_json,'$.fields."Saleyee category"'))
-    WHEN json_extract(data_json,'$.source')='GigaB2B'
+    WHEN json_extract(data_json,'$.source') IN ('GigaB2B','GigaB2B_CA')
       AND json_type(data_json,'$.fields."GIGA category"')='text'
     THEN trim(json_extract(data_json,'$.fields."GIGA category"'))
     WHEN json_type(data_json,'$.fields.dc_productType')='text'

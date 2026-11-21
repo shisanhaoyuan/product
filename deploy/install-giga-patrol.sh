@@ -7,11 +7,11 @@ app_dir=/www/wwwroot/jiwu
 cd "$app_dir"
 runuser -u jiwu -- .venv/bin/python - <<'PY'
 from catalog.config import load_env_file
-from catalog.giga import GigaSettings
+from catalog.giga import GigaSettings, GigaCanadaSettings
 from catalog.saleyee import SaleyeeSettings
 load_env_file('/etc/jiwu.env')
-if not (GigaSettings().configured or SaleyeeSettings().configured):
-    raise SystemExit('请先在 /etc/jiwu.env 配置大建云仓或赛盈 API。定时器尚未安装。')
+if not (GigaSettings().configured or GigaCanadaSettings().configured or SaleyeeSettings().configured):
+    raise SystemExit('请先在 /etc/jiwu.env 配置大建云仓 US、Canada 或赛盈 API。定时器尚未安装。')
 PY
 install -m 644 deploy/jiwu-giga-patrol.service /etc/systemd/system/jiwu-giga-patrol.service
 install -m 644 deploy/jiwu-giga-patrol.timer /etc/systemd/system/jiwu-giga-patrol.timer
