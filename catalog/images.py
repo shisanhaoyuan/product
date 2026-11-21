@@ -213,6 +213,11 @@ def image_routes(catalog, storage):
             raise HTTPException(404, '图片不存在')
         return Response(row['content'], media_type=row['mime'])
 
+    @router.get('/{lid}/images/cached')
+    def cached_product_image(lid: str, url: str):
+        from .image_cache import cache_product_image
+        return asset(cache_product_image(catalog, lid, url))
+
     @router.post('/{lid}/images/upload')
     async def upload(lid: str, request: Request, variant_sku: str | None = None):
         target(lid, variant_sku)

@@ -59,6 +59,9 @@ def fetch_page(asin):
             if cache := os.environ.get('CATALOG_AMAZON_BROWSER_CACHE'):
                 env['XDG_CACHE_HOME'] = cache
                 env['HOME'] = str(Path(cache).parent)
+                env['CATALOG_AMAZON_BROWSER_PROFILE'] = str(Path(cache).parent / 'profile')
+            if profile := os.environ.get('CATALOG_AMAZON_BROWSER_PROFILE'):
+                env['CATALOG_AMAZON_BROWSER_PROFILE'] = profile
             process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                        env=env, start_new_session=(os.name == 'posix'))
             try:
@@ -80,6 +83,7 @@ def fetch_page(asin):
             except (ValueError, OSError):
                 raise HumanVerificationRequired('后台浏览器结果无法读取') from None
             messages = {
+                'browser_busy': '后台浏览器会话正在使用中，请稍后重试',
                 'unavailable': 'Wraith 或浏览器依赖未就绪，请检查后台浏览器安装',
                 'verification_required': 'Wraith 后台尝试后仍有人机验证，需要人工完成验证或核对原价',
                 'rate_limited': '来源网站限制了服务器访问，后台浏览器未能恢复报价',
@@ -89,7 +93,7 @@ def fetch_page(asin):
             }
             raw = result.get('wraith_test') or {}
             report = {key: raw[key] for key in ('attempts','challenge_seen','challenge_cleared',
-                      'product_verified','elapsed_seconds','status') if key in raw}
+                      'product_verified','elapsed_seconds','status','location_verified') if key in raw}
             report['message'] = test_summary(report)
             logging.getLogger(__name__).info('Wraith ASIN %s: %s', asin, json.dumps(report, ensure_ascii=False))
             if result.get('status') != 'ok' or not isinstance(result.get('html'), str):

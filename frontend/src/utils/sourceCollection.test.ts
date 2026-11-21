@@ -199,3 +199,69 @@ it('pauses missing-price collection across products after a network interruption
   expect(result.attempted).toBe(1);
   expect(result.errors.join('；')).toContain('后续采集已暂停');
 });
+
+it('hands a location failure to the local browser and submits only its matching product', async () => {
+  const signal = new AbortController().signal;
+  mock.capture.mockResolvedValue({
+    status: 'verification_required',
+    asin: 'B000000001',
+    wraith_test: { status: 'location_unverified' },
+  });
+  const page = {
+    asin: 'B000000001',
+    source_url: 'https://www.amazon.com/dp/B000000001',
+    html: 'verified',
+  };
+  mock.page.mockResolvedValue(page);
+  mock.browser.mockResolvedValue({
+    status: 'captured',
+    asin: page.asin,
+    delivery_location: 'New York 10001',
+  });
+  const result = await collectSource('one', 'child', signal);
+  expect(result.status).toBe('captured');
+  expect(mock.page).toHaveBeenCalledWith(page.asin, signal, 'source');
+  expect(mock.browser).toHaveBeenCalledWith('one', 'child', page, signal);
+});
+
+it('does not treat the old helper returning another delivery ZIP as a successful handoff', async () => {
+  mock.capture.mockResolvedValue({
+    status: 'partial',
+    asin: 'B000000001',
+    issues: ['配送地区未核验为 10001'],
+  });
+  mock.page.mockResolvedValue({ asin: 'B000000001', html: 'old helper' });
+  mock.browser.mockResolvedValue({
+    status: 'partial',
+    asin: 'B000000001',
+    delivery_location: '90001',
+  });
+  await expect(collectSource('one', 'child', new AbortController().signal)).rejects.toThrow(
+    '更新验证助手',
+  );
+});
+
+it('reuses the selected local browser on subsequent products and can switch back', async () => {
+  const values = new Map<string, string>();
+  vi.stubGlobal('localStorage', {
+    getItem: (k: string) => values.get(k),
+    setItem: (k: string, v: string) => values.set(k, v),
+  });
+  try {
+    const { preferLocalSourceBrowser } = await import('./sourceCollection');
+    preferLocalSourceBrowser(true);
+    mock.page.mockResolvedValue({ asin: 'B000000002', html: 'page' });
+    mock.browser.mockResolvedValue({
+      asin: 'B000000002',
+      status: 'captured',
+      delivery_location: '10001',
+    });
+    await collectSource('two', undefined, new AbortController().signal, vi.fn(), 'B000000002');
+    expect(mock.capture).not.toHaveBeenCalled();
+    preferLocalSourceBrowser(false);
+    await collectSource('one', undefined, new AbortController().signal, vi.fn(), 'B000000001');
+    expect(mock.capture).toHaveBeenCalledTimes(1);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});

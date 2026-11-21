@@ -57,12 +57,16 @@
     const locationNode = document.querySelector('#glow-ingress-line2, #contextualIngressPtLabel_deliveryShortLine');
     return wrapper.outerHTML + (locationNode?.outerHTML || '') + (panel?.outerHTML || '');
   }
+  function stop() {
+    clearInterval(timer);
+    document.getElementById('jiwu-location-help')?.remove();
+  }
   const timer = setInterval(async () => {
     if (running) return;
     running = true;
     try {
       const task = await chrome.runtime.sendMessage({ channel: 'catalog-capture-v1', action: 'task' });
-      if (!task?.asin) { if (++misses >= 4) clearInterval(timer); return; }
+      if (!task?.asin) { if (++misses >= 4) stop(); return; }
       const asins = [...document.querySelectorAll('input#ASIN')].map(el => el.value);
       const asin = asins[0];
       if (asin !== task.asin || asins.some(value => value !== asin) ||
@@ -71,6 +75,20 @@
       const asinInput = document.createElement('input');
       asinInput.id = 'ASIN'; asinInput.setAttribute('value', asin);
       if (task.mode === 'source') {
+        const delivery = [...document.querySelectorAll('#glow-ingress-line2, #contextualIngressPtLabel_deliveryShortLine')]
+          .filter(visible).map(node => node.textContent).join(' ');
+        if (!/\b10001\b/.test(delivery)) {
+          lastSource = ''; sourceStable = 0; openedOffers = false;
+          if (!document.getElementById('jiwu-location-help')) {
+            const banner = document.createElement('div');
+            banner.id = 'jiwu-location-help';
+            banner.textContent = '集物采集已暂停：请点击 Amazon 左上角配送地址，设置美国邮编 10001 并确认。完成后自动继续；本浏览器会保留地区设置，请勿使用无痕模式。';
+            banner.style.cssText = 'position:fixed;bottom:20px;left:20px;right:20px;z-index:2147483647;padding:18px;background:#e8f1fc;color:#172d48;border:2px solid #709ac7;border-radius:12px;font:16px/1.6 sans-serif;box-shadow:0 4px 20px #0003';
+            document.body.append(banner);
+          }
+          return;
+        }
+        document.getElementById('jiwu-location-help')?.remove();
         const snippet = sourceSnippet();
         sourceStable = snippet && snippet === lastSource ? sourceStable + 1 : 0;
         lastSource = snippet;
@@ -84,7 +102,7 @@
         const html = asinInput.outerHTML + snippet + image.outerHTML + (gallery ? `'colorImages': {'initial': ${gallery}}` : '');
         if (html.length > 6 * 1024 * 1024) return;
         const result = await chrome.runtime.sendMessage({ channel: 'catalog-capture-v1', action: 'page', asin, html });
-        if (result?.accepted) clearInterval(timer);
+        if (result?.accepted) stop();
         return;
       }
       const gallery = [...document.scripts].map(script => initialGallery(script.textContent)).find(Boolean);
@@ -98,9 +116,9 @@
       const html = asinInput.outerHTML + image.outerHTML + (gallery ? `'colorImages': {'initial': ${gallery}}` : '');
       if (html.length > 6 * 1024 * 1024) return;
       const result = await chrome.runtime.sendMessage({ channel: 'catalog-capture-v1', action: 'page', asin, html });
-      if (result?.accepted) clearInterval(timer);
-    } catch { clearInterval(timer); }
+      if (result?.accepted) stop();
+    } catch { stop(); }
     finally { running = false; }
   }, 1500);
-  setTimeout(() => clearInterval(timer), 600000);
+  setTimeout(() => stop(), 600000);
 })();

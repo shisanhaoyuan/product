@@ -22,6 +22,7 @@ defineProps<{ product: ProductSummary }>();
         productStatus(product).label
       }}</StatusBadge
       ><ProductImage
+        :listing-id="product.source === 'Amazon' ? product.id : undefined"
         :src="product.image"
         :fallbacks="product.image_fallbacks"
         :alt="product.title"

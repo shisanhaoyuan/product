@@ -1,6 +1,39 @@
 import { catalogApi } from '../api/client';
 import type { PrelistingPreview } from '../api/types';
 import { errorMessage } from './display';
+import { captureInBrowser } from './browserCapture';
+
+const browserPreferenceKey = 'jiwu-source-browser-10001';
+export function prefersLocalSourceBrowser() {
+  try {
+    return localStorage.getItem(browserPreferenceKey) === 'yes';
+  } catch {
+    return false;
+  }
+}
+export function preferLocalSourceBrowser(value: boolean) {
+  try {
+    localStorage.setItem(browserPreferenceKey, value ? 'yes' : 'no');
+  } catch {
+    /* Optional preference. */
+  }
+}
+export async function collectSourceInBrowser(
+  listingId: string,
+  sku: string | undefined,
+  asin: string,
+  signal: AbortSignal,
+) {
+  const page = await captureInBrowser(asin, signal, 'source');
+  signal.throwIfAborted();
+  const result = await catalogApi.browserCaptureSource(listingId, sku, page, signal);
+  signal.throwIfAborted();
+  if (result.asin !== asin) throw new Error('采集期间 ASIN 已变化，请刷新商品');
+  if (!/\b10001\b/.test(result.delivery_location || ''))
+    throw new Error('配送地区仍未设为 10001，请更新验证助手后重新采集。');
+  preferLocalSourceBrowser(true);
+  return result;
+}
 
 function captureOutcomeUnknown(error: unknown) {
   return (
@@ -16,10 +49,24 @@ export async function collectSource(
   sku: string | undefined,
   signal: AbortSignal,
   onVerification: () => void = () => {},
+  asin?: string,
 ) {
   signal.throwIfAborted();
+  if (asin && prefersLocalSourceBrowser()) {
+    onVerification();
+    return collectSourceInBrowser(listingId, sku, asin, signal);
+  }
   const result = await catalogApi.captureSource(listingId, sku, signal);
   signal.throwIfAborted();
+  if (
+    result.asin &&
+    (result.wraith_test?.status === 'location_unverified' ||
+      result.wraith_test?.location_verified === false ||
+      result.issues?.some((issue) => issue.includes('配送地区') && issue.includes('10001')))
+  ) {
+    onVerification();
+    return collectSourceInBrowser(listingId, sku, result.asin, signal);
+  }
   if (['verification_required', 'browser_required'].includes(result.status)) {
     onVerification();
     throw new Error(
@@ -48,8 +95,12 @@ export async function collectMissingPrices(
       signal.throwIfAborted();
       progress(`正在自动采集 ${variant.sku} 的卖家与原价…`);
       try {
-        await collectSource(item.listing_id, variant.capture_sku || undefined, signal, () =>
-          progress(`${variant.sku} 后台采集受限，保留提醒供人工核对…`),
+        await collectSource(
+          item.listing_id,
+          variant.capture_sku || undefined,
+          signal,
+          () => progress(`${variant.sku} 需要浏览器协助；如已打开 Amazon，请设置配送邮编 10001…`),
+          variant.asin,
         );
       } catch (e) {
         signal.throwIfAborted();
@@ -114,7 +165,13 @@ export async function collectProductSources(
         onRecord(target.sku, old);
         continue;
       }
-      const result = await collectSource(listingId, target.sku, signal);
+      const result = await collectSource(
+        listingId,
+        target.sku,
+        signal,
+        () => progress(`${label} 等待浏览器协助：请在 Amazon 设置配送邮编 10001，完成后自动继续…`),
+        target.asin,
+      );
       if (result.asin !== target.asin) throw new Error('采集期间 ASIN 已变化，请刷新商品');
       onRecord(target.sku, result);
       collected++;

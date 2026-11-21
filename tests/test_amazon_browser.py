@@ -268,3 +268,47 @@ def test_new_child_gets_own_attempt_budget_and_no_challenge_never_calls_solver(m
     report=dict(attempts=0)
     worker.verify_or_try(session,asin,report,clear,lambda p:False)
     assert report['attempts']==0 and len(calls)==6
+
+
+def test_profile_survives_workers_and_blocks_parallel_use(tmp_path, monkeypatch):
+    from catalog.amazon_browser_worker import persistent_profile
+    profile = tmp_path / 'profile'
+    monkeypatch.setenv('CATALOG_AMAZON_BROWSER_PROFILE', str(profile))
+    with persistent_profile() as first:
+        assert first == str(profile)
+        (profile / 'state-fixture').write_text('retained')
+        with pytest.raises(CaptureStopped, match='browser_busy'):
+            with persistent_profile():
+                pass
+    with persistent_profile() as second:
+        assert second == first
+        assert (profile / 'state-fixture').read_text() == 'retained'
+        assert profile.stat().st_mode & 0o777 == 0o700
+
+
+def test_location_failure_still_returns_verified_product_html(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    from catalog import amazon_browser_worker as worker
+    closed = []
+    html = page(ASIN).replace('10001', '90001')
+    browser_page = SimpleNamespace(
+        set_default_timeout=lambda _: None,
+        set_default_navigation_timeout=lambda _: None,
+        goto=lambda *a, **k: SimpleNamespace(ok=True),
+        evaluate=lambda _: html,
+    )
+    session = SimpleNamespace(page=browser_page, close=lambda: closed.append(True))
+    monkeypatch.setitem(sys.modules, 'wraith.engine', SimpleNamespace(
+        launch=lambda **kwargs: session, clear_challenge=lambda *a, **k: None))
+    verified = []
+    monkeypatch.setattr(worker, 'verify_or_try', lambda s, a, r, c: verified.append(a))
+    monkeypatch.setattr(worker, 'challenge_visible', lambda p: False)
+    def wrong_location(_):
+        raise CaptureStopped('location_unverified')
+    monkeypatch.setattr(worker, 'ensure_location', wrong_location)
+    report = {}
+    result = worker.collect_in_profile(ASIN, 'camoufox', report, None)
+    assert result == dict(status='ok', html=html)
+    assert report['location_verified'] is False
+    assert len(verified) == 2 and closed == [True]

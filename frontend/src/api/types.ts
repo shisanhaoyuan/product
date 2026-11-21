@@ -17,6 +17,8 @@ export interface ImageCollection {
 }
 export interface SourceCapture {
   wraith_test?: {
+    status?: string;
+    location_verified?: boolean;
     attempts: number;
     message: string;
     challenge_seen: boolean;

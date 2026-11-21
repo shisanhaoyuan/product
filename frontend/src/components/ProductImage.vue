@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import { safeUrl } from '../utils/display';
 import AppIcon from './AppIcon.vue';
+import { imageDisplayCandidates } from '../utils/imageDisplay';
 const props = withDefaults(
   defineProps<{
     src?: string;
@@ -10,11 +11,17 @@ const props = withDefaults(
     imageClass?: string;
     lazy?: boolean;
     placeholder?: string;
+    listingId?: string;
   }>(),
   { alt: '商品图片', lazy: true, placeholder: '暂无商品图片' },
 );
 const candidates = computed(() => [
-  ...new Set([props.src, ...(props.fallbacks ?? [])].map(safeUrl).filter(Boolean)),
+  ...new Set(
+    [props.src, ...(props.fallbacks ?? [])]
+      .map(safeUrl)
+      .filter(Boolean)
+      .flatMap((url) => imageDisplayCandidates(url, props.listingId)),
+  ),
 ]);
 const index = ref(0);
 watch(

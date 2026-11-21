@@ -188,7 +188,12 @@ onBeforeUnmount(() => {
       :disabled="blocked || !images.length"
       @click="open(selected)"
     >
-      <ProductImage :src="images[selected]" :alt="scope + '主图'" :lazy="false" />
+      <ProductImage
+        :listing-id="editing?.listingId.value"
+        :src="images[selected]"
+        :alt="scope + '主图'"
+        :lazy="false"
+      />
     </button>
     <div :class="hero ? 'gallery-thumbs' : 'variant-image-grid'">
       <button
@@ -201,6 +206,7 @@ onBeforeUnmount(() => {
         @click="open(index)"
       >
         <ProductImage
+          :listing-id="editing?.listingId.value"
           :src="url"
           :alt="'第 ' + (index + 1) + ' 张图片'"
           image-class="variant-thumb"
@@ -244,6 +250,7 @@ onBeforeUnmount(() => {
             </button>
             <div class="image-manager-stage">
               <ProductImage
+                :listing-id="editing?.listingId.value"
                 v-if="images.length"
                 :key="images[selected]"
                 :src="images[selected]"
@@ -282,7 +289,11 @@ onBeforeUnmount(() => {
               :aria-label="'预览第 ' + (index + 1) + ' 张图片'"
               @click="selected = index"
             >
-              <ProductImage :src="url" image-class="variant-thumb" />
+              <ProductImage
+                :listing-id="editing?.listingId.value"
+                :src="url"
+                image-class="variant-thumb"
+              />
             </button>
           </div>
           <form v-if="editable" class="image-add-form" @submit.prevent="add">
@@ -352,7 +363,10 @@ onBeforeUnmount(() => {
                   type="checkbox"
                   :value="url"
                   :aria-label="'选择抓取图片 ' + (i + 1)"
-                  :disabled="busy" /><ProductImage :src="url" image-class="variant-thumb"
+                  :disabled="busy" /><ProductImage
+                  :listing-id="editing?.listingId.value"
+                  :src="url"
+                  image-class="variant-thumb"
               /></label>
             </div>
             <button

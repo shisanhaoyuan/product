@@ -710,6 +710,7 @@ onBeforeUnmount(() => {
               <td>
                 <RouterLink class="table-product" :to="detailPath(product.id)"
                   ><ProductImage
+                    :listing-id="product.source === 'Amazon' ? product.id : undefined"
                     :src="product.image"
                     :fallbacks="product.image_fallbacks"
                     image-class="table-thumb"

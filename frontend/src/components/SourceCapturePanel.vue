@@ -6,6 +6,9 @@ import {
   collectProductSources,
   hasCapturedPrice,
   hasCollectedImages,
+  collectSourceInBrowser,
+  prefersLocalSourceBrowser,
+  preferLocalSourceBrowser,
 } from '../utils/sourceCollection';
 import { errorMessage, money, safeUrl } from '../utils/display';
 import { useProductEditing } from '../composables/useProductEditing';
@@ -24,6 +27,8 @@ const props = withDefaults(
 );
 const editing = useProductEditing();
 const record = ref<SourceCapture | null>(null);
+const localBrowser = ref(prefersLocalSourceBrowser());
+watch(localBrowser, preferLocalSourceBrowser);
 const busy = ref(false),
   loading = ref(false),
   error = ref(''),
@@ -87,7 +92,7 @@ watch(
   },
 );
 
-async function capture(reuse = false, missingOnly = false) {
+async function capture(reuse = false, missingOnly = false, manual = false) {
   if (disabled.value) return;
   const request = new AbortController();
   controller = request;
@@ -96,7 +101,16 @@ async function capture(reuse = false, missingOnly = false) {
   error.value = '';
   progress.value = '';
   try {
-    if (reuse) {
+    if (manual) {
+      progress.value = '请在打开的 Amazon 页面设置配送邮编 10001，完成后自动采集报价与图片…';
+      record.value = await collectSourceInBrowser(
+        props.listingId,
+        props.sku,
+        props.asin,
+        request.signal,
+      );
+      progress.value = '本机浏览器采集完成，地区设置保留在当前浏览器中。';
+    } else if (reuse) {
       const result = await catalogApi.syncSource(props.listingId, props.sku, request.signal);
       if (!request.signal.aborted) record.value = result;
     } else {
@@ -125,6 +139,7 @@ async function capture(reuse = false, missingOnly = false) {
     if (controller === request) error.value = errorMessage(e);
   } finally {
     if (controller === request) {
+      localBrowser.value = prefersLocalSourceBrowser();
       busy.value = false;
       if (editing) editing.busy.value = false;
     }
@@ -156,6 +171,24 @@ onBeforeUnmount(() => controller?.abort());
         }}
       </button>
     </div>
+    <div v-if="editing?.enabled.value" class="source-capture-meta">
+      <button class="btn small" :disabled="disabled || !asin" @click="capture(false, false, true)">
+        打开浏览器设置地区并采集
+      </button>
+      <label
+        ><input
+          v-model="localBrowser"
+          type="checkbox"
+          :disabled="disabled"
+        />后续使用本机浏览器（保留地区）</label
+      >
+      <a href="/api/products/images/helper.zip" download>下载验证助手</a>
+      <a href="/assets/capture-helper.html" target="_blank" rel="noopener">安装说明</a>
+    </div>
+    <p v-if="editing?.enabled.value" class="muted">
+      需安装新版验证助手。地区不是 10001 时会暂停等待设置；请使用同一 Chrome / Edge 普通窗口。
+      本机与服务器分别保存浏览器状态，清除 Cookie 后可能需要重新设置。
+    </p>
     <p v-if="busy" class="muted" role="status">
       {{ progress || '正在后台采集卖家、原价和图片…' }}
     </p>

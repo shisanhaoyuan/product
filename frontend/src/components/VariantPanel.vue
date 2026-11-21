@@ -190,6 +190,7 @@ defineExpose({ selectVariant });
               :label="variant.sku + '色卡图片链接'"
               kind="images-url"
               ><ProductImage
+                :listing-id="editing?.listingId.value"
                 v-if="variant.swatch_image"
                 :src="variant.swatch_image"
                 image-class="table-thumb"
@@ -242,7 +243,11 @@ defineExpose({ selectVariant });
   <div id="variant-detail">
     <div v-if="selected" :key="selected.sku" class="variant-detail">
       <div class="variant-detail-head">
-        <ProductImage :src="selected.images[0]" image-class="table-thumb" />
+        <ProductImage
+          :listing-id="editing?.listingId.value"
+          :src="selected.images[0]"
+          image-class="table-thumb"
+        />
         <div>
           <p class="eyebrow">SELECTED VARIANT / {{ selected.sku }}</p>
           <h3>{{ plain(selected.copy.title) || '本行未记录标题' }}</h3>
@@ -292,6 +297,7 @@ defineExpose({ selectVariant });
           label="子变体色卡图片链接"
           kind="images-url"
           ><ProductImage
+            :listing-id="editing?.listingId.value"
             v-if="selected.swatch_image"
             :src="selected.swatch_image"
             image-class="table-thumb"

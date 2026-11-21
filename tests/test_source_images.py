@@ -357,3 +357,20 @@ def test_manual_cover_and_removal_take_precedence_over_collection(local, monkeyp
     assert cover() == [manual]
     assert edit(client, {'field': 'images'}, []).status_code == 200
     assert asset not in cover()
+
+
+def test_wrong_location_does_not_discard_verified_images(local, monkeypatch):
+    c, catalog = local
+    before = detail(c)
+    monkeypatch.setattr('catalog.source_capture.collect_quote_page', lambda asin, fetch:
+        (gallery(asin).replace('10001', '90001'),
+         dict(status='partial', asin=asin, delivery_location='90001',
+              price='123.00', original_price='150.00', issues=['配送地区未核验为 10001']),
+         'wraith_background'))
+    monkeypatch.setattr('catalog.listing_vision.fetch_image', lambda _: picture())
+    result = c.post(f'/api/products/{before["id"]}/source-capture', json={'background': True})
+    assert result.status_code == 200
+    assert result.json()['image_collection']['images']
+    after = detail(c)
+    assert after['images'][0].startswith(PREFIX)
+    assert after['price'] == before['price']

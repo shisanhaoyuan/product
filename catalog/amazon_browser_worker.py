@@ -1,5 +1,7 @@
 """Executed by the separate browser venv; no application packages or secrets needed."""
 import json
+import os
+from contextlib import contextmanager
 import re
 import sys
 import time
@@ -121,11 +123,38 @@ def ensure_location(page):
         raise CaptureStopped('location_unverified')
 
 
+@contextmanager
+def persistent_profile():
+    # This is a dedicated service profile, never a person's Chrome directory.
+    directory = os.environ.get('CATALOG_AMAZON_BROWSER_PROFILE')
+    if not directory:
+        yield None
+        return
+    import fcntl
+    path = Path(directory)
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.chmod(0o700)
+    with (path / '.jiwu.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise CaptureStopped('browser_busy') from None
+        try:
+            yield str(path)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
 def collect(asin, engine, report):
+    with persistent_profile() as profile:
+        return collect_in_profile(asin, engine, report, profile)
+
+
+def collect_in_profile(asin, engine, report, profile):
     from wraith.engine import launch, clear_challenge
     session = None
     try:
-        session = launch(engine=engine, headless=True, geoip=False)
+        session = launch(engine=engine, headless=True, geoip=False, profile_dir=profile)
         page = session.page
         page.set_default_timeout(5000)
         page.set_default_navigation_timeout(25000)
@@ -135,27 +164,35 @@ def collect(asin, engine, report):
             raise CaptureStopped('rate_limited' if response and response.status in (403,429) else 'failed')
         # Wraith success alone is not proof of Amazon identity or a usable quote.
         verify_or_try(session, asin, report, clear_challenge)
+        location_verified = True
         try:
-            ensure_location(page)
-        except CaptureStopped:
-            if challenge_visible(page):
-                verify_or_try(session, asin, report, clear_challenge)
+            try:
                 ensure_location(page)
-            else:
+            except CaptureStopped:
+                if challenge_visible(page):
+                    verify_or_try(session, asin, report, clear_challenge)
+                    ensure_location(page)
+                else:
+                    raise
+        except CaptureStopped as exc:
+            if str(exc) != 'location_unverified':
                 raise
+            location_verified = False
+        report['location_verified'] = location_verified
         verify_or_try(session, asin, report, clear_challenge)
-        regular = page.get_by_text(re.compile(r'^Regular\s+Price$', re.I))
-        for node in regular.all():
-            if node.is_visible():
-                node.click();page.wait_for_timeout(600);break
-        entrances = page.locator('#aod-ingress-link, #buybox-see-all-buying-choices a, [data-action="show-all-offers-display"]')
-        for node in entrances.all():
-            if node.is_visible() and not page.locator('#aod-offer-list:visible').count():
-                node.click()
-                page.locator('#aod-offer-list').wait_for(state='visible', timeout=8000)
-                break
-        page.wait_for_timeout(1000)
-        verify_or_try(session, asin, report, clear_challenge)
+        if location_verified:
+            regular = page.get_by_text(re.compile(r'^Regular\s+Price$', re.I))
+            for node in regular.all():
+                if node.is_visible():
+                    node.click();page.wait_for_timeout(600);break
+            entrances = page.locator('#aod-ingress-link, #buybox-see-all-buying-choices a, [data-action="show-all-offers-display"]')
+            for node in entrances.all():
+                if node.is_visible() and not page.locator('#aod-offer-list:visible').count():
+                    node.click()
+                    page.locator('#aod-offer-list').wait_for(state='visible', timeout=8000)
+                    break
+            page.wait_for_timeout(1000)
+            verify_or_try(session, asin, report, clear_challenge)
         # Send only product/offer markup, not scripts, account menus, tokens or cookies.
         html = page.evaluate(r'''() => {
   function initialGallery(script) {
