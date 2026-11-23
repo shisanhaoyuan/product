@@ -2,6 +2,8 @@
 import hashlib
 import json
 import sqlite3
+import threading
+import weakref
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,7 +12,8 @@ from .giga_presentation import summary as giga_summary
 from .categories import CATEGORY_SQL, category_option
 from .blacklist import initialize, seller_key, BLOCKED_SQL, active_entries, matches
 from .editing import initialize as initialize_editing, register as register_editing
-from .database import PostgresConnection, row_factory, write_lock, read_snapshot
+from .database import DatabaseBusy, PostgresConnection, row_factory, write_lock, read_snapshot
+from .concurrency import setting
 from .product_search import identifier_sql
 
 
@@ -20,6 +23,9 @@ def encoded(data):
 
 class Catalog:
     def __init__(self, path):
+        self._pool = None
+        self._pool_finalizer = None
+        self._pool_lock = threading.Lock()
         self.postgres = str(path).startswith(('postgresql://', 'postgres://'))
         if self.postgres:
             self.path = str(path)
@@ -105,14 +111,43 @@ class Catalog:
             initialize_source_capture(db)
             db.execute('INSERT OR IGNORE INTO migrations VALUES(12)')
 
+    def pool(self):
+        from psycopg_pool import ConnectionPool
+        with self._pool_lock:
+            if self._pool is None:
+                self._pool = ConnectionPool(
+                    self.path, min_size=0,
+                    max_size=setting('CATALOG_DB_POOL_SIZE', 16, maximum=64),
+                    max_waiting=setting('CATALOG_DB_POOL_WAITING', 32, maximum=256),
+                    timeout=setting('CATALOG_DB_POOL_TIMEOUT', 3, maximum=30),
+                    max_idle=60, reconnect_timeout=10, num_workers=2,
+                    kwargs=dict(row_factory=row_factory, connect_timeout=5,
+                                application_name='jiwu'),
+                    check=ConnectionPool.check_connection, open=True)
+                self._pool_finalizer = weakref.finalize(self, self._pool.close)
+            return self._pool
+
+    def close(self):
+        with self._pool_lock:
+            if self._pool is not None:
+                self._pool.close()
+                self._pool = None
+                self._pool_finalizer.detach()
+                self._pool_finalizer = None
+
     @contextmanager
     def connect(self):
         if self.postgres:
             import psycopg
-            with psycopg.connect(self.path, row_factory=row_factory, connect_timeout=10) as connection:
-                connection.execute("SET LOCAL lock_timeout='20s'")
-                connection.execute("SET LOCAL statement_timeout='120s'")
-                yield PostgresConnection(connection)
+            from psycopg_pool import PoolTimeout, TooManyRequests
+            try:
+                with self.pool().connection() as connection:
+                    connection.execute("SET LOCAL lock_timeout='20s'")
+                    connection.execute("SET LOCAL statement_timeout='120s'")
+                    yield PostgresConnection(connection)
+            except (PoolTimeout, TooManyRequests, psycopg.errors.LockNotAvailable,
+                    psycopg.errors.QueryCanceled):
+                raise DatabaseBusy('数据库当前繁忙') from None
             return
         db = sqlite3.connect(self.path, timeout=20)
         db.row_factory = sqlite3.Row

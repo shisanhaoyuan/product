@@ -32,6 +32,7 @@ def pg(request):
         db.execute(sql.SQL('CREATE SCHEMA {}').format(sql.Identifier(schema)))
     target = Catalog(dsn + ('&' if '?' in dsn else '?') + 'options=' + quote('-csearch_path=' + schema))
     yield target
+    target.close()
     with psycopg.connect(dsn, autocommit=True) as db:
         db.execute(sql.SQL('DROP SCHEMA {} CASCADE').format(sql.Identifier(schema)))
 

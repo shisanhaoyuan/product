@@ -220,7 +220,7 @@ def image_routes(catalog, storage):
 
     @router.post('/{lid}/images/upload')
     async def upload(lid: str, request: Request, variant_sku: str | None = None):
-        target(lid, variant_sku)
+        await run_in_threadpool(target, lid, variant_sku)
         raw = bytearray()
         async for part in request.stream():
             raw.extend(part)

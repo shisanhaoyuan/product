@@ -11,6 +11,10 @@ import psycopg
 INTEGRITY_ERRORS = (sqlite3.IntegrityError, psycopg.IntegrityError)
 
 
+class DatabaseBusy(RuntimeError):
+    """A bounded database wait elapsed; never expose a DSN or SQL parameters."""
+
+
 class Row(dict):
     def __getitem__(self, key):
         return tuple(self.values())[key] if isinstance(key, int) else super().__getitem__(key)

@@ -4,12 +4,12 @@ import { errorMessage } from './display';
 import { captureInBrowser } from './browserCapture';
 import { claimAutomaticCollection } from './automaticCollection';
 
-const browserPreferenceKey = 'jiwu-source-browser-10001';
+const browserPreferenceKey = 'jiwu-source-browser-v2';
 export function prefersLocalSourceBrowser() {
   try {
-    return localStorage.getItem(browserPreferenceKey) === 'yes';
+    return localStorage.getItem(browserPreferenceKey) !== 'no';
   } catch {
-    return false;
+    return true;
   }
 }
 export function preferLocalSourceBrowser(value: boolean) {

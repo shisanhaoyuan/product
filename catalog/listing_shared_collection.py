@@ -63,7 +63,7 @@ def checked_receipts(db, job, report, receipts):
 
 
 def resume_sources(catalog, publisher, bid, jid, receipts, actor_id=None, ai=None, schedule=True):
-    from .listing_generation_jobs import checked_context, public_job, POOL, run_job
+    from .listing_generation_jobs import checked_context, public_job, schedule_job
     from .listing_ai_client import ListingAIClient, ListingAIError
     ai=ai or ListingAIClient()
     with catalog.connect() as db:
@@ -90,7 +90,7 @@ def resume_sources(catalog, publisher, bid, jid, receipts, actor_id=None, ai=Non
                    (encoded(report),'本轮商品库采集完成，开始计算售价和生成资料',int(time.time()),jid))
         row=db.execute('SELECT * FROM listing_generation_jobs WHERE id=?',(jid,)).fetchone()
     if schedule:
-        POOL.submit(run_job,catalog,publisher,jid,ai)
+        schedule_job(catalog,publisher,jid,ai)
     return public_job(row)
 
 

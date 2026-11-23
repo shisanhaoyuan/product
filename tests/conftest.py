@@ -27,6 +27,7 @@ def postgres_parity(request, monkeypatch, tmp_path):
     from catalog.db import Catalog
     original = Catalog.__init__
     schemas = {}
+    catalogs = []
     def initialize(self, path):
         if str(path).startswith(('postgresql://', 'postgres://')):
             return original(self, path)
@@ -38,10 +39,13 @@ def postgres_parity(request, monkeypatch, tmp_path):
             schemas[key] = schema
         url = dsn + ('&' if '?' in dsn else '?') + 'options=' + quote('-csearch_path=' + schemas[key])
         original(self, url)
+        catalogs.append(self)
     monkeypatch.setattr(Catalog, '__init__', initialize)
     monkeypatch.setenv('CATALOG_IMAGE_STORAGE', 'filesystem')
     monkeypatch.setenv('CATALOG_IMAGE_ROOT', str(tmp_path/'images'))
     yield
+    for catalog in catalogs:
+        catalog.close()
     with psycopg.connect(dsn, autocommit=True) as db:
         for schema in schemas.values():
             db.execute(sql.SQL('DROP SCHEMA {} CASCADE').format(sql.Identifier(schema)))

@@ -4,11 +4,14 @@ import json
 import os
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+import asyncio
+import logging
+import threading
 
 from fastapi import APIRouter, HTTPException, Request
 
 from .database import write_lock
+from .concurrency import BoundedExecutor, WorkQueueFull, background_call, setting
 from .credential_vault import decrypt
 from .listing_ai_client import ListingAIClient, ListingAISettings, ListingAIError
 from .listing_generation import (RULES_VERSION, source_facts, choose_type, fill_row,
@@ -24,7 +27,86 @@ from .walmart_listing_schema import DEFAULT_VERSION, normalize_spec, taxonomy_op
 from .walmart_publishing import (batch, binding, document, public_document, fresh_basis,
     default_rows, normalize_titles, normalize_document_titles, latest_results, EDITABLE, cache_value, cache_put, unchanged_sources, source_issues, check_rows, validate_document)
 
-POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix='listing-preparation')
+POOL = BoundedExecutor(
+    max_workers=setting('CATALOG_GENERATION_WORKERS', 10, maximum=20),
+    max_pending=0,
+    thread_name_prefix='listing-preparation')
+_DISPATCH_LOCK = threading.Lock()
+_INFLIGHT = set()
+logger = logging.getLogger(__name__)
+
+
+def _scheduled(catalog, publisher, jid, ai):
+    try:
+        if not getattr(catalog, '_closing', False):
+            run_job(catalog, publisher, jid, ai)
+    finally:
+        with _DISPATCH_LOCK:
+            _INFLIGHT.discard((str(catalog.path), jid))
+            close = getattr(catalog, '_closing', False) and not any(
+                key[0] == str(catalog.path) for key in _INFLIGHT)
+        if close:
+            catalog.close()
+
+
+def stop_generation(catalog):
+    with _DISPATCH_LOCK:
+        catalog._closing = True
+        idle = not any(key[0] == str(catalog.path) for key in _INFLIGHT)
+    if idle:
+        catalog.close()
+
+
+def schedule_job(catalog, publisher, jid, ai):
+    """The DB is the queue. A full executor leaves the durable job queued."""
+    key = (str(catalog.path), jid)
+    with _DISPATCH_LOCK:
+        if getattr(catalog, '_closing', False):
+            return False
+        if key in _INFLIGHT:
+            return True
+        _INFLIGHT.add(key)
+        try:
+            POOL.submit(_scheduled, catalog, publisher, jid, ai)
+        except (WorkQueueFull, RuntimeError):
+            _INFLIGHT.discard(key)
+            return False
+    return True
+
+
+def dispatch_queued(catalog, publisher):
+    if not ListingAISettings().configured:
+        return
+    with catalog.connect() as db:
+        write_lock(db)
+        db.execute("UPDATE listing_generation_jobs SET state='interrupted',message=? WHERE state='running' AND updated_at<?",
+                   ('生成进程已中断，已保存资料保留，请重新生成未完成项', int(time.time()) - 600))
+        db.execute("UPDATE listing_generation_jobs SET state='interrupted',message=? WHERE state='awaiting_sources' AND updated_at<?",
+                   ('采集等待已超时，请重新打开批次继续生成', int(time.time()) - 3600))
+        rows = db.execute('''SELECT q.id,q.actor_id FROM listing_generation_jobs q WHERE q.state='queued'
+            AND (SELECT COUNT(*) FROM listing_generation_jobs r WHERE r.state='running'
+                 AND (r.actor_id=q.actor_id OR (r.actor_id IS NULL AND q.actor_id IS NULL)))<?
+            ORDER BY q.started_at,q.id LIMIT 1000''',
+                          (setting('CATALOG_GENERATION_PER_USER', 2, maximum=5),)).fetchall()
+    seen = set()
+    for row in rows:
+        if row['actor_id'] in seen:
+            continue
+        seen.add(row['actor_id'])
+        if not schedule_job(catalog, publisher, row['id'], ListingAIClient()):
+            break
+
+
+async def serve_generation(app):
+    while True:
+        try:
+            await background_call(dispatch_queued, app.state.catalog, app.state.walmart_publisher)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Do not log provider credentials/DSNs; durable queued work is retried.
+            logger.warning('后台生成任务调度暂不可用，稍后继续')
+        await asyncio.sleep(2)
 
 
 def initialize(db):
@@ -34,6 +116,7 @@ def initialize(db):
         binding_revision INTEGER NOT NULL,input_hash TEXT NOT NULL,actor_id INTEGER,
         report_json TEXT NOT NULL,message TEXT NOT NULL,started_at BIGINT NOT NULL,updated_at BIGINT NOT NULL)''')
     db.execute('CREATE INDEX IF NOT EXISTS generation_batch ON listing_generation_jobs(batch_id,started_at)')
+    db.execute('CREATE INDEX IF NOT EXISTS generation_queue ON listing_generation_jobs(state,started_at,id)')
     db.execute('INSERT INTO migrations VALUES(17) ON CONFLICT DO NOTHING')
     from .listing_prerequisites import initialize as initialize_preparation
     initialize_preparation(db)
@@ -60,7 +143,7 @@ def public_job(row, db=None):
 
 def latest(db, bid):
     row = db.execute('SELECT * FROM listing_generation_jobs WHERE batch_id=? ORDER BY started_at DESC,id DESC LIMIT 1', (bid,)).fetchone()
-    if row and row['state'] in ('queued','running','awaiting_sources') and row['updated_at'] < time.time()-(3600 if row['state']=='awaiting_sources' else 600):
+    if row and row['state'] in ('running','awaiting_sources') and row['updated_at'] < time.time()-(3600 if row['state']=='awaiting_sources' else 600):
         db.execute("UPDATE listing_generation_jobs SET state='interrupted',message=? WHERE id=? AND state IN ('queued','running','awaiting_sources')",
                    ('生成任务已中断，已保存的商品资料保留，请重新生成未完成项', row['id']))
         row = db.execute('SELECT * FROM listing_generation_jobs WHERE id=?', (row['id'],)).fetchone()
@@ -75,6 +158,15 @@ def start_job(catalog, publisher, bid, actor_id=None, ai=None, schedule=True, so
         prior = latest(db,bid)
         if prior and prior['state'] in ('queued','running','awaiting_sources'):
             return public_job(prior)
+        active = db.execute("SELECT COUNT(*) FROM listing_generation_jobs WHERE state IN ('queued','running','awaiting_sources')").fetchone()[0]
+        if active >= setting('CATALOG_GENERATION_QUEUE_LIMIT', 100, maximum=1000):
+            raise HTTPException(429, '生成任务队列已满，请等待已有任务完成后再开始', headers={'Retry-After': '10'})
+        condition = 'actor_id IS NULL' if actor_id is None else 'actor_id=?'
+        actor_params = () if actor_id is None else (actor_id,)
+        own_active = db.execute("SELECT COUNT(*) FROM listing_generation_jobs WHERE state IN ('queued','running','awaiting_sources') AND " + condition,
+                                actor_params).fetchone()[0]
+        if own_active >= setting('CATALOG_GENERATION_USER_QUEUE_LIMIT', 20, maximum=200):
+            raise HTTPException(429, '您的生成任务较多，请等待已有批次完成后再继续', headers={'Retry-After': '10'})
         doc = public_document(db,bid)
         if not doc:
             basis = fresh_basis(catalog,db,current)
@@ -132,10 +224,10 @@ def start_job(catalog, publisher, bid, actor_id=None, ai=None, schedule=True, so
         db.execute('INSERT INTO listing_generation_jobs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
             (jid,bid,state,stored['revision'],basis['store']['id'],bound['partner_id'],bound['revision'],identity,
              actor_id,encoded({'rules_version':RULES_VERSION,'model':ai.settings.model,'rows':{},'previous_fields':previous_fields,'resources_digest':resource_digest(db,bound),'source_mode':source_mode,'source_targets':targets,'source_digests':{i['listing_id']:i['source_digest'] for i in basis['items']}}),
-             '等待商品库采集会话；邮编失效时请在打开的网页设置 10001' if targets else '准备后台采集、计算售价、AI 填充与校验',started,timestamp))
+             '等待商品库采集会话；邮编失效时请在打开的网页设置 10001' if targets else '已加入生成队列，等待后台采集、计算售价、AI 填充与校验',started,timestamp))
         row = db.execute('SELECT * FROM listing_generation_jobs WHERE id=?',(jid,)).fetchone()
     if schedule and state=='queued':
-        POOL.submit(run_job,catalog,publisher,jid,ai)
+        schedule_job(catalog,publisher,jid,ai)
     return public_job(row)
 
 
@@ -178,6 +270,14 @@ def run_job(catalog, publisher, jid, ai):
             row=db.execute('SELECT * FROM listing_generation_jobs WHERE id=?',(jid,)).fetchone()
             if not row or row['state']!='queued':
                 return
+            condition = 'actor_id IS NULL' if row['actor_id'] is None else 'actor_id=?'
+            params = () if row['actor_id'] is None else (row['actor_id'],)
+            if db.execute("SELECT COUNT(*) FROM listing_generation_jobs WHERE state='running' AND " + condition, params).fetchone()[0] >= setting('CATALOG_GENERATION_PER_USER', 2, maximum=5):
+                return  # Leave this user's next batch queued; other operators may run.
+            oldest = db.execute("SELECT id FROM listing_generation_jobs WHERE state='queued' AND " + condition +
+                                ' ORDER BY started_at,id LIMIT 1', params).fetchone()
+            if oldest[0] != jid:
+                return  # A newly submitted batch cannot jump this user's queue.
             job=dict(row);report=json.loads(job['report_json'])
             job['resources_digest']=report.get('resources_digest')
             stored,bound=checked_context(db,job)
@@ -189,6 +289,8 @@ def run_job(catalog, publisher, jid, ai):
             types=cache_value(db,bound,'taxonomy',age=3600);nodes=cache_value(db,bound,'nodes',age=3600)
 
         def progress(sku,stage,message):
+            if getattr(catalog, '_closing', False):
+                raise ListingAIError('服务正在重启，已保存资料保留，请重新生成未完成项')
             entry=report['rows'].setdefault(sku,dict(state='running',preparation_state=stage,issues=[],fields={},rounds=[]))
             entry['preparation_state']=stage
             with catalog.connect() as db:

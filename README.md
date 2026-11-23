@@ -129,6 +129,8 @@ python -m catalog --db /path/to/catalog-backup.db serve
 
 团队服务器版已增加账号登录、管理员/编辑员/只读角色、首次改密、账号禁用、会话撤销及操作记录。通过 `CATALOG_AUTH_ENABLED=1` 显式启用；本机模式仍保持原来行为。阿里云宝塔的配置、完整迁移、systemd、Nginx 和备份步骤见 [宝塔部署说明](deploy/宝塔部署说明.md)。尚未执行实际服务器部署。
 
+五人团队默认支持每人 2 个生成批次、共 10 个工作位，使用数据库队列及多 Key 请求池。配置五把 Key、查看队列和调整资源上限见 [并发与多 Key 配置](deploy/concurrency.md)。
+
 Vue 前端、FastAPI API、数据库层和来源适配器各自独立，可由后续适配器增量更新。生产前端需要 Node 构建，构建后由 Python 同源提供页面和 API；运行不调用 AI，不产生模型费用。服务器通过 `CATALOG_DATABASE_URL` 配置 PostgreSQL，`CATALOG_IMAGE_STORAGE=filesystem` 与 `CATALOG_IMAGE_ROOT` 配置独立图片目录；本机兼容 `CATALOG_DB` 指定 SQLite 文件；数据模型保留 Schema 版本、命名空间、稳定外部身份和来源证据，方便后续 ERP API、定时任务和多平台接入。
 
 本机模式不启用登录；服务器团队模式必须启用登录和 HTTPS 并配置定期备份。三种角色均可读取和导出全库，暂不按店铺隔离。`CATALOG_IMPORT_TOKEN` 可额外保护导入 API，但不绕过登录和角色验证。默认拒绝跨源浏览器写入，不代理远程图片或执行导入 HTML。多用户高并发写入时可替换 repository 层为 PostgreSQL。

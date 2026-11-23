@@ -3,16 +3,19 @@ import hashlib
 import re
 import time
 from urllib.parse import urlsplit
-from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 from fastapi import HTTPException
 
 from .database import write_lock
+from .concurrency import BoundedExecutor, WorkQueueFull, setting
 from .listing_ai_client import ListingAIError
 from .object_storage import StorageError
 
 PREFIX = '/api/products/images/assets/'
+IMAGE_POOL = BoundedExecutor(
+    max_workers=setting('CATALOG_IMAGE_WORKERS', 4, maximum=16), max_pending=16,
+    thread_name_prefix='source-images')
 
 
 def cached_image(catalog, lid, sku, url):
@@ -62,8 +65,19 @@ def collect_images(catalog, lid, sku, urls):
                 reason = '图片地址或文件无效，请重新采集或本地上传'
             return dict(source_url=url, reason=reason)
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(collect, selected))
+    results = []
+    # At most two outstanding images per gallery, four downloads process-wide.
+    # A burst of requests never creates a fresh thread pool per gallery.
+    for offset in range(0, len(selected), 2):
+        pending = []
+        for url in selected[offset:offset + 2]:
+            try:
+                pending.append((url, IMAGE_POOL.submit(collect, url)))
+            except WorkQueueFull:
+                pending.append((url, None))
+        for url, future in pending:
+            results.append(future.result() if future else dict(
+                source_url=url, reason='图片处理繁忙，请稍后重新采集'))
     saved = [r for r in results if r.get('url')]
     failures = [dict(index=i+1, reason=r['reason']) for i, r in enumerate(results) if not r.get('url')]
     images = list(dict.fromkeys(r['url'] for r in saved))

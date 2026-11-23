@@ -183,7 +183,7 @@ onBeforeUnmount(() => controller?.abort());
     </div>
     <p v-if="editing?.enabled.value" class="muted">
       需安装新版验证助手。地区不是 10001 时会暂停等待设置；请使用同一 Chrome / Edge 普通窗口。
-      本机与服务器分别保存浏览器状态，清除 Cookie 后可能需要重新设置。
+      默认在当前员工电脑的浏览器中采集，地区与 Cookie 保存在本机；清除 Cookie 后可能需要重新设置。
     </p>
     <p v-if="record?.original_price" class="muted">
       预上架售价 = 计价原价 × 倍率；没有划线原价时采用已核验的普通售价。

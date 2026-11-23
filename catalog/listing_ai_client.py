@@ -13,6 +13,16 @@ class ListingAIError(ValueError):
     pass
 
 
+class AIHTTPError(ListingAIError):
+    def __init__(self, status, retry_after=''):
+        self.status = status
+        try:
+            self.retry_after = max(0, int(retry_after))
+        except (ValueError, TypeError):
+            self.retry_after = 0
+        super().__init__(f'AI 请求失败（HTTP {status}），请检查模型权限、额度及接口地址')
+
+
 class ListingAISettings:
     def __init__(self):
         values = {}
@@ -29,7 +39,20 @@ class ListingAISettings:
         def setting(name, default=''):
             return os.environ.get('CATALOG_LISTING_AI_' + name, values.get('CATALOG_LISTING_AI_' + name, default))
         self.enabled = setting('ENABLED', '0') == '1'
-        self.key = setting('KEY')
+        primary = setting('KEY')
+        try:
+            additional = json.loads(setting('KEYS', '[]'))
+            if (not isinstance(additional, list) or len(additional) > 15
+                    or any(not isinstance(key, str) or not key or key != key.strip()
+                           or not key.isascii() or any(ord(char) < 33 for char in key)
+                           or len(key) > 2048 for key in additional)):
+                raise ValueError()
+        except (ValueError, TypeError):
+            raise ListingAIError('AI 多 Key 配置必须为密钥字符串的 JSON 数组') from None
+        self.keys = list(dict.fromkeys(([primary] if primary else []) + additional))
+        self.key = self.keys[0] if self.keys else ''
+        from .concurrency import setting as runtime_setting
+        self.key_parallel = runtime_setting('CATALOG_AI_KEY_PARALLEL', 2, maximum=4)
         self.base_url = setting('BASE_URL').rstrip('/')
         self.model = setting('MODEL', 'gpt-6-astra')
         self.stream = setting('STREAM', '1') == '1'
@@ -42,6 +65,7 @@ class ListingAISettings:
 
     def public(self):
         return dict(configured=self.configured, model=self.model,
+                    key_count=len(self.keys), key_parallel=self.key_parallel,
                     vision=self.vision,
                     host=urlsplit(self.base_url).hostname if self.configured else '')
 
@@ -53,6 +77,32 @@ class ListingAIClient:
         self.usage_history = []
 
     def query(self, purpose, payload):
+        from .ai_dispatch import AIChannelsBusy, key_pool
+        keys = getattr(self.settings, 'keys', None)
+        if not keys or not self.settings.configured:
+            return self._query(purpose, payload, self.settings.key)
+        pool = key_pool(self.settings.base_url, keys, self.settings.key_parallel)
+        tried = set()
+        last_error = None
+        try:
+            while len(tried) < len(keys):
+                with pool.acquire(tried) as (index, key):
+                    try:
+                        return self._query(purpose, payload, key)
+                    except AIHTTPError as exc:
+                        if exc.status not in (401, 403, 429, 502, 503, 504):
+                            raise
+                        seconds = 300 if exc.status in (401, 403) else 15
+                        if exc.status == 429:
+                            seconds = max(5, min(exc.retry_after or 30, 300))
+                        pool.cooldown(index, seconds)
+                        tried.add(index)
+                        last_error = exc
+            raise last_error
+        except AIChannelsBusy as exc:
+            raise ListingAIError(str(exc)) from None
+
+    def _query(self, purpose, payload, key):
         if not self.settings.configured:
             raise ListingAIError('尚未配置上架资料 AI；已完成的来源映射仍会保存')
         system = (
@@ -90,10 +140,10 @@ class ListingAIClient:
             with httpx.Client(timeout=httpx.Timeout(120, connect=15), follow_redirects=False,
                               trust_env=False, transport=self.transport) as client:
                 with client.stream('POST', self.settings.base_url + '/chat/completions',
-                                   headers={'Authorization': 'Bearer ' + self.settings.key,
+                                   headers={'Authorization': 'Bearer ' + key,
                                             'Content-Type': 'application/json'}, content=raw) as response:
                     if response.status_code != 200:
-                        raise ListingAIError(f'AI 请求失败（HTTP {response.status_code}），请检查模型权限、额度及接口地址')
+                        raise AIHTTPError(response.status_code, response.headers.get('retry-after', ''))
                     if self.settings.stream:
                         size = 0
                         for line in response.iter_lines():

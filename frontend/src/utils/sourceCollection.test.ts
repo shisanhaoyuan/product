@@ -39,11 +39,30 @@ function preview(): PrelistingPreview {
 }
 beforeEach(() => {
   vi.resetAllMocks();
+  // Legacy server-path tests explicitly select that mode. Production defaults local.
+  vi.stubGlobal('localStorage', { getItem: () => 'no', setItem: vi.fn() });
   mock.capture.mockResolvedValue({
     status: 'captured',
     asin: 'B000000001',
     original_price: '72.89',
   });
+});
+it('uses the employee’s local browser by default and never falls back to server collection when the helper is missing', async () => {
+  vi.stubGlobal('localStorage', { getItem: () => null, setItem: vi.fn() });
+  mock.page.mockResolvedValue({ asin: 'B000000001', html: 'local page' });
+  mock.browser.mockResolvedValue({
+    asin: 'B000000001',
+    status: 'captured',
+    delivery_location: '10001',
+  });
+  await collectSource('one', 'child', new AbortController().signal, vi.fn(), 'B000000001');
+  expect(mock.capture).not.toHaveBeenCalled();
+  expect(mock.browser).toHaveBeenCalledTimes(1);
+  mock.page.mockRejectedValueOnce(new Error('请先安装验证助手'));
+  await expect(
+    collectSource('one', 'child', new AbortController().signal, vi.fn(), 'B000000001'),
+  ).rejects.toThrow('验证助手');
+  expect(mock.capture).not.toHaveBeenCalled();
 });
 it('automatically captures each missing Amazon target once, skipping existing prices and suppliers', async () => {
   const signal = new AbortController().signal;

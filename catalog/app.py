@@ -5,6 +5,7 @@ import io
 import json
 import os
 import secrets
+import anyio
 from pathlib import Path
 from urllib.parse import urlparse
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -25,6 +26,9 @@ from .images import image_routes
 from .source_capture import source_routes
 from .object_storage import configured_storage
 from .product_search import normalize_identifiers
+from .database import DatabaseBusy
+from .concurrency import AdmissionMiddleware, RequestGate, busy_response, setting
+from starlette.concurrency import run_in_threadpool
 
 ROOT=Path(__file__).resolve().parent.parent
 
@@ -41,21 +45,39 @@ def create_app(database=None):
         if (origin_url.scheme != 'https' or not secure_cookie) and origin_url.hostname not in {'127.0.0.1','localhost'}:
             raise RuntimeError('服务器团队模式必须使用 HTTPS 和 Secure Cookie')
     auth=AuthStore(catalog) if auth_enabled else None
+    auth_limiter=anyio.CapacityLimiter(4)
+    gate=RequestGate(active=setting('CATALOG_HTTP_ACTIVE',48,maximum=256),
+                     waiting=setting('CATALOG_HTTP_WAITING',64,minimum=0,maximum=512),
+                     work=setting('CATALOG_HTTP_WORK',8,maximum=32),
+                     images=setting('CATALOG_HTTP_IMAGES',8,maximum=32),
+                     timeout=setting('CATALOG_HTTP_WAIT_TIMEOUT',2,maximum=10))
     @asynccontextmanager
     async def lifespan(app):
         from .listing_result_worker import serve
-        task=asyncio.create_task(serve(app)) if os.environ.get('CATALOG_LISTING_RESULT_WORKER','1')=='1' else None
+        from .listing_generation_jobs import serve_generation, stop_generation
+        limiter=anyio.to_thread.current_default_thread_limiter()
+        previous_tokens=limiter.total_tokens
+        limiter.total_tokens=setting('CATALOG_HTTP_THREADS',32,minimum=16,maximum=128)
+        catalog._closing=False
+        tasks=[]
+        if os.environ.get('CATALOG_LISTING_RESULT_WORKER','1')=='1':
+            tasks.append(asyncio.create_task(serve(app)))
+        tasks.append(asyncio.create_task(serve_generation(app)))
         try:
             yield
         finally:
-            if task:
+            for task in tasks:
                 task.cancel()
+            for task in tasks:
                 with suppress(asyncio.CancelledError):
                     await task
+            stop_generation(catalog)
+            limiter.total_tokens=previous_tokens
 
     app=FastAPI(lifespan=lifespan,title='商品库 API',version='1.0.0',docs_url=None,redoc_url=None,description='独立商品库；可通过绑定店铺明确提交沃尔玛商品，不操作 ERP。')
     app.state.catalog=catalog
     app.state.auth=auth
+    app.state.request_gate=gate
     app.include_router(auth_routes(auth,secure_cookie))
     app.include_router(blacklist_routes(catalog))
     app.include_router(prelisting_routes(catalog))
@@ -98,6 +120,10 @@ def create_app(database=None):
             return JSONResponse({'detail':'刊登资料格式不正确，请检查商品编码、SKU、数值及资料版本'},status_code=422)
         return await request_validation_exception_handler(request,exc)
 
+    @app.exception_handler(DatabaseBusy)
+    async def database_busy(request,exc):
+        return busy_response()
+
     @app.middleware('http')
     async def guard(request:Request, call_next):
         path=request.url.path
@@ -110,7 +136,10 @@ def create_app(database=None):
         protected=path.startswith('/api/') or path in {'/docs','/openapi.json'}
         public_listing_image=request.method in ('GET','HEAD') and path.startswith('/api/listing-media/')
         if auth_enabled and protected and path not in public_paths and not public_listing_image:
-            user=auth.session(request.cookies.get(COOKIE))
+            try:
+                user=await anyio.to_thread.run_sync(auth.session,request.cookies.get(COOKIE),limiter=auth_limiter)
+            except DatabaseBusy:
+                return busy_response()
             if not user:
                 return Response('请先登录',status_code=401,headers={'Cache-Control':'no-store'})
             request.state.user=user
@@ -144,6 +173,26 @@ def create_app(database=None):
         result.headers['Referrer-Policy']='no-referrer'
         result.headers['Content-Security-Policy']="default-src 'self'; img-src 'self' https: http: data:; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
         return result
+
+    # Added last so admission happens before session lookup, request body reads
+    # and synchronous route dispatch. Long requests cannot fill every lane.
+    app.add_middleware(AdmissionMiddleware,gate=gate)
+
+    @app.get('/api/admin/runtime')
+    def runtime():
+        from .listing_generation_jobs import POOL
+        from .source_images import IMAGE_POOL
+        from .listing_ai_client import ListingAISettings
+        from .ai_dispatch import key_pool
+        ai=ListingAISettings()
+        channels=key_pool(ai.base_url,ai.keys,ai.key_parallel).stats() if ai.keys else dict(keys=0,active=0,cooling=0)
+        with catalog.connect() as db:
+            jobs={row['state']:row['count'] for row in db.execute('''SELECT state,COUNT(*) AS count FROM listing_generation_jobs
+                WHERE state IN ('queued','running','awaiting_sources') GROUP BY state''').fetchall()}
+        generation={**POOL.stats(),'per_user_limit':setting('CATALOG_GENERATION_PER_USER',2,maximum=5),'jobs':jobs}
+        return dict(requests=gate.stats(),generation=generation,images=IMAGE_POOL.stats(),ai=channels,
+                    database=({'backend':'postgresql',**catalog.pool().get_stats()} if catalog.postgres
+                              else {'backend':'sqlite'}))
 
     @app.get('/api/health')
     def health():
@@ -207,8 +256,10 @@ def create_app(database=None):
             if len(raw)+len(chunk)>20*1024*1024:raise HTTPException(413,'导入文件不能超过 20 MB')
             raw.extend(chunk)
         try:
-            bundle=ImportBundle.model_validate_json(raw)
-            return catalog.ingest(bundle,actor_id=request.state.user['id'] if auth else None)
+            def process():
+                bundle=ImportBundle.model_validate_json(raw)
+                return catalog.ingest(bundle,actor_id=request.state.user['id'] if auth else None)
+            return await run_in_threadpool(process)
         except ValidationError as exc:
             raise HTTPException(422,[{'loc':e['loc'],'msg':e['msg']} for e in exc.errors()])
         except ValueError as exc:raise HTTPException(409,str(exc))

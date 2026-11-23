@@ -174,10 +174,10 @@ def walmart_routes(catalog):
     def verifier(request):
         return request.app.state.walmart_verifier
 
-    async def verify_credentials(request, credentials, marketplace):
+    def verify_credentials(request, credentials, marketplace):
         # Keep US verifier callers and existing integrations compatible.
         options = {} if marketplace == 'US' else {'marketplace': marketplace}
-        return await run_in_threadpool(verifier(request).verify, **credentials, **options)
+        return verifier(request).verify(**credentials, **options)
 
     @router.get('/accounts')
     def accounts():
@@ -199,14 +199,16 @@ def walmart_routes(catalog):
 
     @router.post('/accounts/preview')
     async def preview(request: Request):
-        data = await body(request, Credentials)
+        return await run_in_threadpool(preview_sync, await body(request, Credentials), request)
+
+    def preview_sync(data, request):
         try:
             read_key()
             with catalog.connect() as db:
                 store(db, data.store_id)
                 expected = revision(account(db, data.store_id))
             credentials = dict(client_id=data.client_id.get_secret_value(), client_secret=data.client_secret.get_secret_value())
-            verified = await verify_credentials(request, credentials, data.marketplace)
+            verified = verify_credentials(request, credentials, data.marketplace)
             identity = binding_identity(data.marketplace, verified['profile'], credentials)
             ciphertext = encrypt(data.store_id, credentials, data.marketplace)
         except (VaultError, WalmartError) as exc:
@@ -230,7 +232,9 @@ def walmart_routes(catalog):
 
     @router.post('/accounts/{store_id}/bind')
     async def bind(store_id: int, request: Request):
-        data = await body(request, Confirm)
+        return await run_in_threadpool(bind_sync, store_id, await body(request, Confirm), request)
+
+    def bind_sync(store_id, data, request):
         try:
             with catalog.connect() as db:
                 write_lock(db)
@@ -265,7 +269,9 @@ def walmart_routes(catalog):
 
     @router.post('/accounts/{store_id}/verify')
     async def verify(store_id: int, request: Request):
-        data = await body(request, Revision)
+        return await run_in_threadpool(verify_sync, store_id, await body(request, Revision), request)
+
+    def verify_sync(store_id, data, request):
         with catalog.connect() as db:
             store(db, store_id)
             row = account(db, store_id)
@@ -275,7 +281,7 @@ def walmart_routes(catalog):
         error = ''
         try:
             credentials = decrypt(store_id, row['encrypted_credentials'], row['marketplace'])
-            verified = await verify_credentials(request, credentials, row['marketplace'])
+            verified = verify_credentials(request, credentials, row['marketplace'])
             if binding_identity(row['marketplace'], verified['profile'], credentials) != row['partner_id']:
                 raise WalmartError('沃尔玛返回身份与已绑定店铺不一致，请核对后重新绑定')
         except (VaultError, WalmartError) as exc:
@@ -298,7 +304,9 @@ def walmart_routes(catalog):
 
     @router.post('/accounts/{store_id}/unbind')
     async def unbind(store_id: int, request: Request):
-        data = await body(request, Revision)
+        return await run_in_threadpool(unbind_sync, store_id, await body(request, Revision), request)
+
+    def unbind_sync(store_id, data, request):
         with catalog.connect() as db:
             write_lock(db)
             from .walmart_publishing import assert_not_sending

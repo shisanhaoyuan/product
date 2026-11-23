@@ -46,7 +46,7 @@ def tick(app):
         with catalog.connect() as db:
             user=authorized(db,app,task['actor_id'])
         if task['repair_job_id']:
-            from .listing_generation_jobs import POOL, run_job
+            from .listing_generation_jobs import schedule_job
             with catalog.connect() as db:
                 job=db.execute('SELECT * FROM listing_generation_jobs WHERE id=?',(task['repair_job_id'],)).fetchone()
                 if job and job['state']=='running' and job['updated_at']<time.time()-600:
@@ -63,7 +63,7 @@ def tick(app):
                     # run_job claims queued -> running transactionally, so a
                     # restart may safely dispatch the same durable job again.
                     from .listing_ai_client import ListingAIClient
-                    POOL.submit(run_job,catalog,app.state.walmart_publisher,job['id'],ListingAIClient())
+                    schedule_job(catalog,app.state.walmart_publisher,job['id'],ListingAIClient())
         elif task['attempt_state'] in ('complete','rejected'):
             state='complete'
             repair=any(v.get('status')=='failed' and v.get('ingestion_status')=='DATA_ERROR' for v in json.loads(task['results_json']).values())
@@ -110,9 +110,10 @@ def tick(app):
 
 
 async def serve(app):
+    from .concurrency import background_call
     while True:
         try:
-            await asyncio.to_thread(tick,app)
+            await background_call(tick,app)
         except asyncio.CancelledError:
             raise
         except Exception:
