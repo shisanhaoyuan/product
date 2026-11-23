@@ -13,6 +13,8 @@ import { errorMessage, priceRange, productStatus } from '../utils/display';
 import AppIcon from '../components/AppIcon.vue';
 import FilterSelect from '../components/FilterSelect.vue';
 import ProductCard from '../components/ProductCard.vue';
+import ProductVariantsPreview from '../components/ProductVariantsPreview.vue';
+import { useVariantPreview } from '../composables/useVariantPreview';
 import ListingCoverage from '../components/ListingCoverage.vue';
 import ListingCountFilter from '../components/ListingCountFilter.vue';
 import ProductImage from '../components/ProductImage.vue';
@@ -22,6 +24,7 @@ import { parseBatchIdentifiers, productSearch } from '../utils/batchSearch';
 import { filterGroups, selectedValues } from '../utils/filterSelection';
 import { useAuth } from '../composables/useAuth';
 const { auth } = useAuth();
+const variants = useVariantPreview();
 const canEdit = computed(
   () => !auth.enabled || ['admin', 'editor'].includes(auth.user?.role || ''),
 );
@@ -678,7 +681,30 @@ onBeforeUnmount(() => {
               @change="toggleProduct(product.id)"
             />选择</label
           >
-          <ProductCard :product="product" />
+          <ProductCard :product="product">
+            <template v-if="product.variant_count" #variants>
+              <div class="product-card-variants">
+                <button
+                  type="button"
+                  class="variant-toggle"
+                  :aria-expanded="variants.state(product.id).expanded"
+                  :aria-controls="'grid-variants-' + product.id"
+                  @click="variants.toggle(product.id)"
+                >
+                  <AppIcon name="ChevronRight" />
+                  {{ variants.state(product.id).expanded ? '收起子变体' : '展开子变体' }}
+                  <span>{{ product.variant_count }}</span>
+                </button>
+                <ProductVariantsPreview
+                  v-show="variants.state(product.id).expanded"
+                  :id="'grid-variants-' + product.id"
+                  :product="product"
+                  :state="variants.state(product.id)"
+                  @retry="variants.retry(product.id)"
+                />
+              </div>
+            </template>
+          </ProductCard>
         </div>
       </div>
       <div v-else class="table-scroll">
@@ -697,76 +723,107 @@ onBeforeUnmount(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="product in data.items" :key="product.id">
-              <td v-if="canEdit">
-                <input
-                  type="checkbox"
-                  :aria-label="'选择商品 ' + product.sku"
-                  :checked="allFiltered || selected.has(product.id)"
-                  :disabled="allFiltered"
-                  @change="toggleProduct(product.id)"
-                />
-              </td>
-              <td>
-                <RouterLink class="table-product" :to="detailPath(product.id)"
-                  ><ProductImage
-                    :listing-id="product.source === 'Amazon' ? product.id : undefined"
-                    :src="product.image"
-                    :fallbacks="product.image_fallbacks"
-                    image-class="table-thumb"
-                  /><span class="table-product-copy"
-                    ><span class="table-product-title">{{ product.title || '暂无标题' }}</span
-                    ><span class="category-label" :title="product.category || '未记录类目'">{{
-                      product.category || '未记录类目'
-                    }}</span></span
-                  ></RouterLink
-                >
-              </td>
-              <td v-if="!isWarehouse" class="listing-coverage-cell">
-                <ListingCoverage :product="product" />
-              </td>
-              <td class="mono">
-                <template v-if="!isWarehouse">{{ product.asin }}<br /></template
-                ><span class="muted">{{ product.sku }}</span>
-              </td>
-              <td>
-                {{ product.store }}<br /><span class="muted">{{ product.brand }}</span>
-                <ProductStoreHistory
-                  v-if="product.store_history?.length"
-                  :entries="product.store_history"
-                />
-              </td>
-              <td>
-                {{ product.source }}<br /><span class="muted">{{
-                  product.seller || '卖家未采集'
-                }}</span>
-                <div v-if="product.seller_blacklist.length" class="seller-risk-label">
-                  卖家已拉黑 · {{ product.seller_blacklist.length }} 位
-                </div>
-              </td>
-              <td>
-                <span v-if="isGiga" class="giga-table-price">预计总额（含打包）</span
-                >{{
-                  priceRange(
-                    ['GigaB2B', 'GigaB2B_CA'].includes(product.source || '')
-                      ? product.giga_summary?.estimated_totals || []
-                      : product.prices,
-                    product.currency ?? 'USD',
-                  )
-                }}<GigaQuickFacts v-if="isGiga" :summary="product.giga_summary" /><SaleyeeQuickFacts
-                  v-if="source === 'Saleyee'"
-                  :summary="product.saleyee_summary"
-                />
-              </td>
-              <td>
-                <StatusBadge :type="productStatus(product).type">{{
-                  productStatus(product).label
-                }}</StatusBadge>
-              </td>
-              <td>
-                <RouterLink class="detail-link" :to="detailPath(product.id)">详情 ↗</RouterLink>
-              </td>
-            </tr>
+            <template v-for="product in data.items" :key="product.id">
+              <tr>
+                <td v-if="canEdit">
+                  <input
+                    type="checkbox"
+                    :aria-label="'选择商品 ' + product.sku"
+                    :checked="allFiltered || selected.has(product.id)"
+                    :disabled="allFiltered"
+                    @change="toggleProduct(product.id)"
+                  />
+                </td>
+                <td>
+                  <RouterLink class="table-product" :to="detailPath(product.id)"
+                    ><ProductImage
+                      :listing-id="product.source === 'Amazon' ? product.id : undefined"
+                      :src="product.image"
+                      :fallbacks="product.image_fallbacks"
+                      image-class="table-thumb"
+                    /><span class="table-product-copy"
+                      ><span class="table-product-title">{{ product.title || '暂无标题' }}</span
+                      ><span class="category-label" :title="product.category || '未记录类目'">{{
+                        product.category || '未记录类目'
+                      }}</span></span
+                    ></RouterLink
+                  >
+                  <button
+                    v-if="product.variant_count"
+                    type="button"
+                    class="variant-toggle table-variant-toggle"
+                    :aria-expanded="variants.state(product.id).expanded"
+                    :aria-controls="'table-variants-' + product.id"
+                    @click="variants.toggle(product.id)"
+                  >
+                    <AppIcon name="ChevronRight" />
+                    {{ variants.state(product.id).expanded ? '收起子变体' : '展开子变体' }}
+                    <span>{{ product.variant_count }}</span>
+                  </button>
+                </td>
+                <td v-if="!isWarehouse" class="listing-coverage-cell">
+                  <ListingCoverage :product="product" />
+                </td>
+                <td class="mono">
+                  <template v-if="!isWarehouse">{{ product.asin }}<br /></template
+                  ><span class="muted">{{ product.sku }}</span>
+                </td>
+                <td>
+                  {{ product.store }}<br /><span class="muted">{{ product.brand }}</span>
+                  <ProductStoreHistory
+                    v-if="product.store_history?.length"
+                    :entries="product.store_history"
+                  />
+                </td>
+                <td>
+                  {{ product.source }}<br /><span class="muted">{{
+                    product.seller || '卖家未采集'
+                  }}</span>
+                  <div v-if="product.seller_blacklist.length" class="seller-risk-label">
+                    卖家已拉黑 · {{ product.seller_blacklist.length }} 位
+                  </div>
+                </td>
+                <td>
+                  <span v-if="isGiga" class="giga-table-price">预计总额（含打包）</span
+                  >{{
+                    priceRange(
+                      ['GigaB2B', 'GigaB2B_CA'].includes(product.source || '')
+                        ? product.giga_summary?.estimated_totals || []
+                        : product.prices,
+                      product.currency ?? 'USD',
+                    )
+                  }}<GigaQuickFacts
+                    v-if="isGiga"
+                    :summary="product.giga_summary"
+                  /><SaleyeeQuickFacts
+                    v-if="source === 'Saleyee'"
+                    :summary="product.saleyee_summary"
+                  />
+                </td>
+                <td>
+                  <StatusBadge :type="productStatus(product).type">{{
+                    productStatus(product).label
+                  }}</StatusBadge>
+                </td>
+                <td>
+                  <RouterLink class="detail-link" :to="detailPath(product.id)">详情 ↗</RouterLink>
+                </td>
+              </tr>
+              <tr
+                v-if="product.variant_count"
+                v-show="variants.state(product.id).expanded"
+                class="product-variants-row"
+              >
+                <td :colspan="7 + Number(canEdit) + Number(!isWarehouse)">
+                  <ProductVariantsPreview
+                    :id="'table-variants-' + product.id"
+                    :product="product"
+                    :state="variants.state(product.id)"
+                    @retry="variants.retry(product.id)"
+                  />
+                </td>
+              </tr>
+            </template>
           </tbody>
         </table>
       </div>
@@ -823,9 +880,70 @@ onBeforeUnmount(() => {
   </div>
 </template>
 <style scoped>
+.product-grid {
+  align-items: start;
+}
 .batch-search-hint {
   color: var(--muted);
   font-size: 12px;
   margin: 0 0 16px;
+}
+.variant-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 7px 11px;
+  border: 1px solid #cfdeef;
+  border-radius: 8px;
+  background: #edf4fb;
+  color: #456c99;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.variant-toggle:hover {
+  border-color: #91afd1;
+  background: #e2edfa;
+}
+.variant-toggle:focus-visible {
+  outline: 2px solid #567fad;
+  outline-offset: 2px;
+}
+.variant-toggle .icon {
+  width: 15px;
+  height: 15px;
+  transition: transform 0.15s;
+}
+.variant-toggle[aria-expanded='true'] .icon {
+  transform: rotate(90deg);
+}
+.variant-toggle > span {
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: #fff;
+}
+.table-variant-toggle {
+  margin: 10px 0 0 56px;
+}
+.product-card-variants {
+  border-top: 1px solid #dfe8f3;
+  background: #f3f7fc;
+}
+.product-card-variants > .variant-toggle {
+  display: flex;
+  width: calc(100% - 24px);
+  margin: 12px;
+}
+.product-card-variants > .variant-toggle > span {
+  margin-left: auto;
+}
+.product-variants-row > td {
+  padding: 0 12px 12px;
+  background: #f3f7fc;
+}
+.product-variants-row:hover > td {
+  background: #f3f7fc;
 }
 </style>
