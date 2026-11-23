@@ -4,12 +4,26 @@
 set -Eeuo pipefail
 
 main() {
-  if [[ ${1:-} == --help ]]; then
-    printf '%s\n' 'Usage: sudo bash /www/wwwroot/jiwu/deploy/update-git.sh' \
-      'Updates an existing main-branch installation; backs up data before pulling.'
-    return
-  fi
-  [[ $# == 0 && $EUID == 0 ]] || { printf '%s\n' '请以 root 运行，不带参数。' >&2; return 1; }
+  local target_branch=main explicit_branch=0 allow_rollback=0 current_branch local_target
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --help)
+        printf '%s\n' 'Usage: sudo bash deploy/update-git.sh [--branch BRANCH] [--rollback]' \
+          '不带参数更新 main；--branch 部署指定分支；--rollback 允许回退到祖先版本。' \
+          '更新前备份数据及代码；回退只切换代码，不还原数据库。'
+        return ;;
+      --branch)
+        [[ $# -ge 2 && $explicit_branch == 0 ]] || { printf '%s\n' '--branch 需要且只能指定一个分支。' >&2; return 1; }
+        target_branch=$2; explicit_branch=1; shift 2 ;;
+      --rollback) allow_rollback=1; shift ;;
+      *) printf '未知参数：%s\n' "$1" >&2; return 1 ;;
+    esac
+  done
+  [[ $EUID == 0 ]] || { printf '%s\n' '请以 root 运行。' >&2; return 1; }
+  [[ $allow_rollback == 0 || $explicit_branch == 1 ]] || { printf '%s\n' '回退时必须使用 --branch 明确指定分支。' >&2; return 1; }
+  [[ $target_branch != -* ]] && git check-ref-format "refs/heads/$target_branch" || {
+    printf '%s\n' '分支名称无效。' >&2; return 1;
+  }
   umask 027
   local app_dir=/www/wwwroot/jiwu data_dir=/www/server/jiwu-data
   local backup_root=/www/server/jiwu-backups before_sha target_sha backup_dir origin
@@ -23,7 +37,9 @@ main() {
   [[ -x .venv/bin/python && -f /etc/jiwu.env ]] || {
     printf '%s\n' '本脚本仅更新已完成首次安装的服务。' >&2; return 1;
   }
-  [[ $(git branch --show-current) == main ]] || { printf '%s\n' '当前不是 main 分支，停止更新。' >&2; return 1; }
+  current_branch=$(git branch --show-current)
+  [[ -n $current_branch ]] || { printf '%s\n' '当前为游离提交，请先确认分支。' >&2; return 1; }
+  [[ $explicit_branch == 1 || $current_branch == main ]] || { printf '%s\n' '当前不是 main；请用 --branch 明确指定部署分支。' >&2; return 1; }
   [[ -z $(git status --porcelain) ]] || { printf '%s\n' '服务器有本地代码修改，请先处理，未覆盖。' >&2; return 1; }
   node -e 'const [m,n]=process.versions.node.split(".").map(Number); if(!((m===22&&n>=12)||m>=24)) {console.error("需要 Node 22.12+ 或 24+");process.exit(1)}'
   origin=$(.venv/bin/python - <<'PY'
@@ -48,17 +64,27 @@ assert u.hostname != 'catalog.example.com', '请替换示例域名'
 print(origin.rstrip('/'))
 PY
   )
-  git fetch origin main
+  git fetch origin "$target_branch"
   before_sha=$(git rev-parse HEAD)
-  target_sha=$(git rev-parse origin/main)
-  git merge-base --is-ancestor "$before_sha" "$target_sha" || {
-    printf '%s\n' '本地与远端历史已分叉或本地领先，停止更新。' >&2; return 1;
-  }
+  target_sha=$(git rev-parse --verify 'FETCH_HEAD^{commit}')
+  if ! git merge-base --is-ancestor "$before_sha" "$target_sha"; then
+    [[ $allow_rollback == 1 ]] && git merge-base --is-ancestor "$target_sha" "$before_sha" || {
+      printf '%s\n' '本地与远端历史已分叉或本地领先，停止更新。' >&2; return 1;
+    }
+  fi
+  if git show-ref --verify --quiet "refs/heads/$target_branch"; then
+    local_target=$(git rev-parse "refs/heads/$target_branch")
+    git merge-base --is-ancestor "$local_target" "$target_sha" || {
+      printf '%s\n' '本地目标分支含远端没有的提交，停止更新，未覆盖。' >&2; return 1;
+    }
+  fi
   install -d -m 700 -o jiwu -g jiwu "$backup_root"
   backup_dir=$(mktemp -d "$backup_root/update-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")
   chown jiwu:jiwu "$backup_dir"
   printf '%s\n' "$before_sha" > "$backup_dir/previous-commit.txt"
   printf '%s\n' "$target_sha" > "$backup_dir/target-commit.txt"
+  printf '%s\n' "$current_branch" > "$backup_dir/previous-branch.txt"
+  printf '%s\n' "$target_branch" > "$backup_dir/target-branch.txt"
   git archive --format=tar.gz -o "$backup_dir/previous-code.tar.gz" "$before_sha"
   .venv/bin/python -m pip freeze > "$backup_dir/previous-dependencies.txt"
   if [[ -d web/dist ]]; then tar -czf "$backup_dir/previous-frontend.tar.gz" -C web dist; fi
@@ -75,7 +101,17 @@ PY
   systemctl stop jiwu
   bash deploy/backup.sh > "$backup_dir/data-backup.txt"
   cat "$backup_dir/data-backup.txt"
-  git merge --ff-only "$target_sha"
+  if [[ $current_branch == "$target_branch" ]]; then
+    git merge --ff-only "$target_sha"
+  elif git show-ref --verify --quiet "refs/heads/$target_branch"; then
+    git switch "$target_branch"
+    git merge --ff-only "$target_sha"
+  else
+    git switch --no-track -c "$target_branch" "$target_sha"
+  fi
+  if git show-ref --verify --quiet "refs/remotes/origin/$target_branch"; then
+    git branch --set-upstream-to="origin/$target_branch" "$target_branch"
+  fi
   .venv/bin/python -m pip install -r deploy/requirements.lock
   .venv/bin/python -m pip install --no-deps -e .
   .venv/bin/python -m pip check
@@ -104,7 +140,7 @@ PY
   fi
   stopped=0
   trap - EXIT
-  printf '更新完成：%s → %s\n备份：%s\n请登录 %s 核对商品及图片。\n' "$before_sha" "$target_sha" "$backup_dir" "$origin"
+  printf '更新完成（分支 %s）：%s → %s\n备份：%s\n请登录 %s 核对商品及图片。\n' "$target_branch" "$before_sha" "$target_sha" "$backup_dir" "$origin"
 }
 
 main "$@"

@@ -82,3 +82,32 @@ bash deploy/update-git.sh
 ```
 
 更新脚本会安装新增的连接池依赖、构建前端并重启服务。默认并发值无需额外配置；补充四把 Key 后重启即可启用对应通道。
+
+### 先部署优化分支
+
+等正在生成的批次结束后，在服务器 root 终端运行。首次切换时从远端读取新版脚本，因为旧脚本只支持 main：
+
+```bash
+(
+  set -e
+  cd /www/wwwroot/jiwu
+  git fetch origin feature/generation-speed-20261123
+  jiwu_update_script=$(mktemp /tmp/jiwu-update-XXXXXX.sh)
+  trap 'rm -f -- "$jiwu_update_script"' EXIT
+  git show origin/feature/generation-speed-20261123:deploy/update-git.sh > "$jiwu_update_script"
+  bash "$jiwu_update_script" --branch feature/generation-speed-20261123
+)
+```
+
+脚本先备份数据库、图片、旧代码及前端，再切换分支、安装依赖、构建并重启。当前 main 分支指针不会被推进到优化代码。服务器有本地修改、分支分叉或目标分支有未推送提交时停止，不覆盖这些修改。
+
+优化分支后续更新使用 `bash deploy/update-git.sh --branch feature/generation-speed-20261123`。部署后可在填写页面展开“耗时明细”检查一批商品；AI 模型及完整校验保持原有规则。
+
+若需切回远端 main，先等当前生成结束，再运行：
+
+```bash
+cd /www/wwwroot/jiwu
+bash deploy/update-git.sh --branch main --rollback
+```
+
+回退也先备份，只切换代码和构建文件，不还原或覆盖数据库。`--rollback` 只允许回到当前提交的祖先版本；分叉分支仍会被拒绝。
