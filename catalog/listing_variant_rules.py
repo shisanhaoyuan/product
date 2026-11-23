@@ -11,6 +11,8 @@ from difflib import SequenceMatcher
 CUSTOM = {'color', 'size', 'pattern', 'finish', 'theme', 'shape',
           'snaredrumsize', 'drumshellcolor', 'framecolor'}
 FORBIDDEN = {'multipackquantity'}
+COUNT_NAMES = {'numberofitems','numberofpacks','itempackagequantity','packagequantity',
+               'multipackquantity','countperpack','packcount','packquantity','数量','包装数量','件数'}
 SIGNALS = {
     'color': r'colour|color|black|white|red|blue|green|pink|grey|gray|brown|beige|gold',
     'size': r'size|height|width|length|diameter|small|medium|large|inch|feet|\bft\b|\bcm\b|\bmm\b|[0-9][.0-9]*["″]',
@@ -28,18 +30,65 @@ EXCLUDED = {'sku', 'asin', 'ean', 'upc', 'gtin', 'brand', 'seller', 'sellername'
 def name(value):
     from .listing_variants import token
     key = token(value)
-    return {'colour': 'color', 'basecolor': 'color', 'colorname': 'color', '颜色': 'color',
+    return {'colour': 'color', 'basecolor': 'color', 'colorname': 'color', 'colourname': 'color',
+            'maincolor': 'color', 'mainmaterial': 'material', '颜色': 'color',
             'sizename': 'size', '尺寸': 'size', '图案': 'pattern', '形状': 'shape',
-            '饰面': 'finish'}.get(key, key)
+            'finishtype': 'finish', '饰面': 'finish'}.get(key, key)
 
 
 def text_value(value):
-    if isinstance(value, dict) and set(value) == {'variant_value'}:
-        value = value['variant_value']
+    from .listing_source_attributes import unwrap
+    value = unwrap(value)
+    if isinstance(value, list) and len(value) == 1:
+        value = unwrap(value[0])
     if isinstance(value, (str, int, float)) and not isinstance(value, bool):
         text = str(value).strip()
         return text if text and text.casefold() not in {'n/a', 'unknown', 'none', 'null', '未采集', '未知', '待核验'} else None
     return None
+
+
+def pack_count(attrs):
+    """Use explicit pack counts, never stock, shelf counts, model numbers or titles."""
+    found = set()
+    for label, value in attrs.items():
+        if name(label) not in COUNT_NAMES and name(label) != 'size':
+            continue
+        text = text_value(value)
+        if not text:
+            continue
+        if name(label) in COUNT_NAMES:
+            match = re.fullmatch(r'(?:pack\s+of\s*|set\s+of\s*)?(\d+)(?:\s*[- ]?\s*(?:packs?|pieces?|pcs|件套|件))?', text, re.I)
+            matches = [match] if match else []
+        else:
+            # A size such as "5-Tier (2 Pack)" explicitly identifies a pack of
+            # two; the shelf count or a dimension alone must never supply it.
+            matches = re.finditer(r'(?<![\w.])(?:pack\s+of\s*|set\s+of\s*)(\d+)(?![\d.])|(?<![\w.])(\d+)\s*[- ]?\s*(?:packs?|pieces?|pcs|件套|件)(?!\w)', text, re.I)
+        for match in matches:
+            count = int(next(v for v in match.groups() if v is not None))
+            if count > 0:
+                found.add(count)
+    return next(iter(found)) if len(found) == 1 else None
+
+
+def quantity_colors(rows, content, shape):
+    """Disambiguate equal observed colors: Brown / Brown**2, with explicit counts."""
+    from .listing_variants import source_value, value_key
+    if not custom_field('color', shape):
+        return {}, {}
+    colors = {r['platform_sku']: source_value(content.get(r['platform_sku'], {}), 'color', shape) for r in rows}
+    counts = {r['platform_sku']: pack_count(content.get(r['platform_sku'], {}).get('attributes') or {}) for r in rows}
+    result = copy.deepcopy(colors)
+    used = {}
+    for value in {value_key(c) for c in colors.values() if isinstance(c, str)}:
+        skus = [sku for sku, color in colors.items() if isinstance(color, str) and value_key(color) == value]
+        if len(skus) < 2 or any(counts[s] is None for s in skus) or len({counts[s] for s in skus}) < 2:
+            continue
+        for sku in skus:
+            result[sku] = colors[sku] if counts[sku] == 1 else merge(colors[sku], str(counts[sku]))
+            if adapt(result[sku], shape) is None:
+                return {}, {}
+            used[sku] = counts[sku]
+    return (result, used) if used and all(isinstance(v, str) for v in result.values()) else ({}, {})
 
 
 def custom_field(key, shape):
@@ -141,6 +190,16 @@ def mapped_source(rows, content, allowed, props):
             continue
         if column['varying']:
             pending.append(key)
+    # The user explicitly wants pack differences in Color even if another custom
+    # field could hold them. Keep the single pack's observed color unchanged.
+    colors, counts = quantity_colors(rows, content, props.get('color', {})) if 'color' in eligible else ({}, {})
+    if colors:
+        targets['color'] = colors
+        mappings.append(dict(source='Color + pack quantity', target='color', method='user_rule_color_pack_quantity',
+            source_values={sku: content.get(sku, {}).get('attributes') or {} for sku in colors}, values=colors,
+            reason='用户规则：同色不同件数，单件保留原颜色，多件以 **件数 区分；数量来自同一子商品', local_evidence=[]))
+        if len({value_key(v) for v in colors.values()}) == len(rows):
+            pending = []  # Already distinct: don't append unrelated dimensions.
     overflow = []
     for source in pending:
         candidates = [k for k in eligible if k not in targets and custom_field(k, props[k])

@@ -328,10 +328,11 @@ def build_preview(catalog, db, data, exclude_batch=None):
             priced, supplier_errors, warnings = prepare_supplier(d, original, data.multiplier)
             errors.extend(supplier_errors)
         elif children:
+            from .listing_source_attributes import attributes as child_attributes
             priced = [dict(sku=v['sku'], asin=v['asin'], current_price=v['price'], stock=v['stock'],
-                           content={**{k: v.get(k) for k in ('attributes', 'product_id_type', 'ean',
+                           content={**{k: v.get(k) for k in ('product_id_type', 'ean',
                                'swatch_attribute', 'swatch_image', 'shipping_weight', 'copy', 'source_url', 'seller')},
-                               'images': variant_images(d, v)},
+                               'attributes': child_attributes(v), 'images': variant_images(d, v)},
                            **(amazon_price(db, row['id'], d, v, data.multiplier) if d['source'] == 'Amazon'
                               else planned_price(v, v['price_check'], data.multiplier, True))) for v in children]
         else:

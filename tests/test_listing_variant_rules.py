@@ -121,15 +121,15 @@ def test_api_repairs_legacy_duplicate_selection_and_records_skill_provenance(var
     assert checked.status_code == 200, checked.text
     checked = checked.json()
     assert checked['validation']['valid_count'] == 2, checked['validation']
-    assert {r['visible']['color'] for r in checked['rows']} == {'5-Tier (2 Pack)', '5-Tier (1 Pack)'}
+    assert {r['visible']['color'] for r in checked['rows']} == {'Red**5-Tier (2 Pack)', 'Blue**5-Tier (1 Pack)'}
     assert not checked['variant_groups'][0]['errors'] and checked['variant_groups'][0]['rule_mappings']
     with catalog.connect() as db:
         events = db.execute("SELECT details_json FROM walmart_listing_events WHERE batch_id=? AND action='variant_group_rule'", (b['id'],)).fetchall()
-    assert any('user_authorized_custom_fallback' in e[0] and 'variant_rules' in e[0] for e in events)
+    assert any('combined_into_existing' in e[0] and 'variant_rules' in e[0] for e in events)
     response = c.post(base+'/submit', json=submission(checked))
     assert response.status_code == 200, response.text
     wire = remote.feeds[response.json()['feed_id']]['MPItem']
-    assert {r['Visible'][PT]['color'] for r in wire} == {'5-Tier (2 Pack)', '5-Tier (1 Pack)'}
+    assert {r['Visible'][PT]['color'] for r in wire} == {'Red**5-Tier (2 Pack)', 'Blue**5-Tier (1 Pack)'}
 
 
 def test_previously_submitted_multipack_group_keeps_routing_under_new_rule():

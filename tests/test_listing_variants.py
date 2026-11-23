@@ -202,7 +202,7 @@ def test_duplicate_and_unsupported_discriminators_do_not_silently_become_standal
         variant['content']['attributes']['Item Package Quantity'] = str(n+1)
     result = plan(rows, basis, schemas, apply=True)[0]
     assert not result['errors'] and result['axes'] == ['color']
-    assert [r['visible']['color'] for r in rows] == ['Brown**1', 'Brown**2']
+    assert [r['visible']['color'] for r in rows] == ['Brown', 'Brown**2']
     assert 'multipackQuantity' not in result['allowed_axes']
     sections(schemas[PT], PT)['visible']['properties']['variantAttributeNames']['items']['enum'] = ['color']
     assert not plan(rows, basis, schemas, apply=True)[0]['errors']

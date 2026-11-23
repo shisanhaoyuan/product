@@ -12,7 +12,7 @@ from referencing.exceptions import NoSuchResource
 
 from .walmart_listing_schema import LABELS, sections, precise_validator
 
-POLICY = 'source_parent_variants_manual_v3'
+POLICY = 'source_parent_variants_source_dimensions_v4'
 SYSTEM_FIELDS = ('variantGroupId', 'variantAttributeNames', 'isPrimaryVariant')
 EDITABLE = {'unsubmitted', 'failed', 'rejected', 'unpublished'}
 ALIASES = {
@@ -109,13 +109,14 @@ def source_value(content, axis, shape):
     attrs = content.get('attributes') or {}
     if not isinstance(attrs, dict):
         return None
-    names = {token(k) for k in (*ALIASES.get(axis, (axis,)), shape.get('title', axis))}
+    from .listing_variant_rules import name
+    from .listing_source_attributes import unwrap
+    names = {name(k) for k in (*ALIASES.get(axis, (axis,)), shape.get('title', axis))}
     values = []
     for key,value in attrs.items():
-        if token(key) not in names:
+        if name(key) not in names:
             continue
-        if isinstance(value,dict) and set(value)=={'variant_value'}:
-            value=value['variant_value']
+        value = unwrap(value)
         if value not in (None, '', [], {}):
             values.append(value)
     if len({value_key(v) for v in values}) != 1:
@@ -134,17 +135,20 @@ def source_value(content, axis, shape):
                 pass
         elif shape.get('type') == 'array':
             value = [value]
-    return value if valid_attribute(shape, value) else None
+    if valid_attribute(shape, value):
+        return value
+    from .listing_variant_rules import adapt
+    return adapt(value, shape) if isinstance(value, str) else None
 
 
-def fill_shared_attributes(rows, basis, schemas, latest):
+def fill_shared_attributes(rows, basis, schemas, latest, content=None):
     """One canonical visible value per store SKU, shared by both editors.
 
     Fill gaps from this child's own source attributes, even if another family
     member was reviewed. Never replace a saved value or an explicitly cleared
     field, and never borrow a sibling's color/size/material.
     """
-    content = {v['platform_sku']: v.get('content') or {}
+    content = content if content is not None else {v['platform_sku']: v.get('content') or {}
                for item in basis['items'] for v in item['variants']}
     for row in rows:
         if latest.get(row['platform_sku'], {}).get('status', 'unsubmitted') not in EDITABLE:
@@ -168,9 +172,11 @@ def plan(rows, basis, schemas, *, sources=None, history=None, latest=None, produ
     sources, history, latest = sources or {}, history or {}, latest or {}
     original = rows
     rows = copy.deepcopy(rows)
+    from .listing_source_attributes import contents
+    source_content = contents(basis, sources)
     if apply:
         synchronize_types(rows, latest, history, product_types=product_types)
-        fill_shared_attributes(rows, basis, schemas, latest)
+        fill_shared_attributes(rows, basis, schemas, latest, source_content)
     groups = []
     for item in basis['items']:
         lid = item['listing_id']
@@ -221,7 +227,7 @@ def plan(rows, basis, schemas, *, sources=None, history=None, latest=None, produ
             issue('已提交变体组的差异属性不能更换，请保留原分组属性')
         elif choices and any(v != axes for v in choices):
             issue('同组子 SKU 选择的差异属性不一致，请统一')
-        content = {v['platform_sku']: v.get('content') or {} for v in item['variants']}
+        content = {v['platform_sku']: source_content.get(v['platform_sku'], {}) for v in item['variants']}
         def valid_value(row, key):
             value = row['visible'].get(key)
             return value not in (None, '', [], {}) and valid_attribute(props[key], value)
@@ -256,6 +262,16 @@ def plan(rows, basis, schemas, *, sources=None, history=None, latest=None, produ
         if not historical:
             allowed = [k for k in allowed if rule_name(k) not in FORBIDDEN]
         proposals, mappings = mapped_source(current, content, allowed, props)
+        quantity_mapping = next((m for m in mappings if m['method'] == 'user_rule_color_pack_quantity'), None)
+        if (apply and quantity_mapping and not historical and not legacy and
+                all(latest.get(r['platform_sku'], {}).get('status', 'unsubmitted') in EDITABLE for r in current) and
+                all('color' not in r.get('variant_reviewed_fields', []) for r in current)):
+            # Choosing axes or reviewing a sibling must not suppress this explicit
+            # same-child rule, but a custom manual color remains untouched.
+            if all(r['visible'].get('color') in (None, '', quantity_mapping['values'][r['platform_sku']],
+                    source_value(content[r['platform_sku']], 'color', props['color'])) for r in current):
+                for row in current:
+                    row['visible']['color'] = quantity_mapping['values'][row['platform_sku']]
         axes_valid = (bool(axes) and len(set(axes)) == len(axes) and all(k in allowed for k in axes)
                       and all(valid_value(r,k) for r in members for k in axes)
                       and len(set(combinations(axes))) == len(members))
@@ -376,7 +392,8 @@ def preserve_manual(updated, original):
     if original.get('variant_reviewed_fields'):
         updated['variant_reviewed_fields'] = copy.deepcopy(original['variant_reviewed_fields'])
     axes = original['visible'].get('variantAttributeNames') or []
-    for key in (*SYSTEM_FIELDS, *(axes if isinstance(axes,list) else []), *original.get('variant_reviewed_fields',[])):
+    saved_axes = [k for k in axes if original['visible'].get(k) not in (None, '', [], {})] if isinstance(axes, list) else []
+    for key in (*SYSTEM_FIELDS, *saved_axes, *original.get('variant_reviewed_fields',[])):
         if key in original['visible']:
             updated['visible'][key] = copy.deepcopy(original['visible'][key])
         else:

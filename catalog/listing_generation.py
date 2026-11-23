@@ -12,7 +12,7 @@ from .listing_titles import branded_title, source_brands
 from .walmart_listing_schema import plain, sections, feed_item, schema_errors, identifier_errors, precise_validator
 from .listing_skill_defaults import has_default, skill_default, length_fallback, fixed_origin, enforce_origin
 
-RULES_VERSION = 'listing-generation-v19-reconcile-family-type'
+RULES_VERSION = 'listing-generation-v20-source-variant-color-quantity'
 RULES = Path(__file__).with_name('listing_generation_rules.md').read_text()
 BLOCKED = re.compile(r'prop.?65|warranty|certif|nrtl|chemical|origin|warning|exempt|gtin|upc|ean|model|partnumber', re.I)
 PROTECTED = {'variantGroupId','variantAttributeNames','isPrimaryVariant','swatchImages','sku','productIdentifiers','inventory','price','msrp','SkuUpdate','ProductIdUpdate','fulfillmentCenterID'}
@@ -195,8 +195,15 @@ def source_facts(source, item, variant):
             own = [v for v in source['variants'] if v.get('sku') == variant['sku']]
             if len(own) != 1:
                 raise ListingAIError('来源子 SKU 不唯一，已停止生成')
+            if variant.get('asin') and own[0].get('asin') != variant['asin']:
+                raise ListingAIError('来源子 SKU 的 ASIN 与预上架记录不一致，已停止生成')
             if own[0].get('source_facts'):
                 facts['verified_source'] = own[0]['source_facts']
+            from .listing_source_attributes import attributes
+            merged = attributes({'attributes': content.get('attributes') or {},
+                                 'source_facts': {'raw_attributes': attributes(own[0])}})
+            if merged:
+                facts['content.attributes'] = merged
         elif source.get('sku') == variant['sku'] and source.get('source_facts'):
             facts['verified_source'] = source['source_facts']
     if source.get('source') == 'Saleyee':
@@ -369,12 +376,10 @@ def mapped_value(key, schema, facts):
         if v is not None:
             return v, [ref]
     attrs = facts.get('content.attributes') or facts.get('detail.attributes') or {}
-    compact = lambda v: re.sub(r'[^a-z0-9]', '', norm(v))
-    for name, value in attrs.items() if isinstance(attrs, dict) else []:
-        if compact(name) in {compact(key),compact(schema.get('title',''))} or (key in ('color','material') and norm(name) == 'main ' + key):
-            v = candidate_value(schema, value)
-            if v is not None:
-                return v, ['content.attributes' if 'content.attributes' in facts else 'detail.attributes']
+    from .listing_variants import source_value
+    v = source_value({'attributes': attrs}, key, schema)
+    if v is not None:
+        return v, ['content.attributes' if 'content.attributes' in facts else 'detail.attributes']
     dimensions = {'assembledProductLength':'assembledLength', 'assembledProductWidth':'assembledWidth',
                   'assembledProductHeight':'assembledHeight', 'assembledProductDepth':'assembledWidth',
                   'assembledProductWeight':'assembledWeight'}
@@ -427,6 +432,9 @@ def fill_row(row, schema, facts, ai, provenance):
             needed |= {k for k,s in props.items() if has_default(k,s)}
             if section == 'visible':
                 needed |= {'productName','brand','shortDescription','keyFeatures','mainImageUrl'}
+                axes = row['visible'].get('variantAttributeNames') or []
+                if isinstance(axes, list):
+                    needed |= {k for k in axes if isinstance(k, str)}
             for key in sorted(needed):
                 if key in PROTECTED or key not in props or fixed_origin(key,props[key]):
                     continue
