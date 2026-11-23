@@ -1,11 +1,19 @@
 <script setup lang="ts">
+import { computed } from 'vue';
 import type { ProductSummary } from '../api/types';
 import type { VariantPreviewState } from '../composables/useVariantPreview';
-import { money, text } from '../utils/display';
+import { money } from '../utils/display';
+import { previewVariantAttributes } from '../utils/variantPreview';
 import ProductImage from './ProductImage.vue';
 
-defineProps<{ product: ProductSummary; state: VariantPreviewState }>();
+const props = defineProps<{ product: ProductSummary; state: VariantPreviewState }>();
 defineEmits<{ retry: [] }>();
+const variants = computed(() =>
+  (props.state.variants ?? []).map((variant) => ({
+    ...variant,
+    previewAttributes: previewVariantAttributes(variant.attributes),
+  })),
+);
 </script>
 
 <template>
@@ -25,7 +33,7 @@ defineEmits<{ retry: [] }>();
         <span>图片 / SKU / 规格 / 售价 / 库存</span>
       </header>
       <ul class="variant-preview-list">
-        <li v-for="variant in state.variants" :key="variant.sku" class="variant-preview-item">
+        <li v-for="variant in variants" :key="variant.sku" class="variant-preview-item">
           <div class="variant-preview-image">
             <ProductImage
               :listing-id="product.source === 'Amazon' ? product.id : undefined"
@@ -39,10 +47,9 @@ defineEmits<{ retry: [] }>();
             <span v-if="variant.asin" class="variant-preview-asin mono"
               >ASIN · {{ variant.asin }}</span
             >
-            <div v-if="Object.keys(variant.attributes).length" class="variant-preview-attributes">
-              <span v-for="(value, key) in variant.attributes" :key="key">
-                <span class="muted">{{ key }}：</span
-                >{{ Array.isArray(value) ? value.map(text).join(' / ') : text(value) || '—' }}
+            <div v-if="variant.previewAttributes.length" class="variant-preview-attributes">
+              <span v-for="attribute in variant.previewAttributes" :key="attribute.label">
+                <span class="muted">{{ attribute.label }}：</span>{{ attribute.value }}
               </span>
             </div>
             <span v-else class="muted">未记录变体规格</span>

@@ -76,6 +76,29 @@ describe('search result variant display', () => {
     expect(await render({ loading: false, error: '', variants: [] })).toContain('暂无子变体记录');
   });
 
+  it('displays ERP-wrapped colors as readable text and omits temporary fields', async () => {
+    const html = await renderToString(
+      createSSRApp(ProductVariantsPreview, {
+        product,
+        state: {
+          expanded: true,
+          loading: false,
+          error: '',
+          variants: [
+            {
+              ...variants[0]!,
+              attributes: { Color: { val: ['White'] }, TMP_CHANGE_ATTR_KEY: { val: [''] } },
+            },
+          ],
+        },
+      }),
+    );
+    expect(html).toContain('颜色：');
+    expect(html).toContain('White');
+    expect(html).not.toContain('&quot;val&quot;');
+    expect(html).not.toContain('TMP_CHANGE_ATTR_KEY');
+  });
+
   it('keeps the expansion action outside the product card navigation link', async () => {
     const router = createRouter({
       history: createMemoryHistory(),
