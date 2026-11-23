@@ -135,10 +135,11 @@ def test_family_type_uses_submitted_history_and_rejects_incompatible_edits():
         synchronize_types(rows, history=history, preferred={'parent': 'Different'})
 
 
-def test_prepare_repairs_existing_blank_family_types_and_save_shares_choice(variant_publishing):
+@pytest.mark.parametrize('old_type', ['', 'End Tables'])
+def test_prepare_repairs_existing_blank_family_types_and_save_shares_choice(variant_publishing, old_type):
     c, catalog, _, _, batch, base, _ = variant_publishing
     doc = ready(variant_publishing)
-    doc['rows'][1]['product_type'] = ''
+    doc['rows'][1]['product_type'] = old_type
     with catalog.connect() as db:
         db.execute('UPDATE walmart_listing_documents SET rows_json=? WHERE batch_id=?',
                    (json.dumps(doc['rows']), batch['id']))
@@ -152,6 +153,44 @@ def test_prepare_repairs_existing_blank_family_types_and_save_shares_choice(vari
     assert response.status_code == 200, response.text
     assert {r['product_type'] for r in response.json()['rows']} == {'End Tables'}
     assert {r['product_type'] for r in c.get(base).json()['rows']} == {'End Tables'}
+
+
+def test_six_variant_legacy_mixed_types_are_reconciled_before_attributes():
+    rows, basis, schemas = family(('Red', 'Blue', 'Green', 'White', 'Black', 'Brown'))
+    for row, pt in zip(rows, ['', PT, 'End Tables', '', PT, '']):
+        row['product_type'] = pt
+        row['variant_manual'] = True
+        row['visible']['variantAttributeNames'] = ['color']
+    snapshot = copy.deepcopy(rows)
+    group = plan(rows, basis, schemas, apply=True)[0]
+    assert {r['product_type'] for r in rows} == {PT}
+    assert [r['visible']['color'] for r in rows] == ['Red', 'Blue', 'Green', 'White', 'Black', 'Brown']
+    assert not group['errors'], group['errors']
+    assert group['allowed_axes'] == ['color']
+    for before, after in zip(snapshot, rows):
+        assert before['platform_sku'] == after['platform_sku']
+        assert before['source_sku'] == after['source_sku']
+        assert before['visible']['mainImageUrl'] == after['visible']['mainImageUrl']
+    saved = copy.deepcopy(rows)
+    assert not plan(rows, basis, schemas, apply=True)[0]['errors']
+    assert rows == saved
+
+
+def test_family_type_tie_uses_primary_and_multiple_locked_types_still_block():
+    from catalog.listing_variants import synchronize_types
+    rows, _, _ = family()
+    rows[1]['product_type'] = 'End Tables'
+    rows[1]['visible']['isPrimaryVariant'] = 'Yes'
+    synchronize_types(rows)
+    assert {r['product_type'] for r in rows} == {'End Tables'}
+    rows[0]['product_type'] = PT
+    synchronize_types(rows, product_types={PT})
+    assert {r['product_type'] for r in rows} == {PT}
+    rows[1]['product_type'] = 'End Tables'
+    rows[0]['product_type'] = PT
+    original = copy.deepcopy(rows)
+    synchronize_types(rows, latest={r['platform_sku']: {'status': 'published'} for r in rows})
+    assert rows == original
 
 
 def test_duplicate_and_unsupported_discriminators_do_not_silently_become_standalone():
@@ -232,11 +271,17 @@ def test_actual_official_schema_axis_shape_and_local_swatch_urls(vault):
 
 @pytest.fixture
 def variant_publishing(tmp_path, vault):
+    return variant_publishing_fixture(tmp_path, vault)
+
+
+def variant_publishing_fixture(tmp_path, vault, count=2):
     app = create_app(tmp_path/'variants.db'); client = TestClient(app); catalog = app.state.catalog
     children = []
-    for n in range(2):
+    for n in range(count):
         child = product(n).variants[0].model_dump()
-        child.update(attributes={'Color': ['Red', 'Blue'][n]}, ean=['012345678905', '012345678912'][n],
+        digits = f'0123456789{n:01d}'
+        code = digits + str(-sum(int(d) * (3 if i % 2 == 0 else 1) for i, d in enumerate(digits)) % 10)
+        child.update(attributes={'Color': ['Red', 'Blue', 'Green', 'White', 'Black', 'Brown'][n]}, ean=code,
                      images=[f'https://example.com/{n}.jpg'], shipping_weight='10',
                      copy={'title': 'NewBrand Chair', 'description': 'A wooden chair', 'features': ['Wooden seat']})
         children.append(child)

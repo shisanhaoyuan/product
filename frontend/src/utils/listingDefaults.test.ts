@@ -33,6 +33,47 @@ function document(): ListingDocument {
 }
 
 describe('listing metadata defaults', () => {
+  it('repairs six legacy siblings with multiple saved types and blank categories', () => {
+    const doc = document();
+    doc.rows = ['', 'Chairs', 'Desks', '', 'Chairs', ''].map((type, n) => ({
+      ...structuredClone(doc.rows[0]!),
+      platform_sku: 'MY-child-' + n,
+      product_type: type,
+      variant_manual: true,
+    }));
+    doc.results[doc.rows[0]!.platform_sku] = { status: 'unsubmitted', message: '', errors: [] };
+    const before = doc.rows.map((row) =>
+      JSON.stringify([row.visible, row.orderable, row.identification]),
+    );
+    expect(applyListingDefaults(doc, types, [])).toBe(true);
+    expect(doc.rows.map((row) => row.product_type)).toEqual(Array(6).fill('Chairs'));
+    expect(
+      doc.rows.map((row) => JSON.stringify([row.visible, row.orderable, row.identification])),
+    ).toEqual(before);
+    expect(applyListingDefaults(doc, types, [])).toBe(false);
+  });
+  it('prefers the primary variant on a tie and preserves submitted routing', () => {
+    const doc = document();
+    doc.rows[1]!.listing_id = 'a';
+    doc.rows[0]!.product_type = 'Chairs';
+    doc.rows[1]!.product_type = 'Desks';
+    doc.rows[1]!.visible.isPrimaryVariant = 'Yes';
+    expect(applyListingDefaults(doc, types, [])).toBe(true);
+    expect(doc.rows.every((row) => row.product_type === 'Desks')).toBe(true);
+    doc.rows[0]!.product_type = 'Chairs';
+    doc.results.a = { status: 'published', message: '', errors: [] };
+    expect(applyListingDefaults(doc, types, [])).toBe(true);
+    expect(doc.rows.every((row) => row.product_type === 'Chairs')).toBe(true);
+  });
+  it('prefers an official saved type over a legacy type that is not in the taxonomy', () => {
+    const doc = document();
+    doc.rows[1]!.listing_id = 'a';
+    doc.rows[0]!.product_type = 'Old invalid type';
+    doc.rows[0]!.visible.isPrimaryVariant = 'Yes';
+    doc.rows[1]!.product_type = 'Chairs';
+    expect(applyListingDefaults(doc, types, [])).toBe(true);
+    expect(doc.rows.every((row) => row.product_type === 'Chairs')).toBe(true);
+  });
   it('inherits the family type even when the unclassified child is listed first', () => {
     const doc = document();
     doc.rows[1]!.listing_id = 'a';

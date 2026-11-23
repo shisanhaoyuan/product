@@ -81,9 +81,36 @@ export function applyListingDefaults(
   nodes: ShipNode[],
 ): boolean {
   let changed = false;
+  const editable = (row: ListingDocument['rows'][number]) =>
+    ['unsubmitted', 'failed', 'rejected', 'unpublished'].includes(
+      doc.results[row.platform_sku]?.status || 'unsubmitted',
+    );
   for (const lid of new Set(doc.rows.map((row) => row.listing_id))) {
     const family = doc.rows.filter((row) => row.listing_id === lid);
-    const existing = new Set(family.map((row) => row.product_type).filter(Boolean));
+    const fixed = new Set(
+      family
+        .filter((row) => !editable(row))
+        .map((row) => row.product_type)
+        .filter(Boolean),
+    );
+    if (fixed.size > 1) continue;
+    const counts = new Map<string, number>();
+    for (const row of family) {
+      const type = row.product_type.trim();
+      if (type) counts.set(type, (counts.get(type) || 0) + 1);
+    }
+    const valid = new Set(types.map((type) => type.name));
+    if ([...counts.keys()].some((type) => valid.has(type)))
+      for (const type of counts.keys()) if (!valid.has(type)) counts.delete(type);
+    const maximum = Math.max(0, ...counts.values());
+    const preferred = [...family]
+      .sort(
+        (a, b) =>
+          Number(b.visible.isPrimaryVariant === 'Yes') -
+          Number(a.visible.isPrimaryVariant === 'Yes'),
+      )
+      .find((row) => counts.get(row.product_type.trim()) === maximum)
+      ?.product_type.trim();
     const item = doc.basis.items.find((item) => item.listing_id === lid);
     const candidates = new Set(
       family
@@ -98,15 +125,11 @@ export function applyListingDefaults(
         })
         .filter(Boolean),
     );
-    const choices = existing.size ? existing : candidates;
+    const choices = fixed.size ? fixed : preferred ? new Set([preferred]) : candidates;
     if (choices.size !== 1) continue;
     const type = [...choices][0]!;
     for (const row of family) {
-      const status = doc.results[row.platform_sku]?.status;
-      if (
-        !row.product_type &&
-        (!status || ['failed', 'rejected', 'unpublished'].includes(status))
-      ) {
+      if (row.product_type !== type && editable(row)) {
         row.product_type = type;
         changed = true;
       }
@@ -136,8 +159,9 @@ export function setFamilyProductType(doc: ListingDocument, sku: string, type: st
   if (!current) return;
   const family = doc.rows.filter((row) => row.listing_id === current.listing_id);
   const editable = (row: typeof current) =>
-    !doc.results[row.platform_sku] ||
-    ['failed', 'rejected', 'unpublished'].includes(doc.results[row.platform_sku]!.status);
+    ['unsubmitted', 'failed', 'rejected', 'unpublished'].includes(
+      doc.results[row.platform_sku]?.status || 'unsubmitted',
+    );
   if (!editable(current)) throw new Error('当前商品已提交，不能修改类目');
   if (family.some((row) => !editable(row) && row.product_type !== type))
     throw new Error('同组已有提交商品，类目必须沿用已提交的商品类型');

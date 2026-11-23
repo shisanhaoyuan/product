@@ -4,6 +4,7 @@ import hashlib
 import itertools
 import json
 import re
+from collections import Counter
 from decimal import Decimal
 
 from referencing import Registry
@@ -32,12 +33,12 @@ SHARED_ATTRIBUTES = ('color', 'finish', 'size', 'sizeDescriptor', 'pattern', 'sh
                      'material', 'frameColor', 'bedSize')
 
 
-def synchronize_types(rows, latest=None, history=None, preferred=None):
+def synchronize_types(rows, latest=None, history=None, preferred=None, product_types=None):
     """A source parent has one store-specific product type, not one per child.
 
-    A unique existing choice repairs old blank children. Explicit edits update
-    the whole editable family. Submitted siblings retain their original type.
-    Conflicting old choices require one explicit choice rather than guessing.
+    Repair legacy independent choices as well as blanks. Prefer the most common
+    saved choice, then the primary variant and stable document order on a tie.
+    Explicit edits update the family; submitted siblings retain their type.
     """
     latest, history, preferred = latest or {}, history or {}, preferred or {}
     for lid in {r['listing_id'] for r in rows}:
@@ -45,15 +46,20 @@ def synchronize_types(rows, latest=None, history=None, preferred=None):
         locked = [r for r in members if latest.get(r['platform_sku'], {}).get('status', 'unsubmitted') not in EDITABLE]
         locked += [h['row'] for h in history.values() if h['row']['listing_id'] == lid and h['status'] not in EDITABLE]
         fixed = {r['product_type'] for r in locked if r['product_type']}
-        choices = {r['product_type'] for r in members if r['product_type']}
+        counts = Counter(r['product_type'].strip() for r in members if r['product_type'].strip())
+        valid = {pt: count for pt, count in counts.items() if pt in (product_types or ())}
+        if valid:
+            counts = Counter(valid)
         if lid in preferred:
             chosen = preferred[lid]
             if fixed and fixed != {chosen}:
                 raise ValueError('同组已有提交商品，类目必须沿用已提交的商品类型')
         elif len(fixed) == 1:
             chosen = next(iter(fixed))
-        elif not fixed and len(choices) == 1:
-            chosen = next(iter(choices))
+        elif not fixed and counts:
+            candidates = {pt for pt, count in counts.items() if count == max(counts.values())}
+            ordered = sorted(members, key=lambda r: r['visible'].get('isPrimaryVariant') != 'Yes')
+            chosen = next(r['product_type'].strip() for r in ordered if r['product_type'].strip() in candidates)
         else:
             continue
         for row in members:
@@ -153,7 +159,7 @@ def fill_shared_attributes(rows, basis, schemas, latest):
                 row['visible'][key] = copy.deepcopy(value)
 
 
-def plan(rows, basis, schemas, *, sources=None, history=None, latest=None, apply=False):
+def plan(rows, basis, schemas, *, sources=None, history=None, latest=None, product_types=None, apply=False):
     """Pure planner. Apply only to editable rows; validate locked/history members too.
 
     History is latest attempted row per store SKU, scoped to these source parents.
@@ -163,7 +169,7 @@ def plan(rows, basis, schemas, *, sources=None, history=None, latest=None, apply
     original = rows
     rows = copy.deepcopy(rows)
     if apply:
-        synchronize_types(rows, latest, history)
+        synchronize_types(rows, latest, history, product_types=product_types)
         fill_shared_attributes(rows, basis, schemas, latest)
     groups = []
     for item in basis['items']:
@@ -336,7 +342,9 @@ def context(db, rows, basis, version):
         for pt in {h['row']['product_type'] for h in history.values()} - set(schemas):
             if pt:
                 schemas[pt]=cache_value(db,bound,'spec',version,pt)
-    return dict(schemas=schemas, sources=sources, history=history)
+    taxonomy = cache_value(db, bound, 'taxonomy', age=3600) if bound else None
+    return dict(schemas=schemas, sources=sources, history=history,
+                product_types={t['name'] for t in taxonomy} if taxonomy else None)
 
 
 def synchronize(db, rows, basis, version, latest, *, apply=False):

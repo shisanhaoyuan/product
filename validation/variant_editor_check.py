@@ -17,7 +17,7 @@ import httpx
 import uvicorn
 from playwright.sync_api import expect, sync_playwright
 
-from test_listing_variants import variant_publishing
+from test_listing_variants import variant_publishing_fixture
 from test_walmart_accounts import vault
 from test_walmart_publishing import PT, ready
 from catalog.walmart_listing_schema import sections
@@ -29,7 +29,7 @@ def main():
         for key in ('CATALOG_AUTH_ENABLED', 'CATALOG_LISTING_AI_ENABLED', 'CATALOG_LISTING_RESULT_WORKER'):
             patch.setenv(key, '0')
         key = vault.__wrapped__(Path(directory), patch)
-        fixture = variant_publishing.__wrapped__(Path(directory), key)
+        fixture = variant_publishing_fixture(Path(directory), key, count=6)
         client, catalog, _, _, batch, base, remote = fixture
         shape = sections(remote.schema, PT)['visible']
         shape['properties'].update(finish={'type': 'string'}, size={'type': 'string'})
@@ -50,10 +50,11 @@ def main():
             return original_handler(request)
         client.app.state.walmart_publisher = WalmartPublishingClient(httpx.MockTransport(handler))
         doc = ready(fixture)
-        first, second = doc['rows']
-        # Reproduce a legacy batch with one classified child and one blank.
+        first, second, *_ = doc['rows']
+        # Six reviewed children: conflicting saved choices mixed with blanks.
         incomplete = copy.deepcopy(doc['rows'])
-        incomplete[1]['product_type'] = ''
+        for row, pt in zip(incomplete, [PT, other_type, '', '', PT, '']):
+            row['product_type'] = pt
         with catalog.connect() as db:
             db.execute('UPDATE walmart_listing_documents SET rows_json=?,validation_json=? WHERE batch_id=?',
                        (json.dumps(incomplete), '{}', batch['id']))
@@ -91,6 +92,11 @@ def main():
                 expect(detail).to_be_enabled()
                 type_picker = page.get_by_label('沃尔玛商品类型', exact=True)
                 expect(type_picker).to_have_value(PT)
+                expect(table).not_to_contain_text('沃尔玛商品类型不一致')
+                repaired = client.get(base).json()
+                assert len(repaired['rows']) == 6
+                assert {row['product_type'] for row in repaired['rows']} == {PT}
+                assert not repaired['variant_groups'][0]['errors'], repaired['variant_groups'][0]['errors']
                 detail.fill('Child editor Brown')
                 expect(table_first).to_have_value('Child editor Brown')
                 table_first.fill('Table Coffee')

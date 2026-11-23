@@ -287,6 +287,8 @@ def run_job(catalog, publisher, jid, ai):
             sources={i['listing_id']:json.loads(db.execute('SELECT data_json FROM current_listings WHERE id=?',
                 (i['listing_id'],)).fetchone()[0]) for i in basis['items']}
             types=cache_value(db,bound,'taxonomy',age=3600);nodes=cache_value(db,bound,'nodes',age=3600)
+            from .listing_variants import context
+            family_history=context(db,rows,basis,stored['version'])['history']
 
         def progress(sku,stage,message):
             if getattr(catalog, '_closing', False):
@@ -330,7 +332,8 @@ def run_job(catalog, publisher, jid, ai):
                     if value['platform_sku']==sku:
                         live_rows[n]=updated
                 from .listing_variants import synchronize_types
-                synchronize_types(live_rows,latest_results(db,job['batch_id']))
+                synchronize_types(live_rows,latest_results(db,job['batch_id']),family_history,
+                    {updated['listing_id']:updated['product_type']} if updated['product_type'] else None)
                 # Persist the chosen type for every sibling immediately, including
                 # children whose own attribute generation has not run or failed.
                 shared={r['platform_sku']:r['product_type'] for r in live_rows}
