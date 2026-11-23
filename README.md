@@ -131,6 +131,8 @@ python -m catalog --db /path/to/catalog-backup.db serve
 
 五人团队默认支持每人 2 个生成批次、共 10 个工作位，使用数据库队列及多 Key 请求池。配置五把 Key、查看队列和调整资源上限见 [并发与多 Key 配置](deploy/concurrency.md)。
 
+预上架列表的「AI 批量填充」「批量审核」「批量删除记录」共用本页勾选及全选。填充使用后台生成队列，亚马逊来源仍由本机浏览器采集；批量审核执行当前店铺类目资料校验，逐批展示通过数量、SKU 与具体字段原因。删除直接结束本地准备并移入回收站，不再要求先点击取消；恢复只恢复记录显示。已有沃尔玛提交记录的批次继续在审核进度处理。批量操作页面验收可运行 `python validation/prelisting_bulk_check.py`，接口使用模拟数据，不调用真实 AI 或刊登接口。
+
 Vue 前端、FastAPI API、数据库层和来源适配器各自独立，可由后续适配器增量更新。生产前端需要 Node 构建，构建后由 Python 同源提供页面和 API；运行不调用 AI，不产生模型费用。服务器通过 `CATALOG_DATABASE_URL` 配置 PostgreSQL，`CATALOG_IMAGE_STORAGE=filesystem` 与 `CATALOG_IMAGE_ROOT` 配置独立图片目录；本机兼容 `CATALOG_DB` 指定 SQLite 文件；数据模型保留 Schema 版本、命名空间、稳定外部身份和来源证据，方便后续 ERP API、定时任务和多平台接入。
 
 本机模式不启用登录；服务器团队模式必须启用登录和 HTTPS 并配置定期备份。三种角色均可读取和导出全库，暂不按店铺隔离。`CATALOG_IMPORT_TOKEN` 可额外保护导入 API，但不绕过登录和角色验证。默认拒绝跨源浏览器写入，不代理远程图片或执行导入 HTML。多用户高并发写入时可替换 repository 层为 PostgreSQL。

@@ -568,16 +568,20 @@ def normalize_document_titles(db, doc):
     return document(db,doc['batch_id'])
 
 
-def validate_document(catalog, bid, revision, remote, bound):
+def validate_document(catalog, bid, revision, remote, bound, *, allow_generation=True):
     """Shared, read-only upstream validation with guarded persistence afterward."""
     with catalog.connect() as db:
-        write_lock(db);doc=document(db,bid);revision_check(doc,revision)
+        write_lock(db);batch(db,bid);doc=document(db,bid);revision_check(doc,revision)
+        if not allow_generation and db.execute("SELECT 1 FROM listing_generation_jobs WHERE batch_id=? AND state IN ('awaiting_sources','queued','running')",(bid,)).fetchone():
+            raise HTTPException(409,'该批次正在采集或生成，请完成后再审核资料')
         doc=normalize_document_titles(db,doc)
         revision=doc['revision']
     with catalog.connect() as db:
         report=check_rows(db,doc,remote,bound)
     with catalog.connect() as db:
         write_lock(db);batch(db,bid);current=document(db,bid);revision_check(current,revision)
+        if not allow_generation and db.execute("SELECT 1 FROM listing_generation_jobs WHERE batch_id=? AND state IN ('awaiting_sources','queued','running')",(bid,)).fetchone():
+            raise HTTPException(409,'审核期间已开始生成资料，请生成完成后重新审核')
         unchanged_sources(db,current)
         _,live=binding(db,bound['store_id'],bound['partner_id'])
         from .listing_prerequisites import resource_digest
@@ -816,7 +820,7 @@ def publishing_routes(catalog):
         try:
             bound,session=context(request,bid)
             with session as remote:
-                report=validate_document(catalog,bid,data.revision,remote,bound)
+                report=validate_document(catalog,bid,data.revision,remote,bound,allow_generation=False)
             with catalog.connect() as db:
                 event(db,bid,request,'validate',{'valid_count':report['valid_count'],'revision':data.revision})
                 return public_document(db,bid)

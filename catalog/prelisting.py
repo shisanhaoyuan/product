@@ -589,16 +589,19 @@ def prelisting_routes(catalog):
             # Validate the whole selection first, so mixed-status requests change nothing.
             for bid in data.ids:
                 current=batch(db,bid)
-                if current['status']!='cancelled':
-                    raise HTTPException(409,'只能删除或恢复已取消的批次，请重新筛选')
                 if db.execute("SELECT 1 FROM walmart_listing_attempts WHERE batch_id=? AND state<>'rejected'",(bid,)).fetchone():
-                    raise HTTPException(409,'所选批次有沃尔玛提交记录，不能删除')
-                if db.execute("SELECT 1 FROM listing_generation_jobs WHERE batch_id=? AND state IN ('queued','running')",(bid,)).fetchone():
-                    raise HTTPException(409,'所选批次仍在生成资料，请等待任务结束')
+                    raise HTTPException(409,'所选批次已有沃尔玛提交记录，请在审核进度中处理，不能直接删除')
             at=datetime.now(timezone.utc).isoformat();changed=0
             for bid in data.ids:
                 exists=db.execute('SELECT 1 FROM prelisting_batch_trash WHERE batch_id=?',(bid,)).fetchone()
                 if data.action=='delete' and not exists:
+                    # End local preparation atomically with hiding the record.
+                    # Old workers and browser receipts must never resume deleted batches.
+                    db.execute("UPDATE prelisting_batches SET status='cancelled',updated_at=? WHERE id=?",(at,bid))
+                    db.execute('DELETE FROM prelisting_claims WHERE batch_id=?',(bid,))
+                    db.execute("""UPDATE listing_generation_jobs SET state='interrupted',message=?,updated_at=?
+                        WHERE batch_id=? AND state IN ('awaiting_sources','queued','running')""",
+                        ('批次已删除，资料生成已停止；已保存内容保留',int(datetime.now(timezone.utc).timestamp()),bid))
                     db.execute('INSERT INTO prelisting_batch_trash VALUES(?,?,?)',(bid,at,actor(request)))
                 elif data.action=='restore' and exists:
                     db.execute('DELETE FROM prelisting_batch_trash WHERE batch_id=?',(bid,))

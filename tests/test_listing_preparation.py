@@ -219,15 +219,15 @@ def test_store_default_brand_is_persistent_scoped_and_does_not_change_batches(pu
     assert next(row for row in c.get('/api/listing-stores').json() if row['id']==sid)['default_brand']==''
 
 
-def test_cancelled_batch_cannot_be_deleted_while_generation_is_active(publishing):
+def test_delete_stops_remaining_generation_of_a_cancelled_batch(publishing):
     c,catalog,*_,b,base,remote=publishing
     job=start_job(catalog,c.app.state.walmart_publisher,b['id'],ai=AI(),schedule=False)
     assert c.post(f"/api/prelisting/batches/{b['id']}/action",json={'action':'cancel'}).status_code==200
     payload=dict(ids=[b['id']],action='delete')
-    assert c.post('/api/prelisting/batches/bulk-action',json=payload).status_code==409
-    with catalog.connect() as db:
-        db.execute("UPDATE listing_generation_jobs SET state='interrupted' WHERE id=?",(job['id'],))
     assert c.post('/api/prelisting/batches/bulk-action',json=payload).json()['changed']==1
+    with catalog.connect() as db:
+        assert db.execute('SELECT state FROM listing_generation_jobs WHERE id=?',(job['id'],)).fetchone()[0]=='interrupted'
+    assert c.post('/api/prelisting/batches/bulk-action',json=payload).json()['changed']==0
 
 
 def test_pool_atomic_assignment_equivalent_dedup_ownership_and_cross_store_reuse(publishing):

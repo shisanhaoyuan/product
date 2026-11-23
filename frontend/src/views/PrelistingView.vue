@@ -9,6 +9,14 @@ import PrelistingPreview from '../components/PrelistingPreview.vue';
 import WalmartListingEditor from '../components/WalmartListingEditor.vue';
 import FilterSelect from '../components/FilterSelect.vue';
 import AppIcon from '../components/AppIcon.vue';
+import { publishingApi } from '../api/publishing';
+import {
+  activeGeneration,
+  forEachBatch,
+  generationResult,
+  runBatchPreparation,
+} from '../utils/batchPreparation';
+import type { BatchPreparationResult } from '../utils/batchPreparation';
 const route = useRoute();
 const { auth } = useAuth();
 const canEdit = computed(
@@ -36,6 +44,105 @@ const allSelected = computed(
   () => !!selectable.value.length && selectable.value.every((id) => selected.value.includes(id)),
 );
 const partlySelected = computed(() => !!selected.value.length && !allSelected.value);
+const bulkRunning = ref(false),
+  preparationMode = ref<'generate' | 'validate'>('generate'),
+  preparationResults = ref<BatchPreparationResult[]>([]);
+const preparationNames = ref<Record<string, string>>({});
+const preparationLabels: Record<BatchPreparationResult['state'], string> = {
+  waiting: '等待开始',
+  starting: '处理中',
+  awaiting_sources: '等待采集',
+  queued: '已排队',
+  running: 'AI 生成中',
+  complete: '已完成',
+  review: '需要修正',
+  failed: '未完成',
+  skipped: '未执行',
+};
+let preparationController: AbortController | undefined;
+let preparationTimer: ReturnType<typeof setTimeout> | undefined;
+let pollingPreparation = false;
+let live = true;
+function updatePreparation(result: BatchPreparationResult) {
+  if (!live) return;
+  preparationResults.value = preparationResults.value.map((row) =>
+    row.id === result.id ? result : row,
+  );
+  if (activeGeneration(result.state) && !preparationTimer && !pollingPreparation)
+    preparationTimer = setTimeout(() => void pollPreparation(), 2500);
+}
+async function pollPreparation() {
+  if (pollingPreparation || !live) return;
+  pollingPreparation = true;
+  clearTimeout(preparationTimer);
+  preparationTimer = undefined;
+  try {
+    await forEachBatch(
+      preparationResults.value.filter((row) => activeGeneration(row.state)),
+      async (row) => {
+        try {
+          const value = await publishingApi.generation(row.id);
+          if (
+            !live ||
+            !preparationResults.value.some(
+              (current) => current.id === row.id && current.jobId === row.jobId,
+            )
+          )
+            return;
+          if (value.job && value.job.id === row.jobId)
+            updatePreparation(generationResult(row.id, value.job));
+          else
+            updatePreparation({
+              ...row,
+              state: 'failed',
+              message: '生成任务已变化，请打开批次查看最新结果',
+            });
+        } catch (error) {
+          if (
+            live &&
+            preparationResults.value.some(
+              (current) => current.id === row.id && current.jobId === row.jobId,
+            )
+          )
+            updatePreparation({
+              ...row,
+              state: 'failed',
+              message: `进度查询未完成：${errorMessage(error)}；可打开批次查看`,
+            });
+        }
+      },
+    );
+  } finally {
+    pollingPreparation = false;
+  }
+  if (live && preparationResults.value.some((row) => activeGeneration(row.state)))
+    preparationTimer = setTimeout(() => void pollPreparation(), 2500);
+}
+async function prepareSelected(mode: 'generate' | 'validate') {
+  if (busy.value || bulkRunning.value || !selected.value.length) return;
+  clearTimeout(preparationTimer);
+  preparationTimer = undefined;
+  preparationController?.abort();
+  const current = new AbortController();
+  preparationController = current;
+  const ids = [...selected.value];
+  preparationMode.value = mode;
+  preparationNames.value = Object.fromEntries(
+    (data.value?.items || []).map((row) => [row.id, `${row.store} / ${row.brand}`]),
+  );
+  preparationResults.value = ids.map((id) => ({ id, state: 'waiting', message: '等待开始' }));
+  bulkRunning.value = true;
+  error.value = '';
+  message.value = '';
+  try {
+    await runBatchPreparation(ids, mode, current.signal, updatePreparation);
+  } finally {
+    if (live) {
+      bulkRunning.value = false;
+      if (mode === 'generate') void pollPreparation();
+    }
+  }
+}
 function toggle(id: string) {
   selected.value = selected.value.includes(id)
     ? selected.value.filter((value) => value !== id)
@@ -44,9 +151,9 @@ function toggle(id: string) {
 function togglePage() {
   selected.value = allSelected.value ? [] : [...selectable.value];
 }
-function confirmBulk() {
-  if (busy.value || !selected.value.length) return;
-  bulkIds.value = [...selected.value];
+function confirmBulk(ids = selected.value) {
+  if (busy.value || bulkRunning.value || !ids.length) return;
+  bulkIds.value = [...ids];
   bulkMode.value = trash.value ? 'restore' : 'delete';
   bulkDialog.value?.showModal();
 }
@@ -57,6 +164,10 @@ async function bulkAction() {
   try {
     const result = await prelistingApi.bulkAction([...bulkIds.value], bulkMode.value);
     bulkDialog.value?.close();
+    if (bulkMode.value === 'delete')
+      preparationResults.value = preparationResults.value.filter(
+        (row) => !bulkIds.value.includes(row.id),
+      );
     await load();
     message.value =
       bulkMode.value === 'delete'
@@ -112,7 +223,7 @@ async function load() {
     if (!current.signal.aborted) loading.value = false;
   }
 }
-async function act(action: 'confirm' | 'cancel' | 'upgrade_skus') {
+async function act(action: 'confirm' | 'upgrade_skus') {
   if (!batch.value || busy.value) return;
   busy.value = true;
   error.value = '';
@@ -122,9 +233,7 @@ async function act(action: 'confirm' | 'cancel' | 'upgrade_skus') {
     message.value =
       action === 'upgrade_skus'
         ? '目标 SKU 已升级为字母和数字混合尾码。'
-        : action === 'confirm'
-          ? '批次已确认。请在商品刊登资料中校验并提交沃尔玛。'
-          : '批次已取消，可以重新选择商品创建。';
+        : '批次已确认。请在商品刊登资料中校验并提交沃尔玛。';
   } catch (e) {
     error.value = errorMessage(e);
   } finally {
@@ -138,6 +247,7 @@ function next(offset: number) {
 watch(
   () => route.fullPath,
   () => {
+    if (route.params.id) preparationController?.abort();
     page.value = 1;
     void load();
   },
@@ -163,6 +273,9 @@ onMounted(async () => {
   }
 });
 onBeforeUnmount(() => {
+  live = false;
+  preparationController?.abort();
+  clearTimeout(preparationTimer);
   controller?.abort();
   clearTimeout(searchTimer);
 });
@@ -244,7 +357,7 @@ onBeforeUnmount(() => {
     <div class="section-body">
       <p v-if="legacySkuBatch" class="notice notice-space" role="status">
         此批次未按新规则分配目标店铺 SKU。请先在店铺管理中设置目标店铺唯一的两位编码，
-        再取消此批次并重新创建。新批次将生成 MY + 两位店铺编码 + 六位随机字母和数字。
+        再删除此批次并重新创建。新批次将生成 MY + 两位店铺编码 + 六位随机字母和数字。
         <RouterLink to="/listing-stores">前往店铺管理</RouterLink>
       </p>
       <p v-if="needsMixedSku" class="notice notice-space" role="status">
@@ -262,8 +375,10 @@ onBeforeUnmount(() => {
         <summary>查看创建批次时的来源预览</summary>
         <PrelistingPreview :preview="batch.preview" />
       </details>
-      <div v-if="canEdit && batch.status !== 'cancelled'" class="plan-footer">
-        <button class="btn" :disabled="busy" @click="act('cancel')">取消批次</button>
+      <div v-if="canEdit && !batch.deleted_at" class="plan-footer">
+        <button class="btn" :disabled="busy || bulkRunning" @click="confirmBulk([batch.id])">
+          删除记录
+        </button>
       </div>
     </div>
   </section>
@@ -274,19 +389,88 @@ onBeforeUnmount(() => {
           type="checkbox"
           :checked="allSelected"
           :indeterminate="partlySelected"
-          :disabled="!selectable.length"
+          :disabled="busy || bulkRunning || !selectable.length"
           @change="togglePage"
         />全选本页记录</label
       >
       <span class="muted"
         >已选 {{ selected.length }} 条{{
-          trash ? ' · 恢复后仍为已取消' : ' · 所有状态均可勾选；删除前需取消批次'
+          trash ? ' · 恢复后仍为已取消' : ' · 填充、审核和删除共用所选记录'
         }}</span
       >
-      <button class="btn small" :disabled="busy || !selected.length" @click="confirmBulk">
+      <button
+        v-if="!trash"
+        class="btn batch-generate"
+        :disabled="busy || bulkRunning || !selected.length"
+        @click="prepareSelected('generate')"
+      >
+        AI 批量填充
+      </button>
+      <button
+        v-if="!trash"
+        class="btn batch-validate"
+        :disabled="busy || bulkRunning || !selected.length"
+        @click="prepareSelected('validate')"
+      >
+        批量审核
+      </button>
+      <button
+        class="btn small"
+        :disabled="busy || bulkRunning || !selected.length"
+        @click="confirmBulk()"
+      >
         {{ trash ? '批量恢复记录' : '批量删除记录' }}
       </button>
     </div>
+    <section
+      v-if="preparationResults.length && !trash"
+      class="batch-preparation"
+      aria-label="批量处理结果"
+      aria-live="polite"
+    >
+      <div class="batch-preparation-heading">
+        <strong>{{
+          preparationMode === 'generate' ? 'AI 批量填充进度' : '批量资料审核结果'
+        }}</strong>
+        <span
+          >{{ preparationResults.length }} 个批次 ·
+          {{
+            preparationResults.filter((row) =>
+              ['complete', 'review', 'failed', 'skipped'].includes(row.state),
+            ).length
+          }}
+          个已结束</span
+        >
+        <button v-if="bulkRunning" class="btn small" @click="preparationController?.abort()">
+          停止后续操作
+        </button>
+      </div>
+      <p class="muted">
+        {{
+          preparationMode === 'generate'
+            ? '已入队任务在后台继续执行；亚马逊商品沿用本机浏览器采集。'
+            : '按沃尔玛类目规则校验当前已保存资料，未通过的项目会逐批列出。'
+        }}
+      </p>
+      <article v-for="result in preparationResults" :key="result.id" class="batch-preparation-row">
+        <div>
+          <RouterLink :to="'/prelisting/' + result.id"
+            >{{ preparationNames[result.id] || result.id }} ↗</RouterLink
+          >
+          <small>批次 {{ result.id }}</small>
+        </div>
+        <span class="batch-preparation-state" :class="result.state">{{
+          preparationLabels[result.state]
+        }}</span>
+        <p>{{ result.message }}</p>
+        <details v-if="result.errors?.length">
+          <summary>查看 {{ result.errors.length }} 项具体原因</summary>
+          <ul>
+            <li v-for="issue in result.errors" :key="issue">{{ issue }}</li>
+          </ul>
+        </details>
+      </article>
+    </section>
     <div class="table-scroll">
       <table class="data-table">
         <thead>
@@ -308,6 +492,7 @@ onBeforeUnmount(() => {
                 type="checkbox"
                 :aria-label="`选择批次 ${row.id}`"
                 :checked="selected.includes(row.id)"
+                :disabled="busy || bulkRunning"
                 @change="toggle(row.id)"
               />
             </td>
@@ -350,11 +535,11 @@ onBeforeUnmount(() => {
     </div>
   </section>
   <dialog ref="bulkDialog" class="batch-confirm" @cancel.prevent="!busy && bulkDialog?.close()">
-    <h3>{{ bulkMode === 'delete' ? '删除已取消记录' : '恢复记录' }}</h3>
+    <h3>{{ bulkMode === 'delete' ? '删除记录' : '恢复记录' }}</h3>
     <p>
       {{
         bulkMode === 'delete'
-          ? `将所选 ${bulkIds.length} 条记录移到回收站。仅已取消且符合删除条件的批次可删除；若包含不符合条件的记录，本次不会删除任何记录。商品资料和已分配编码会保留。`
+          ? `将所选 ${bulkIds.length} 条记录移到回收站，并停止对应的本地生成任务，无需先取消批次。商品资料和已分配编码会保留。包含已有沃尔玛提交记录的批次时，本次不会删除任何记录。`
           : `恢复所选 ${bulkIds.length} 条记录的列表显示；不会恢复上架任务。`
       }}
     </p>
@@ -367,6 +552,15 @@ onBeforeUnmount(() => {
   </dialog>
 </template>
 <style scoped>
+@media (max-width: 800px) {
+  .page-heading {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .page-heading > .actions {
+    flex-wrap: wrap;
+  }
+}
 .batch-filters {
   display: grid;
   grid-template-columns: minmax(150px, 190px) minmax(150px, 190px) minmax(240px, 1fr) auto;
@@ -471,6 +665,87 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+}
+.batch-generate {
+  background: #e7effa;
+  border-color: #c2d4eb;
+  color: #345b88;
+}
+.batch-validate {
+  background: #e7f3ef;
+  border-color: #c4dfd4;
+  color: #2f6b59;
+}
+.batch-preparation {
+  margin: 16px;
+  padding: 18px;
+  border: 1px solid #d7e3ee;
+  border-radius: 12px;
+  background: #f5f8fc;
+}
+.batch-preparation-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.batch-preparation-heading strong {
+  font-size: 16px;
+}
+.batch-preparation-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto;
+  gap: 8px 16px;
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px solid #e0e8f0;
+  border-radius: 10px;
+  background: #fff;
+  overflow-wrap: anywhere;
+}
+.batch-preparation-row small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+}
+.batch-preparation-row p,
+.batch-preparation-row details {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+.batch-preparation-row summary {
+  cursor: pointer;
+  color: #466f96;
+}
+.batch-preparation-row ul {
+  padding-left: 20px;
+}
+.batch-preparation-state {
+  align-self: start;
+  border-radius: 6px;
+  padding: 4px 8px;
+  background: #edf2f7;
+  color: #4c6d8d;
+  font-size: 13px;
+}
+.batch-preparation-state.complete {
+  background: #e7f3ec;
+  color: #347252;
+}
+.batch-preparation-state.failed,
+.batch-preparation-state.review {
+  background: #fceceb;
+  color: #a64442;
+}
+@media (max-width: 540px) {
+  .batch-preparation {
+    margin: 10px;
+    padding: 12px;
+  }
+  .batch-preparation-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
 }
 .batch-confirm {
   max-width: 480px;
