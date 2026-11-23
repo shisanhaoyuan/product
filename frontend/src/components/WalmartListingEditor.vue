@@ -1169,49 +1169,61 @@ onBeforeUnmount(() => {
             <option value="issues">资料待补齐</option>
             <option value="failed">处理异常</option>
           </select>
-          <button
+          <div
             v-for="row in rowsToShow"
             :key="row.platform_sku"
             class="listing-sku-card"
             :class="{ active: row.platform_sku === activeSku }"
-            :disabled="busy"
-            aria-haspopup="dialog"
-            :aria-label="'查看商品档案 ' + row.source_sku"
-            @click="
-              activeSku = row.platform_sku;
-              detailRow = row;
-            "
+            @click="!busy && (activeSku = row.platform_sku)"
           >
-            <ProductImage
-              :src="String(row.visible.mainImageUrl || '')"
-              image-class="listing-sku-image"
-            />
-            <span
-              ><strong>{{ row.source_sku }}</strong
-              ><small>{{ row.platform_sku }}</small
-              ><span class="listing-sku-title">{{
-                plain(String(row.visible.productName || '未填写标题'))
-              }}</span
-              ><small class="listing-sku-detail-hint">点击查看商品档案</small
-              ><small
-                :class="{
-                  'seller-risk-label':
-                    ['failed', 'unpublished', 'rejected'].includes(
-                      doc.results[row.platform_sku]?.status || '',
-                    ) || doc.validation.rows?.[row.platform_sku]?.valid === false,
-                }"
-                >{{
-                  doc.results[row.platform_sku]
-                    ? statusLabels[doc.results[row.platform_sku].status] || '待确认'
-                    : doc.validation.rows?.[row.platform_sku]?.valid === false
-                      ? '资料待补齐'
-                      : doc.validation.rows?.[row.platform_sku]?.valid
-                        ? '校验通过'
-                        : '未校验'
-                }}</small
-              ></span
+            <button
+              type="button"
+              class="listing-sku-select"
+              :disabled="busy"
+              :aria-label="'填写变体 ' + row.source_sku"
+              :aria-current="row.platform_sku === activeSku ? 'true' : undefined"
+              @click.stop="activeSku = row.platform_sku"
             >
-          </button>
+              <ProductImage
+                :src="String(row.visible.mainImageUrl || '')"
+                image-class="listing-sku-image"
+              />
+              <span
+                ><strong>{{ row.source_sku }}</strong
+                ><small>{{ row.platform_sku }}</small
+                ><span class="listing-sku-title">{{
+                  plain(String(row.visible.productName || '未填写标题'))
+                }}</span
+                ><small
+                  :class="{
+                    'seller-risk-label':
+                      ['failed', 'unpublished', 'rejected'].includes(
+                        doc.results[row.platform_sku]?.status || '',
+                      ) || doc.validation.rows?.[row.platform_sku]?.valid === false,
+                  }"
+                  >{{
+                    doc.results[row.platform_sku]
+                      ? statusLabels[doc.results[row.platform_sku].status] || '待确认'
+                      : doc.validation.rows?.[row.platform_sku]?.valid === false
+                        ? '资料待补齐'
+                        : doc.validation.rows?.[row.platform_sku]?.valid
+                          ? '校验通过'
+                          : '未校验'
+                  }}</small
+                ></span
+              >
+            </button>
+            <button
+              type="button"
+              class="listing-sku-detail-link"
+              :disabled="busy"
+              aria-haspopup="dialog"
+              :aria-label="'查看商品档案 ' + row.source_sku"
+              @click.stop="detailRow = row"
+            >
+              查看商品档案
+            </button>
+          </div>
           <p v-if="!rowsToShow.length" class="muted">没有符合条件的商品</p>
         </aside>
         <main v-if="current" class="listing-form-main">
