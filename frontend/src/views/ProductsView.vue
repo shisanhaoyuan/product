@@ -971,45 +971,52 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 12px 18px;
+  gap: 8px 12px;
   max-width: calc(100vw - 36px);
-  padding: 12px 16px;
-  border: 1px solid #cbdbe9;
-  border-radius: 16px;
-  background: #f0f6fcf5;
-  box-shadow: 0 6px 28px #34536b26;
-  backdrop-filter: blur(12px);
+  padding: 8px 10px;
+  border: 1px solid #cbdbe980;
+  border-radius: 12px;
+  background: #f0f6fc80;
+  box-shadow: 0 3px 14px #34536b14;
+  pointer-events: none;
   color: #456078;
-  font-size: 14px;
+  font-size: 12px;
 }
 .page-size-control {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 6px;
   font-weight: 600;
 }
 .page-size-control select {
-  width: 104px;
-  min-height: 38px;
-  padding: 6px 10px;
+  width: 82px;
+  height: 30px;
+  min-height: 30px;
+  padding: 4px 7px;
   border: 1px solid #bfd0e1;
-  border-radius: 9px;
-  background: #fff;
+  border-radius: 7px;
+  background: #ffffffb3;
   color: #34536b;
   font: inherit;
   cursor: pointer;
+  pointer-events: auto;
 }
+.page-size-control select:hover,
+.page-size-control select:focus-visible { background: #fff; }
 .page-size-control select:focus-visible {
   outline: 2px solid #638bb1;
   outline-offset: 2px;
 }
-.product-pagination-dock .page-buttons { gap: 10px; }
-.product-pagination-dock .btn { min-width: 36px; min-height: 36px; padding: 7px; }
-.product-pagination-space { height: 90px; }
+.product-pagination-dock .page-buttons { gap: 6px; }
+.product-pagination-dock .btn { min-width: 28px; width: 28px; height: 28px; min-height: 28px; padding: 5px; background: #ffffffb3; pointer-events: auto; }
+.product-pagination-dock .btn:hover { background: #fff; }
+.product-pagination-dock .btn .icon { width: 16px; height: 16px; }
+.product-pagination-dock .page-number { height: 26px; font-size: 12px; background: #edf3fa80; }
+.product-pagination-space { height: 70px; }
 @media (max-width: 480px) {
-  .product-pagination-dock { left: 10px; max-width: calc(100vw - 20px); gap: 8px 12px; padding: 10px 12px; }
+  .product-pagination-dock { left: 10px; max-width: calc(100vw - 20px); gap: 6px 10px; padding: 7px 9px; }
   .page-total { font-size: 12px; }
-  .product-pagination-space { height: 140px; }
+  .product-pagination-space { height: 100px; }
 }
 .filter-select.address-filter {
   width: 280px;
