@@ -85,14 +85,9 @@ describe('manual variant review in one product table', () => {
     expect(data[1].visible.color).toBeUndefined();
     expect(data[0].variant_manual).toBeUndefined();
   });
-  it('shows all selected axes and supported common attributes without duplicates', () => {
-    expect(
-      variantEditorColumns(['finish'], {
-        color: { type: 'string' },
-        finish: { type: 'string' },
-        size: { type: 'string' },
-      }),
-    ).toEqual(['finish', 'color', 'size']);
-    expect(variantEditorColumns(['old'], {})).toEqual(['old']);
+  it('shows only the selected dimensions, without adding fixed color/finish/material columns', () => {
+    expect(variantEditorColumns(['color'])).toEqual(['color']);
+    expect(variantEditorColumns(['size', 'finish', 'size'])).toEqual(['size', 'finish']);
+    expect(variantEditorColumns([])).toEqual([]);
   });
 });

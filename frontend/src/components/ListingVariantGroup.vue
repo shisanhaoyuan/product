@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import type { ListingVariantGroup, ListingRow, JsonSchema } from '../api/publishing';
+import type { ListingVariantGroup, ListingRow, ListingSpec } from '../api/publishing';
 import ListingSchemaField from './ListingSchemaField.vue';
 import { variantEditorColumns } from '../utils/listingVariants';
 const props = defineProps<{
   group: ListingVariantGroup;
   rows: ListingRow[];
   activeSku: string;
-  schema?: JsonSchema;
+  specs: Record<string, ListingSpec>;
   labels: Record<string, string>;
   disabled: boolean;
   editableSkus: string[];
@@ -32,7 +32,11 @@ const members = computed(() =>
     values: props.rows.find((r) => r.platform_sku === m.platform_sku)?.visible || m.values,
   })),
 );
-const columns = computed(() => variantEditorColumns(axes.value, props.schema?.properties || {}));
+const columns = computed(() => variantEditorColumns(axes.value));
+function fieldSchema(sku: string, key: string) {
+  const row = props.rows.find((r) => r.platform_sku === sku);
+  return row ? props.specs[row.product_type]?.sections.visible?.properties?.[key] : undefined;
+}
 const manual = computed(
   () =>
     props.group.manual ||
@@ -73,7 +77,7 @@ function display(value: unknown) {
     <div class="skill-mapping">
       <strong>自动匹配规则</strong>
       <p>优先同名属性，再匹配可自定义字段；必要时用 ** 合并同一规格的原始属性值。</p>
-      <p>生成后可在下方同一张表中复验和修改 Color、Finish、Size 等参数，无需逐个切换子 SKU。</p>
+      <p>下表仅显示已选的规格区分属性，与子商品编辑区共享数据；在任一处修改都会同步。</p>
       <p v-if="manual">
         已进入人工复验：保存、校验及再次生成保留人工修改；相同规格组合会提示修正。
       </p>
@@ -133,7 +137,7 @@ function display(value: unknown) {
     >
     <div class="table-heading">
       <strong>规格参数 · 同页编辑全部子 SKU</strong
-      ><small>带“分组”标记的列用于区分规格；其余列也可独立复验。表格可左右滚动。</small>
+      ><small>只显示当前商品用于区分规格的属性；普通属性在子商品编辑区填写。表格可左右滚动。</small>
     </div>
     <div class="variant-table-wrap">
       <table>
@@ -170,10 +174,10 @@ function display(value: unknown) {
               :data-listing-path="member.platform_sku === activeSku ? 'visible.' + key : undefined"
             >
               <ListingSchemaField
-                v-if="member.in_batch && schema?.properties?.[key]"
+                v-if="member.in_batch && fieldSchema(member.platform_sku, key)"
                 :key="member.platform_sku + '.' + key"
                 :name="key"
-                :schema="schema.properties[key]"
+                :schema="fieldSchema(member.platform_sku, key)!"
                 :labels="labels"
                 :model-value="member.values[key]"
                 :path="'variants.' + member.platform_sku + '.visible.' + key"
@@ -185,7 +189,7 @@ function display(value: unknown) {
               <small v-if="!member.in_batch || !editableSkus.includes(member.platform_sku)"
                 >已提交，仅查看</small
               >
-              <small v-else-if="!schema?.properties?.[key]">请刷新类目属性后编辑</small>
+              <small v-else-if="!fieldSchema(member.platform_sku, key)">请刷新类目属性后编辑</small>
             </td>
             <td>{{ member.platform_sku === primary ? '主变体' : '子变体' }}</td>
           </tr>

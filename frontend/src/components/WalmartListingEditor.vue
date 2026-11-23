@@ -679,7 +679,7 @@ function fieldIssues(key: string, section = 'Visible') {
 }
 function update(section: 'visible' | 'orderable', key: string, value: unknown) {
   if (!current.value) return;
-  if (section === 'visible' && variantGroup.value && (reviewedVariantAttributes.includes(key) || (current.value.visible.variantAttributeNames as string[] || []).includes(key))) {
+  if (section === 'visible' && variantGroup.value && (reviewedVariantAttributes.includes(key) || variantGroup.value.axes.includes(key) || (current.value.visible.variantAttributeNames as string[] || []).includes(key))) {
     setVariantValue(current.value.platform_sku,key,value);
     return;
   }
@@ -1392,7 +1392,7 @@ onBeforeUnmount(() => {
               :group="variantGroup"
               :rows="doc.rows"
               :active-sku="activeSku"
-              :schema="currentSpec?.sections.visible"
+              :specs="specs"
               :labels="doc.labels"
               :disabled="busy || generating || allocatingCodes || !canEdit"
               :editable-skus="eligible.map((row) => row.platform_sku)"
@@ -1806,7 +1806,7 @@ onBeforeUnmount(() => {
                 :schema="visibleProperties[key]"
                 :labels="doc.labels"
                 :model-value="current.visible[key]"
-                :disabled="locked || fixedOrigin(key, visibleProperties[key])"
+                :disabled="busy || locked || fixedOrigin(key, visibleProperties[key])"
                 :required="required.includes(key)"
                 :path="'visible.' + key"
                 :issues="dirty ? [] : fieldIssues(key)"

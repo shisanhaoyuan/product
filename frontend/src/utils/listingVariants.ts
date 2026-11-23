@@ -1,4 +1,4 @@
-import type { ListingVariantGroup, ListingRow, JsonSchema } from '../api/publishing';
+import type { ListingVariantGroup, ListingRow } from '../api/publishing';
 
 export function completeGroupCandidates(
   valid: string[],
@@ -38,8 +38,8 @@ export const reviewedVariantAttributes = [
   'bedSize',
 ];
 
-export function variantEditorColumns(axes: string[], properties: Record<string, JsonSchema>) {
-  return [...new Set([...axes, ...reviewedVariantAttributes.filter((key) => properties[key])])];
+export function variantEditorColumns(axes: string[]) {
+  return [...new Set(axes)];
 }
 
 export function reviewVariantValue(

@@ -215,3 +215,23 @@ def test_api_saves_multirow_manual_values_and_revalidates_without_overwriting(va
     missing = c.get(base).json()['variant_groups'][0]
     assert not missing['spec_ready'] and not missing['allowed_axes']
     assert any('缓存已过期' in e['message'] for e in missing['errors'])
+
+
+def test_shared_child_attributes_survive_save_reopen_and_validation(variant_publishing):
+    c, _, _, _, _, base, _ = variant_publishing
+    doc = ready(variant_publishing)
+    first, second = doc['rows']
+    for row in doc['rows']:
+        row['variant_manual'] = True
+    first['visible']['color'] = 'User Brown'
+    first['variant_reviewed_fields'] = ['color']
+    second['visible'].pop('color')
+    response = c.patch(base, json={k: doc[k] for k in ('revision', 'version', 'rows')})
+    assert response.status_code == 200, response.text
+    saved = response.json()
+    for document in (saved, c.get(base).json(),
+                     c.post(base+'/validate', json={'revision': saved['revision']}).json()):
+        values = {row['platform_sku']: row['visible']['color'] for row in document['rows']}
+        assert values == {first['platform_sku']: 'User Brown', second['platform_sku']: 'Blue'}
+        assert {m['platform_sku']: m['values']['color']
+                for m in document['variant_groups'][0]['members']} == values

@@ -63,6 +63,50 @@ def test_source_parent_group_is_stable_unique_and_not_title_based():
     assert plan(rows, basis, schemas, apply=True) == []
 
 
+def test_shared_attributes_fill_each_child_despite_family_manual_flag():
+    rows, basis, schemas = family()
+    props = sections(schemas[PT], PT)['visible']['properties']
+    props.update(finish={'type': 'string'}, material={'type': 'array', 'items': {'type': 'string'}})
+    for row in rows:
+        row['variant_manual'] = True
+        row['visible']['variantAttributeNames'] = ['color']
+    rows[0]['visible']['color'] = 'User Red'
+    rows[0]['variant_reviewed_fields'] = ['color', 'finish']
+    basis['items'][0]['variants'][0]['content']['attributes'].update(
+        Finish='Do not restore cleared field', Material=['Wood', 'Metal'])
+    basis['items'][0]['variants'][1]['content']['attributes'].update(
+        Finish={'variant_value': 'Glossy'}, Material='Plastic')
+    plan(rows, basis, schemas, apply=True)
+    assert rows[0]['visible']['color'] == 'User Red'
+    assert 'finish' not in rows[0]['visible']
+    assert rows[0]['visible']['material'] == ['Wood', 'Metal']
+    assert rows[1]['visible']['color'] == 'Blue'
+    assert rows[1]['visible']['finish'] == 'Glossy'
+    assert rows[1]['visible']['material'] == ['Plastic']
+    snapshot = copy.deepcopy(rows)
+    plan(rows, basis, schemas, apply=True)
+    assert rows == snapshot
+    assert all(row['visible']['variantAttributeNames'] == ['color'] for row in rows)
+
+
+def test_shared_attributes_respect_row_schema_submission_and_missing_source():
+    rows, basis, schemas = family()
+    other = 'Other Type'
+    other_schema = copy.deepcopy(schemas[PT])
+    visible = other_schema['properties']['MPItem']['items']['properties']['Visible']['properties']
+    visible[other] = visible.pop(PT)
+    visible[other]['properties']['color'] = {'type': 'array', 'items': {'type': 'string'}}
+    schemas[other] = other_schema
+    rows[1]['product_type'] = other
+    plan(rows, basis, schemas, latest={rows[0]['platform_sku']: {'status': 'published'}}, apply=True)
+    assert 'color' not in rows[0]['visible']
+    assert rows[1]['visible']['color'] == ['Blue']
+    rows[1]['visible'].pop('color')
+    basis['items'][0]['variants'][1]['content']['attributes'] = {}
+    plan(rows, basis, schemas, latest={rows[0]['platform_sku']: {'status': 'published'}}, apply=True)
+    assert 'color' not in rows[1]['visible']
+
+
 def test_duplicate_and_unsupported_discriminators_do_not_silently_become_standalone():
     rows, basis, schemas = family(('Brown', 'Brown'))
     result = plan(rows, basis, schemas, apply=True)[0]

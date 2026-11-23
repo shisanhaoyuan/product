@@ -24,7 +24,12 @@ ALIASES = {
     'pattern': ('pattern', '图案'),
     'material': ('material', '材质'),
     'style': ('style', '款式'),
+    'finish': ('finish', '饰面'),
+    'shape': ('shape', '形状'),
+    'frameColor': ('frameColor', 'frame color', '框架颜色'),
 }
+SHARED_ATTRIBUTES = ('color', 'finish', 'size', 'sizeDescriptor', 'pattern', 'shape',
+                     'material', 'frameColor', 'bedSize')
 
 
 def group_id(store_id, listing_id):
@@ -69,11 +74,20 @@ def source_value(content, axis, shape):
     attrs = content.get('attributes') or {}
     if not isinstance(attrs, dict):
         return None
-    names = {token(k) for k in ALIASES.get(axis, (axis,))}
-    values = [v for k, v in attrs.items() if token(k) in names and v not in (None, '', [], {})]
+    names = {token(k) for k in (*ALIASES.get(axis, (axis,)), shape.get('title', axis))}
+    values = []
+    for key,value in attrs.items():
+        if token(key) not in names:
+            continue
+        if isinstance(value,dict) and set(value)=={'variant_value'}:
+            value=value['variant_value']
+        if value not in (None, '', [], {}):
+            values.append(value)
     if len({value_key(v) for v in values}) != 1:
         return None
     value = values[0]
+    if isinstance(value,list) and len(value)==1 and shape.get('type')!='array':
+        value=value[0]
     if isinstance(value, str):
         value = value.strip()
         if shape.get('type') == 'integer' and re.fullmatch(r'\d+', value):
@@ -88,6 +102,28 @@ def source_value(content, axis, shape):
     return value if valid_attribute(shape, value) else None
 
 
+def fill_shared_attributes(rows, basis, schemas, latest):
+    """One canonical visible value per store SKU, shared by both editors.
+
+    Fill gaps from this child's own source attributes, even if another family
+    member was reviewed. Never replace a saved value or an explicitly cleared
+    field, and never borrow a sibling's color/size/material.
+    """
+    content = {v['platform_sku']: v.get('content') or {}
+               for item in basis['items'] for v in item['variants']}
+    for row in rows:
+        if latest.get(row['platform_sku'], {}).get('status', 'unsubmitted') not in EDITABLE:
+            continue
+        axes, props = allowed_axes(schemas.get(row['product_type']), row['product_type'])
+        reviewed = set(row.get('variant_reviewed_fields') or [])
+        for key in dict.fromkeys((*SHARED_ATTRIBUTES, *axes)):
+            if key not in props or key in reviewed or row['visible'].get(key) not in (None, '', [], {}):
+                continue
+            value = source_value(content.get(row['platform_sku'], {}), key, props[key])
+            if value is not None:
+                row['visible'][key] = copy.deepcopy(value)
+
+
 def plan(rows, basis, schemas, *, sources=None, history=None, latest=None, apply=False):
     """Pure planner. Apply only to editable rows; validate locked/history members too.
 
@@ -97,6 +133,8 @@ def plan(rows, basis, schemas, *, sources=None, history=None, latest=None, apply
     sources, history, latest = sources or {}, history or {}, latest or {}
     original = rows
     rows = copy.deepcopy(rows)
+    if apply:
+        fill_shared_attributes(rows, basis, schemas, latest)
     groups = []
     for item in basis['items']:
         lid = item['listing_id']
@@ -148,14 +186,6 @@ def plan(rows, basis, schemas, *, sources=None, history=None, latest=None, apply
         elif choices and any(v != axes for v in choices):
             issue('同组子 SKU 选择的差异属性不一致，请统一')
         content = {v['platform_sku']: v.get('content') or {} for v in item['variants']}
-        for row in current:
-            if not apply or manual or latest.get(row['platform_sku'], {}).get('status', 'unsubmitted') not in EDITABLE:
-                continue
-            for key in allowed:
-                if row['visible'].get(key) in (None, '', [], {}):
-                    value = source_value(content.get(row['platform_sku'], {}), key, props[key])
-                    if value is not None:
-                        row['visible'][key] = value
         def valid_value(row, key):
             value = row['visible'].get(key)
             return value not in (None, '', [], {}) and valid_attribute(props[key], value)
