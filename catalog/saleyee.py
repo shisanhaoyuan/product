@@ -277,11 +277,12 @@ def summarize(detail, price, stock, options):
         warnings.append('没有找到与报价同站点、同仓库的可用库存')
     # Saleyee purchase prices require no additional freight. Ignore legacy estimates.
     shipping = '0'
+    from .saleyee_addresses import summarize_addresses
     return dict(price=base, selling_price=selling, original_price=original,
                 currency='USD' if selected else '', inventory=quantity,
                 shipping=shipping, shipping_origin='no_additional_shipping', landed=base,
                 selected_offer=selected, offers=offers, available_offers=available_offers,
-                warehouses=inventories, warnings=warnings)
+                warehouses=inventories, warnings=warnings, **summarize_addresses(detail, stock))
 
 
 def source_link(value):

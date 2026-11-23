@@ -191,6 +191,8 @@ export interface Stats {
   brands: string[];
   dates: string[];
   categories: { value: string; label: string; count: number }[];
+  shipping_addresses?: { value: string; label: string; count: number }[];
+  return_addresses?: { value: string; label: string; count: number }[];
 }
 export interface ProductPage {
   items: ProductSummary[];

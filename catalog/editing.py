@@ -77,6 +77,8 @@ def local_product(raw, changes_json, revision, updated, edited_source, source_di
     data = json.loads(raw)
     from .saleyee_pricing import resolve_saved_quote
     resolve_saved_quote(data)
+    from .saleyee_addresses import resolve_saved_addresses
+    resolve_saved_addresses(data)
     data['variants'] = [with_variant_fields(v) for v in data['variants']]
     changes = json.loads(changes_json or '[]')
     review = next((c['value'] for c in changes if c['field'] == '_manual_review'), None)

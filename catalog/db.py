@@ -57,6 +57,8 @@ class Catalog:
                     db.execute('INSERT INTO migrations VALUES(12) ON CONFLICT DO NOTHING')
                 from .saleyee_pricing import initialize as initialize_saleyee_pricing
                 initialize_saleyee_pricing(db, True)
+                from .saleyee_addresses import initialize as initialize_saleyee_addresses
+                initialize_saleyee_addresses(db, True)
             return
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -114,6 +116,8 @@ class Catalog:
             db.execute('INSERT OR IGNORE INTO migrations VALUES(12)')
             from .saleyee_pricing import initialize as initialize_saleyee_pricing
             initialize_saleyee_pricing(db)
+            from .saleyee_addresses import initialize as initialize_saleyee_addresses
+            initialize_saleyee_addresses(db)
 
     def pool(self):
         from psycopg_pool import ConnectionPool
@@ -263,6 +267,9 @@ class Catalog:
             counts["categories"] = [category_option(row['category']) | {'count': row['count']}
                 for row in db.execute(f"SELECT category,COUNT(*) AS count FROM (SELECT {self.category_sql} AS category FROM {relation} scoped) c GROUP BY category ORDER BY category='' ASC,lower(category)", args)]
             counts["review"] = counts["listings"] - counts["complete"]
+            if source == 'Saleyee':
+                from .saleyee_addresses import address_options
+                counts.update(address_options(db, relation, args, self.postgres))
             counts["unique_counts"] = dict(db.execute(f"""SELECT
                 COUNT(DISTINCT COALESCE(NULLIF(p.asin,''),l.id)) AS all_products,
                 COUNT(DISTINCT CASE WHEN l.complete=1 THEN COALESCE(NULLIF(p.asin,''),l.id) END) AS complete,
@@ -271,11 +278,16 @@ class Catalog:
             return counts
 
     def filter_sql(self, q="", store="", brand="", status="", date="", category="", seller_status="",
-                   listing_count_min=None, listing_count_max=None, source="", inventory_status="", identifiers="", listed_store="", price_change="", multi=""):
+                   listing_count_min=None, listing_count_max=None, source="", inventory_status="", identifiers="", listed_store="", price_change="", multi="", shipping_address="", return_address=""):
         clauses, args = ["1=1"], []
         if source:
             clauses.append("listings.product_id IN (SELECT id FROM products WHERE source=?)")
             args.append(source)
+        from .saleyee_addresses import address_clause
+        for kind, value in (('shipping_addresses', shipping_address), ('return_addresses', return_address)):
+            if value:
+                clauses.append(address_clause(kind, self.postgres))
+                args.append(value)
         if inventory_status == 'out_of_stock':
             # Filter source stock before pagination; local edits are not supplier availability.
             paths = [('GigaB2B_CA', ['source_facts','giga','inventory','sellerInventoryInfo','sellerAvailableInventory']),
@@ -361,10 +373,10 @@ class Catalog:
         return query, args
 
     def find(self, q="", store="", brand="", status="", date="", page=1, page_size=24, category="", seller_status="", deduplicate=False,
-             listing_count_min=None, listing_count_max=None, source="", inventory_status="", identifiers="", listed_store="", price_change="", multi=""):
+             listing_count_min=None, listing_count_max=None, source="", inventory_status="", identifiers="", listed_store="", price_change="", multi="", shipping_address="", return_address=""):
         query, args = self.selection_sql(q=q,store=store,brand=brand,status=status,date=date,
                                          category=category,seller_status=seller_status,deduplicate=deduplicate,
-                                         listing_count_min=listing_count_min,listing_count_max=listing_count_max,source=source,inventory_status=inventory_status,identifiers=identifiers,listed_store=listed_store,price_change=price_change,multi=multi)
+                                         listing_count_min=listing_count_min,listing_count_max=listing_count_max,source=source,inventory_status=inventory_status,identifiers=identifiers,listed_store=listed_store,price_change=price_change,multi=multi,shipping_address=shipping_address,return_address=return_address)
         with self.connect() as db:
             read_snapshot(db)
             total = db.execute(f"SELECT COUNT(*) FROM ({query}) AS listings",args).fetchone()[0]

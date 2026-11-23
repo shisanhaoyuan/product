@@ -112,6 +112,8 @@ class Filters(StrictInput):
     inventory_status: Literal['', 'out_of_stock'] = ''
     listed_store: str = Field(default='', pattern='^([0-9]+)?$')
     price_change: Literal['', 'up', 'down', 'unchanged', 'unknown'] = ''
+    shipping_address: str = Field(default='', pattern='^([a-f0-9]{64})?$')
+    return_address: str = Field(default='', pattern='^([a-f0-9]{64})?$')
     multi: str = Field(default='', max_length=30000)
 
     @field_validator('multi')

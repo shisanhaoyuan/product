@@ -70,6 +70,8 @@ const filters = computed(() => {
     'store',
     'listed_store',
     'price_change',
+    'shipping_address',
+    'return_address',
     'multi',
     'brand',
     'status',
@@ -124,6 +126,15 @@ const dateOptions = computed(() => [
   { value: '', label: '全部上传日期' },
   ...(stats.value?.dates.map((date) => ({ value: date, label: date })) || []),
 ]);
+function addressOptions(kind: 'shipping_addresses' | 'return_addresses') {
+  return [
+    { value: '', label: kind === 'shipping_addresses' ? '全部发货地址' : '全部退货地址' },
+    ...(stats.value?.[kind] || []).map((item) => ({
+      value: item.value,
+      label: `${item.label} · ${item.count} 件商品`,
+    })),
+  ];
+}
 const selectionFilters = computed(() => {
   const values = new URLSearchParams(filters.value);
   values.delete('page');
@@ -519,6 +530,30 @@ onBeforeUnmount(() => {
         @update:model-value="changeMultiFilter('inventory_status', $event)"
       />
       <FilterSelect
+        v-if="source === 'Saleyee'"
+        class="address-filter"
+        label="发货地址"
+        title="从已入库商品的全部发货仓库地址中筛选"
+        multiple
+        searchable
+        search-placeholder="搜索州、城市、街道或邮编"
+        :model-value="filterValue('shipping_address')"
+        :options="addressOptions('shipping_addresses')"
+        @update:model-value="changeMultiFilter('shipping_address', $event)"
+      />
+      <FilterSelect
+        v-if="source === 'Saleyee'"
+        class="address-filter"
+        label="退货地址"
+        title="从已入库商品的退货地址中筛选"
+        multiple
+        searchable
+        search-placeholder="搜索州、城市、街道或邮编"
+        :model-value="filterValue('return_address')"
+        :options="addressOptions('return_addresses')"
+        @update:model-value="changeMultiFilter('return_address', $event)"
+      />
+      <FilterSelect
         label="筛选卖家黑名单"
         multiple
         :model-value="filterValue('seller_status')"
@@ -880,6 +915,9 @@ onBeforeUnmount(() => {
   </div>
 </template>
 <style scoped>
+.filter-select.address-filter {
+  width: 280px;
+}
 .product-grid {
   align-items: start;
 }

@@ -32,6 +32,8 @@ interface Warehouse {
   StockItemList?: Stock[];
 }
 interface SaleyeeFacts {
+  shipping_addresses?: WarehouseAddress[];
+  return_addresses?: WarehouseAddress[];
   price?: string;
   shipping?: string | null;
   inventory?: number;
@@ -41,6 +43,16 @@ interface SaleyeeFacts {
   warnings?: string[];
   import_warnings?: string[];
   saleyee?: { price?: { WarehousePriceList?: Offer[] }; detail?: Record<string, unknown> };
+}
+interface WarehouseAddress {
+  key: string;
+  address: string;
+  country: string;
+  code: string;
+  name: string;
+  warehouse_code: string;
+  site: string;
+  quantity: number | null;
 }
 const facts = computed(() => props.product.source_facts as SaleyeeFacts);
 const raw = computed(() => facts.value.saleyee || {});
@@ -183,6 +195,58 @@ async function refresh() {
                   >
                 </div>
               </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="table-scroll">
+        <h3>全部发货仓库与地址</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>区域</th>
+              <th>仓库代码</th>
+              <th>发货地址</th>
+              <th>分仓库存</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(warehouse, i) in facts.shipping_addresses || []" :key="i">
+              <td>{{ warehouse.country || '未返回' }}</td>
+              <td>
+                {{ warehouse.code || warehouse.warehouse_code || '未返回' }}<br /><small>{{
+                  warehouse.name
+                }}</small>
+              </td>
+              <td>{{ warehouse.address || '接口未返回详细地址' }}</td>
+              <td :class="{ danger: warehouse.quantity === 0 }">
+                {{ warehouse.quantity ?? '未返回' }}
+              </td>
+            </tr>
+            <tr v-if="!facts.shipping_addresses?.length">
+              <td colspan="4">接口未返回发货仓库地址，可刷新商品资料后重试。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="table-scroll">
+        <h3>退货地址</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>区域</th>
+              <th>仓库代码</th>
+              <th>退货地址</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(warehouse, i) in facts.return_addresses || []" :key="i">
+              <td>{{ warehouse.country || '未返回' }}</td>
+              <td>{{ warehouse.code || warehouse.warehouse_code || '未返回' }}</td>
+              <td>{{ warehouse.address || '接口未返回详细地址' }}</td>
+            </tr>
+            <tr v-if="!facts.return_addresses?.length">
+              <td colspan="3">接口未返回退货地址，可刷新商品资料后重试。</td>
             </tr>
           </tbody>
         </table>

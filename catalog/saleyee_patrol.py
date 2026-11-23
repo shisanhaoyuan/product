@@ -76,6 +76,8 @@ def refresh(data, price, stock, price_error, stock_error):
     if stock_ok:
         facts['inventory'] = stock_info['inventory']
         facts['warehouses'] = stock_info['warehouses']
+        facts['shipping_addresses'] = stock_info['shipping_addresses']
+        facts['return_addresses'] = stock_info['return_addresses']
         raw['inventory'] = stock
         data['stock'] = str(facts['inventory'])
     else:
