@@ -86,6 +86,13 @@ def resume_sources(catalog, publisher, bid, jid, receipts, actor_id=None, ai=Non
         stored=refresh_amazon(catalog,db,document(db,bid),actor_id,jid)
         db.execute('UPDATE listing_generation_jobs SET revision=? WHERE id=?',(stored['revision'],jid))
         report['source_capture_ids']=receipts
+        collected_at=int(time.time()*1000)
+        from .generation_timing import GenerationTimings
+        timings=GenerationTimings(report.get('timings'))
+        timings.add('collection',max(0,collected_at-row['started_at']))
+        report['timings']=timings.snapshot()
+        report['source_wait_includes_human']=True
+        report['queued_at_ms']=collected_at
         db.execute("UPDATE listing_generation_jobs SET state='queued',report_json=?,message=?,updated_at=? WHERE id=?",
                    (encoded(report),'本轮商品库采集完成，开始计算售价和生成资料',int(time.time()),jid))
         row=db.execute('SELECT * FROM listing_generation_jobs WHERE id=?',(jid,)).fetchone()

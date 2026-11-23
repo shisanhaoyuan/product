@@ -184,7 +184,7 @@ class ListingAIClient:
             if not isinstance(value, dict):
                 raise ValueError()
             tokens={k:v for k,v in usage.items() if k in ('prompt_tokens','completion_tokens','total_tokens') and type(v) is int and v>=0} if isinstance(usage,dict) else {}
-            self.usage_history.append(dict(purpose=purpose,tokens=tokens,reported=bool(tokens)))
+            self.usage_history.append(dict(purpose=purpose,tokens=tokens,reported=bool(tokens),response_ms=round((time.monotonic()-started)*1000,2)))
             return value
         except ListingAIError:
             raise

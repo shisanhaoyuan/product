@@ -44,10 +44,14 @@ def test_catalog_browser_quotes_are_used_without_a_second_collection(amazon,monk
     ai=AI()
     ready=resume_sources(catalog,c.app.state.walmart_publisher,b['id'],job['id'],captures,ai=ai,schedule=False)
     assert ready['state']=='queued'
+    assert ready['report']['timings']['stages']['collection']['count']==1
+    assert ready['report']['source_wait_includes_human']
     assert resume_sources(catalog,c.app.state.walmart_publisher,b['id'],job['id'],captures,ai=ai,schedule=False)['id']==job['id']
     run_job(catalog,c.app.state.walmart_publisher,job['id'],ai)
     status=c.get(base+'/generation').json()['job']
     assert status['state']=='complete',status
+    assert status['report']['timings']['source_wait_includes_human']
+    assert status['report']['timings']['stages']['queue']['count']==1
     doc=c.get(base).json()
     assert all(row['orderable']['price']==107.99 for row in doc['rows'])
     assert all(row['source_collection']['method']=='browser' for row in status['report']['rows'].values())

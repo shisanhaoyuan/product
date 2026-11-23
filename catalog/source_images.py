@@ -1,5 +1,6 @@
 """Download verified SKU galleries before generation; reuse content-addressed assets."""
 import hashlib
+from contextvars import copy_context
 import re
 import time
 from urllib.parse import urlsplit
@@ -35,6 +36,12 @@ def cached_image(catalog, lid, sku, url):
 
 
 def collect_images(catalog, lid, sku, urls):
+    from .generation_timing import phase
+    with phase('image_processing'):
+        return _collect_images(catalog, lid, sku, urls)
+
+
+def _collect_images(catalog, lid, sku, urls):
     from .listing_vision import image_data
     candidates = list(dict.fromkeys(u for u in urls if isinstance(u, str) and u))
     selected = candidates[:32]
@@ -72,7 +79,7 @@ def collect_images(catalog, lid, sku, urls):
         pending = []
         for url in selected[offset:offset + 2]:
             try:
-                pending.append((url, IMAGE_POOL.submit(collect, url)))
+                pending.append((url, IMAGE_POOL.submit(copy_context().run, collect, url)))
             except WorkQueueFull:
                 pending.append((url, None))
         for url, future in pending:

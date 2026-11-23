@@ -23,28 +23,30 @@ class AIKeyPool:
     def acquire(self, excluded=(), timeout=180):
         deadline = time.monotonic() + timeout
         ticket = object()
-        with self.condition:
-            self.waiters.append(ticket)
-            try:
-                while True:
-                    now = time.monotonic()
-                    available = [i for i in range(len(self.keys)) if i not in excluded and self.until[i] <= now]
-                    if not available:
-                        raise AIChannelsBusy('AI 通道暂时不可用，请稍后重新生成未完成项')
-                    index = next((i for step in range(len(self.keys))
-                                  if (i := (self.next + step) % len(self.keys)) in available
-                                  and self.active[i] < self.parallel), None)
-                    if self.waiters[0] is ticket and index is not None:
-                        self.active[index] += 1
-                        self.next = (index + 1) % len(self.keys)
-                        break
-                    remaining = deadline - now
-                    if remaining <= 0:
-                        raise AIChannelsBusy('AI 通道繁忙，请稍后重新生成未完成项')
-                    self.condition.wait(remaining)
-            finally:
-                self.waiters.remove(ticket)
-                self.condition.notify_all()
+        from .generation_timing import phase
+        with phase('ai_wait'):
+            with self.condition:
+                self.waiters.append(ticket)
+                try:
+                    while True:
+                        now = time.monotonic()
+                        available = [i for i in range(len(self.keys)) if i not in excluded and self.until[i] <= now]
+                        if not available:
+                            raise AIChannelsBusy('AI 通道暂时不可用，请稍后重新生成未完成项')
+                        index = next((i for step in range(len(self.keys))
+                                      if (i := (self.next + step) % len(self.keys)) in available
+                                      and self.active[i] < self.parallel), None)
+                        if self.waiters[0] is ticket and index is not None:
+                            self.active[index] += 1
+                            self.next = (index + 1) % len(self.keys)
+                            break
+                        remaining = deadline - now
+                        if remaining <= 0:
+                            raise AIChannelsBusy('AI 通道繁忙，请稍后重新生成未完成项')
+                        self.condition.wait(remaining)
+                finally:
+                    self.waiters.remove(ticket)
+                    self.condition.notify_all()
         try:
             yield index, self.keys[index]
         finally:

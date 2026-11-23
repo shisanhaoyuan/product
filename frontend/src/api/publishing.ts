@@ -155,6 +155,16 @@ export interface GenerationJob {
   state: 'awaiting_sources' | 'queued' | 'running' | 'complete' | 'failed' | 'interrupted';
   message: string;
   report: {
+    phase?: 'running' | 'final_validation' | 'complete';
+    sku_parallel?: number;
+    timings?: {
+      version: number;
+      elapsed_ms?: number;
+      stages: Record<string, { ms: number; count: number }>;
+      rows: Record<string, Record<string, { ms: number; count: number }>>;
+      source_wait_includes_human?: boolean;
+      image_cache?: { hits: number; prepared: number; entries: number; bytes: number };
+    };
     source_targets?: { platform_sku: string; listing_id: string; sku: string; asin: string }[];
     model?: string;
     total?: number;

@@ -33,6 +33,7 @@ import ListingProductDetails from './ListingProductDetails.vue';
 import ProductStoreHistory from './ProductStoreHistory.vue';
 import ListingImagePicker from './ListingImagePicker.vue';
 import WalmartResultReasons from './WalmartResultReasons.vue';
+import GenerationTimings from './GenerationTimings.vue';
 function fixedOrigin(key: string, schema?: JsonSchema) {
   const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, '');
   return [key, schema?.title || ''].some(
@@ -298,7 +299,9 @@ async function pollGeneration() {
   const wasRunning = generating.value;
   generation.value = status.job;
   aiReady.value = status.ai.configured;
-  if (!dirty.value && (generating.value || wasRunning)) await load();
+  if (!dirty.value && (generating.value || wasRunning) &&
+      (generation.value?.revision !== doc.value?.revision || (wasRunning && !generating.value)))
+    await load();
   if (wasRunning && !generating.value && canEdit.value) await loadMetadata();
   if (generating.value)
     generationTimer = setTimeout(() => {
@@ -1007,7 +1010,7 @@ onBeforeUnmount(() => {
             <small v-if="generation"
               >已处理 {{ generationProcessed }} /
               {{ generation.report.total ?? doc.rows.length }} 个 SKU ·
-              {{ generation.report.model }}</small
+              {{ generation.report.model }}{{ generation.report.phase === 'final_validation' ? ' · 正在最终校验' : '' }}</small
             >
           </div>
           <button
@@ -1019,6 +1022,7 @@ onBeforeUnmount(() => {
             {{ awaitingSources ? '继续采集并生成' : generation ? '重新采集并生成' : '采集并生成' }}
           </button>
         </div>
+        <GenerationTimings v-if="generation" :report="generation.report" />
         <div v-if="awaitingSources" class="notice">
           <p>正在沿用商品库的采集方式。若邮编失效，可打开同一浏览器设置；浏览器会保留 Cookie，后续子商品继续使用。</p>
           <button class="btn" :disabled="busy || collectingSources" @click="setSourceLocation">打开网页设置 10001 并继续</button>
