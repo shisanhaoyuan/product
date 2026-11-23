@@ -12,6 +12,7 @@ import { useCatalog } from '../composables/useCatalog';
 import { errorMessage, priceRange, productStatus } from '../utils/display';
 import AppIcon from '../components/AppIcon.vue';
 import FilterSelect from '../components/FilterSelect.vue';
+import FloatingDock from '../components/FloatingDock.vue';
 import ProductCard from '../components/ProductCard.vue';
 import ProductVariantsPreview from '../components/ProductVariantsPreview.vue';
 import { useVariantPreview } from '../composables/useVariantPreview';
@@ -825,7 +826,7 @@ onBeforeUnmount(() => {
                 <td>
                   <RouterLink class="table-product" :to="detailPath(product.id)"
                     ><ProductImage
-                      :listing-id="product.source === 'Amazon' ? product.id : undefined"
+                      :listing-id="product.id"
                       :src="product.image"
                       :fallbacks="product.image_fallbacks"
                       image-class="table-thumb"
@@ -922,26 +923,28 @@ onBeforeUnmount(() => {
       <button class="btn small" @click="router.push(libraryPath)">重置筛选</button>
     </div>
   </section>
-  <nav class="product-pagination-dock" aria-label="商品库分页">
-    <label class="page-size-control">
-      每页
-      <select :value="pageSize" aria-label="每页显示数量" @change="changePageSize">
-        <option v-for="size in pageSizes" :key="size" :value="size">{{ size }} 条</option>
-      </select>
-    </label>
-    <span class="page-total" aria-live="polite">{{ loading ? '加载中…' : `共 ${data?.total ?? 0} 条` }}</span>
-    <div class="page-buttons">
-      <button class="btn" id="prev" title="上一页" aria-label="上一页"
-        :disabled="loading || !data || data.page <= 1" @click="changePage(-1)">
-        <AppIcon name="ChevronLeft" />
-      </button>
-      <span class="page-number">{{ data?.page || 1 }} / {{ pages }}</span>
-      <button class="btn" id="next" title="下一页" aria-label="下一页"
-        :disabled="loading || !data || data.page >= pages" @click="changePage(1)">
-        <AppIcon name="ChevronRight" />
-      </button>
-    </div>
-  </nav>
+  <FloatingDock label="商品库分页" storage-key="catalog-pagination-position">
+    <nav class="product-pagination-dock" aria-label="商品库分页">
+      <label class="page-size-control">
+        每页
+        <select :value="pageSize" aria-label="每页显示数量" @change="changePageSize">
+          <option v-for="size in pageSizes" :key="size" :value="size">{{ size }} 条</option>
+        </select>
+      </label>
+      <span class="page-total" aria-live="polite">{{ loading ? '加载中…' : `共 ${data?.total ?? 0} 条` }}</span>
+      <div class="page-buttons">
+        <button class="btn" id="prev" title="上一页" aria-label="上一页"
+          :disabled="loading || !data || data.page <= 1" @click="changePage(-1)">
+          <AppIcon name="ChevronLeft" />
+        </button>
+        <span class="page-number">{{ data?.page || 1 }} / {{ pages }}</span>
+        <button class="btn" id="next" title="下一页" aria-label="下一页"
+          :disabled="loading || !data || data.page >= pages" @click="changePage(1)">
+          <AppIcon name="ChevronRight" />
+        </button>
+      </div>
+    </nav>
+  </FloatingDock>
   <div class="product-pagination-space" aria-hidden="true"></div>
   <PrelistingComposer
     v-if="composer"
@@ -964,16 +967,12 @@ onBeforeUnmount(() => {
 </template>
 <style scoped>
 .product-pagination-dock {
-  position: fixed;
-  left: 18px;
-  bottom: max(18px, env(safe-area-inset-bottom));
-  z-index: 25;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px 12px;
-  max-width: calc(100vw - 36px);
-  padding: 8px 10px;
+  max-width: calc(100vw - 20px);
+  padding: 8px 10px 8px 24px;
   border: 1px solid #cbdbe980;
   border-radius: 12px;
   background: #f0f6fc80;
@@ -1014,7 +1013,7 @@ onBeforeUnmount(() => {
 .product-pagination-dock .page-number { height: 26px; font-size: 12px; background: #edf3fa80; }
 .product-pagination-space { height: 70px; }
 @media (max-width: 480px) {
-  .product-pagination-dock { left: 10px; max-width: calc(100vw - 20px); gap: 6px 10px; padding: 7px 9px; }
+  .product-pagination-dock { gap: 6px 10px; padding: 7px 9px 7px 24px; }
   .page-total { font-size: 12px; }
   .product-pagination-space { height: 100px; }
 }

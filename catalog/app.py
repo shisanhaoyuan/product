@@ -169,7 +169,9 @@ def create_app(database=None):
             except ValueError:
                 return Response('无效 Content-Length',status_code=400)
         result=await call_next(request)
-        if protected:
+        cacheable_image = (request.method == 'GET' and result.status_code in (200, 304)
+                           and getattr(request.state, 'cacheable_product_image', False))
+        if protected and not cacheable_image:
             result.headers['Cache-Control']='no-store'
         result.headers['X-Content-Type-Options']='nosniff'
         result.headers['Referrer-Policy']='no-referrer'

@@ -36,7 +36,7 @@ const variants = computed(() =>
         <li v-for="variant in variants" :key="variant.sku" class="variant-preview-item">
           <div class="variant-preview-image">
             <ProductImage
-              :listing-id="product.source === 'Amazon' ? product.id : undefined"
+              :listing-id="product.id"
               :src="variant.images[0]"
               :fallbacks="variant.images.slice(1)"
               :alt="variant.copy.title || variant.sku"

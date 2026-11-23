@@ -101,10 +101,40 @@ def test_image_access_permissions(team):
     browser_path = f"/api/products/{p['id']}/images/capture/browser"
     assert viewer.post(browser_path, json={}).status_code == 403
     assert TestClient(team, base_url=ORIGIN).post(browser_path, json={}).status_code == 401
-    assert TestClient(team, base_url=ORIGIN).get(url).status_code == 401
+    response = viewer.get(url)
+    assert response.headers['cache-control'] == 'private, max-age=31536000, immutable'
+    unauthorized = TestClient(team, base_url=ORIGIN).get(url, headers={'If-None-Match': response.headers['etag']})
+    assert unauthorized.status_code == 401
+    assert unauthorized.headers['cache-control'] == 'no-store'
     admin.headers.pop('X-CSRF-Token')
     assert admin.post(path, content=picture()).status_code == 403
     assert admin.post(browser_path, json={}).status_code == 403
+
+
+def test_content_addressed_image_browser_cache_and_replacement(local):
+    client, _ = local
+    path = f"/api/products/{detail(client)['id']}/images/upload"
+    url = client.post(path, content=picture()).json()['url']
+    response = client.get(url)
+    assert response.headers['cache-control'] == 'private, max-age=31536000, immutable'
+    assert response.headers['vary'] == 'Cookie'
+    etag = response.headers['etag']
+    for condition in (etag, 'W/' + etag, '"other", ' + etag, '*'):
+        cached = client.get(url, headers={'If-None-Match': condition})
+        assert cached.status_code == 304 and cached.content == b''
+        assert cached.headers['etag'] == etag
+    assert client.get(url, headers={'If-None-Match': '"old"'}).content == response.content
+    different = io.BytesIO()
+    Image.new('RGB', (48, 48), 'red').save(different, format='PNG')
+    updated_url = client.post(path, content=different.getvalue()).json()['url']
+    assert updated_url != url
+    assert client.get(updated_url, headers={'If-None-Match': etag}).status_code == 200
+    assert client.get(updated_url).headers['etag'] != etag
+    assert client.get(url).content == response.content
+    for missing in ('invalid', 'a' * 64):
+        result = client.get('/api/products/images/assets/' + missing, headers={'If-None-Match': '*'})
+        assert result.status_code == 404 and result.headers['cache-control'] == 'no-store'
+    assert client.get('/api/products').headers['cache-control'] == 'no-store'
 
 
 def test_parent_image_import_capture_and_edit_isolation(local, monkeypatch):

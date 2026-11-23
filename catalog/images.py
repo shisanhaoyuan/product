@@ -196,27 +196,43 @@ def image_routes(catalog, storage):
         return p, v
 
     @router.get('/images/assets/{digest}')
-    def asset(digest: str):
+    def asset(digest: str, request: Request):
         if not re.fullmatch('[a-f0-9]{64}', digest):
             raise HTTPException(404)
         with catalog.connect() as db:
             stored = db.execute('SELECT * FROM image_objects WHERE digest=?', (digest,)).fetchone()
-            row = None if catalog.postgres else db.execute('SELECT content,mime FROM image_assets WHERE digest=?', (digest,)).fetchone()
+            row = None if catalog.postgres else db.execute('SELECT mime FROM image_assets WHERE digest=?', (digest,)).fetchone()
+        if not stored and not row:
+            raise HTTPException(404, '图片不存在')
+        if stored and storage is None:
+            raise HTTPException(503, '请配置此图片使用的存储后端')
+        headers = {'Cache-Control': 'private, max-age=31536000, immutable',
+                   'ETag': f'"{digest}"', 'Vary': 'Cookie'}
+        # Authentication still runs before conditional requests. Content hashes
+        # change when the image changes; JSON and failed image responses stay uncached.
+        tags = request.headers.get('if-none-match', '').split(',')
+        if any(tag.strip().removeprefix('W/') in ('*', headers['ETag']) for tag in tags):
+            request.state.cacheable_product_image = True
+            return Response(status_code=304, headers=headers)
         if stored:
-            if storage is None:
-                raise HTTPException(503, '请配置此图片使用的存储后端')
             try:
-                return Response(storage.get(stored), media_type=stored['mime'])
+                content = storage.get(stored)
             except StorageError as exc:
                 raise HTTPException(503, str(exc)) from None
-        if not row:
-            raise HTTPException(404, '图片不存在')
-        return Response(row['content'], media_type=row['mime'])
+        else:
+            with catalog.connect() as db:
+                content = db.execute('SELECT content FROM image_assets WHERE digest=?', (digest,)).fetchone()[0]
+        request.state.cacheable_product_image = True
+        return Response(content, media_type=(stored or row)['mime'], headers=headers)
 
     @router.get('/{lid}/images/cached')
-    def cached_product_image(lid: str, url: str):
+    def cached_product_image(lid: str, url: str, request: Request):
         from .image_cache import cache_product_image
-        return asset(cache_product_image(catalog, lid, url))
+        response = asset(cache_product_image(catalog, lid, url), request)
+        # A supplier URL is not content-addressed. Periodically recheck its
+        # product association while repeat navigation uses the browser cache.
+        response.headers['Cache-Control'] = 'private, max-age=86400'
+        return response
 
     @router.post('/{lid}/images/upload')
     async def upload(lid: str, request: Request, variant_sku: str | None = None):
