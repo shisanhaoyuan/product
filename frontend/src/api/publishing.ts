@@ -27,6 +27,8 @@ export interface ListingRow {
   product_type: string;
   fulfillment_center_id: string;
   target_stock?: number | null;
+  variant_manual?: boolean;
+  variant_reviewed_fields?: string[];
   identification: {
     mode: 'identifier' | 'exemption';
     type: 'GTIN' | 'UPC' | 'EAN' | 'ISBN';
@@ -80,6 +82,8 @@ export interface ListingVariantGroup {
   allowed_axes: string[];
   primary_sku: string;
   rule_mappings?: ListingVariantRule[];
+  manual?: boolean;
+  spec_ready?: boolean;
   skus: string[];
   members: {
     platform_sku: string;

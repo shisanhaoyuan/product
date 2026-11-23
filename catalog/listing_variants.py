@@ -11,7 +11,7 @@ from referencing.exceptions import NoSuchResource
 
 from .walmart_listing_schema import LABELS, sections, precise_validator
 
-POLICY = 'source_parent_variants_skill_v2'
+POLICY = 'source_parent_variants_manual_v3'
 SYSTEM_FIELDS = ('variantGroupId', 'variantAttributeNames', 'isPrimaryVariant')
 EDITABLE = {'unsubmitted', 'failed', 'rejected', 'unpublished'}
 ALIASES = {
@@ -111,6 +111,7 @@ def plan(rows, basis, schemas, *, sources=None, history=None, latest=None, apply
         multi = max(len(members), source_count) > 1
         if not multi and not any(r['visible'].get(k) for r in members for k in SYSTEM_FIELDS):
             continue
+        manual = any(r.get('variant_manual',False) for r in current)
         errors = []
         def issue(message, path='visible.variantAttributeNames'):
             errors.append(dict(path=path, message=message, code='variant_group'))
@@ -125,8 +126,10 @@ def plan(rows, basis, schemas, *, sources=None, history=None, latest=None, apply
             issue('同组子 SKU 的沃尔玛商品类型不一致，请统一真实类目', 'product_type')
         if len({r['visible'].get('brand', '') for r in members}) != 1:
             issue('同组子 SKU 的品牌不一致，请核对店铺品牌', 'visible.brand')
-        if not all(k in props for k in SYSTEM_FIELDS) or not allowed:
-            issue('当前类目未提供可用的变体属性，请获取官方字段或核对商品类型')
+        if not schemas.get(pt):
+            issue('当前类目规格未加载或缓存已过期，请点击“刷新类目属性”重新获取', 'product_type')
+        elif not all(k in props for k in SYSTEM_FIELDS) or not allowed:
+            issue('当前类目未提供可用的变体属性，请核对商品类型', 'product_type')
         historical = [h['row'] for h in old.values() if h['row']['visible'].get('variantGroupId')]
         legacy = [h for h in old.values() if not h['row']['visible'].get('variantGroupId') and h['status'] not in {'failed', 'rejected'}]
         if legacy:
@@ -146,7 +149,7 @@ def plan(rows, basis, schemas, *, sources=None, history=None, latest=None, apply
             issue('同组子 SKU 选择的差异属性不一致，请统一')
         content = {v['platform_sku']: v.get('content') or {} for v in item['variants']}
         for row in current:
-            if not apply or latest.get(row['platform_sku'], {}).get('status', 'unsubmitted') not in EDITABLE:
+            if not apply or manual or latest.get(row['platform_sku'], {}).get('status', 'unsubmitted') not in EDITABLE:
                 continue
             for key in allowed:
                 if row['visible'].get(key) in (None, '', [], {}):
@@ -190,7 +193,7 @@ def plan(rows, basis, schemas, *, sources=None, history=None, latest=None, apply
         axes_valid = (bool(axes) and len(set(axes)) == len(axes) and all(k in allowed for k in axes)
                       and all(valid_value(r,k) for r in members for k in axes)
                       and len(set(combinations(axes))) == len(members))
-        if apply and not historical and not legacy and not errors and not axes_valid and len(members) > 1 and all(
+        if apply and not manual and not historical and not legacy and not errors and not axes_valid and len(members) > 1 and all(
                 latest.get(r['platform_sku'],{}).get('status','unsubmitted') in EDITABLE for r in current):
             mapped_keys = list(dict.fromkeys(m['target'] for m in mappings))
             replacement_axes = choose_axes(proposals, mapped_keys)
@@ -199,7 +202,7 @@ def plan(rows, basis, schemas, *, sources=None, history=None, latest=None, apply
                     for key in replacement_axes:
                         row['visible'][key] = proposed['visible'][key]
                 axes = replacement_axes
-        if not axes and allowed:
+        if not manual and not axes and allowed:
             axes = choose_axes(members, allowed)
         # Show only provenance for values actually retained, never a proposal
         # that failed official type/enum/length checks or a later manual edit.
@@ -217,7 +220,8 @@ def plan(rows, basis, schemas, *, sources=None, history=None, latest=None, apply
                         issue(f"{row['source_sku']}：请填写有效的{LABELS.get(key, key)}以区分变体", 'visible.' + key)
             combos = combinations(axes)
             if len(set(combos)) != len(combos):
-                issue('同组子 SKU 的差异属性组合重复，请核对真实规格；系统将按 Skill 匹配来源规格；请核对是否保留了原始颜色、尺寸等差异')
+                issue('同组子 SKU 的差异属性组合重复，请直接在规格表中修改；人工编辑值会保留，不再自动替换' if manual else
+                      '同组子 SKU 的差异属性组合重复，请核对真实规格；系统将按 Skill 匹配来源规格；请核对是否保留了原始颜色、尺寸等差异')
         previous_primary = {r['platform_sku'] for r in historical if r['visible'].get('isPrimaryVariant') == 'Yes'}
         chosen_primary = [r['platform_sku'] for r in members if r['visible'].get('isPrimaryVariant') == 'Yes']
         primary = next(iter(previous_primary)) if len(previous_primary) == 1 else (chosen_primary[0] if len(chosen_primary) == 1 else min(current_skus))
@@ -244,7 +248,7 @@ def plan(rows, basis, schemas, *, sources=None, history=None, latest=None, apply
                            members=[dict(platform_sku=r['platform_sku'], source_sku=r['source_sku'],
                                          values={k:r['visible'].get(k) for k in axes},
                                          primary=r['platform_sku']==primary, in_batch=r['platform_sku'] in current_skus)
-                                    for r in members], errors=errors, rule_mappings=rule_mappings, locked=bool(historical or legacy)))
+                                    for r in members], errors=errors, manual=manual, spec_ready=bool(schemas.get(pt)), rule_mappings=rule_mappings, locked=bool(historical or legacy)))
     if apply:
         original[:] = rows
     return groups
@@ -290,3 +294,18 @@ def submission_errors(groups, selected, latest, history):
             elif status in {'processing', 'unknown'}:
                 errors.append('同组仍有处理中的商品或结果未知，请查询原批次结果后再重试')
     return list(dict.fromkeys(errors))
+
+
+def preserve_manual(updated, original):
+    """Keep reviewed variation routing and values through AI generation."""
+    if not original.get('variant_manual'):
+        return
+    updated['variant_manual'] = True
+    if original.get('variant_reviewed_fields'):
+        updated['variant_reviewed_fields'] = copy.deepcopy(original['variant_reviewed_fields'])
+    axes = original['visible'].get('variantAttributeNames') or []
+    for key in (*SYSTEM_FIELDS, *(axes if isinstance(axes,list) else []), *original.get('variant_reviewed_fields',[])):
+        if key in original['visible']:
+            updated['visible'][key] = copy.deepcopy(original['visible'][key])
+        else:
+            updated['visible'].pop(key,None)

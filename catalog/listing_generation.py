@@ -12,7 +12,7 @@ from .listing_titles import branded_title, source_brands
 from .walmart_listing_schema import plain, sections, feed_item, schema_errors, identifier_errors, precise_validator
 from .listing_skill_defaults import has_default, skill_default, length_fallback, fixed_origin, enforce_origin
 
-RULES_VERSION = 'listing-generation-v16-variant-skill'
+RULES_VERSION = 'listing-generation-v17-manual-variants'
 RULES = Path(__file__).with_name('listing_generation_rules.md').read_text()
 BLOCKED = re.compile(r'prop.?65|warranty|certif|nrtl|chemical|origin|warning|exempt|gtin|upc|ean|model|partnumber', re.I)
 PROTECTED = {'variantGroupId','variantAttributeNames','isPrimaryVariant','swatchImages','sku','productIdentifiers','inventory','price','msrp','SkuUpdate','ProductIdUpdate','fulfillmentCenterID'}
@@ -397,6 +397,7 @@ def mapped_value(key, schema, facts):
 
 
 def fill_row(row, schema, facts, ai, provenance):
+    reviewed_original = copy.deepcopy(row)
     row = copy.deepcopy(row)
     compose_description = (empty(row['visible'].get('shortDescription'))
         and empty((facts.get('content.copy') or {}).get('description'))
@@ -556,6 +557,10 @@ def fill_row(row, schema, facts, ai, provenance):
     # A later conditional pass may have filled a previously missing field.
     problems = [p for p in problems if '原产国固定规则' in p['message'] or not p['path'] or
                 empty(row.get(p['path'].split('.')[0], {}).get(p['path'].split('.')[-1]))]
+    from .listing_variants import preserve_manual
+    preserve_manual(row,reviewed_original)
+    for key in reviewed_original.get('variant_reviewed_fields',[]):
+        provenance['visible.'+key]=dict(kind='manual',value=row['visible'].get(key),refs=[],reason='保留人工复验的变体参数')
     return row, problems + copy_problems
 
 

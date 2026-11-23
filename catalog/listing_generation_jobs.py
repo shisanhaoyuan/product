@@ -199,6 +199,8 @@ def run_job(catalog, publisher, jid, ai):
         def save_row(updated, expected_identity):
             sku=updated['platform_sku']
             original=next(r for r in rows if r['platform_sku']==sku)
+            from .listing_variants import preserve_manual
+            preserve_manual(updated,original)
             for key in ('platform_sku','listing_id','source_sku'):
                 if updated[key]!=original[key]:
                     raise ListingAIError('生成结果改变商品身份，已停止保存')

@@ -97,6 +97,8 @@ class ListingRow(Input):
     source_sku: str = Field(min_length=1, max_length=200)
     product_type: str = Field(default='', max_length=300)
     fulfillment_center_id: str = Field(default='',max_length=100)
+    variant_manual: bool = Field(default=False, strict=True)
+    variant_reviewed_fields: list[str] = Field(default_factory=list, max_length=100)
     target_stock: int | None = Field(default=None, ge=0, le=999999999, strict=True)
     identification: Identification
     visible: dict[str, Any]
@@ -648,6 +650,10 @@ def publishing_routes(catalog):
             write_lock(db);batch(db,bid);doc=document(db,bid);revision_check(doc,data.revision)
             rows=[r.model_dump() for r in data.rows];old=json.loads(doc['rows_json'])
             for r in rows:
+                if not r.get('variant_reviewed_fields'):
+                    r.pop('variant_reviewed_fields',None)
+                if not r.get('variant_manual'):
+                    r.pop('variant_manual',None)
                 if r.get('target_stock') is None:
                     r.pop('target_stock',None)
             key=lambda r:(r['platform_sku'],r['listing_id'],r['source_sku'])

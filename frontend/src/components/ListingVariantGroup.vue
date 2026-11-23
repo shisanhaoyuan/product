@@ -2,6 +2,7 @@
 import { computed } from 'vue';
 import type { ListingVariantGroup, ListingRow, JsonSchema } from '../api/publishing';
 import ListingSchemaField from './ListingSchemaField.vue';
+import { variantEditorColumns } from '../utils/listingVariants';
 const props = defineProps<{
   group: ListingVariantGroup;
   rows: ListingRow[];
@@ -9,12 +10,14 @@ const props = defineProps<{
   schema?: JsonSchema;
   labels: Record<string, string>;
   disabled: boolean;
+  editableSkus: string[];
 }>();
 const emit = defineEmits<{
   select: [sku: string];
   axes: [axes: string[]];
   primary: [sku: string];
-  value: [key: string, value: unknown];
+  value: [sku: string, key: string, value: unknown];
+  refresh: [];
 }>();
 const current = computed(() => props.rows.find((r) => r.platform_sku === props.activeSku));
 const axes = computed<string[]>(() => {
@@ -29,6 +32,15 @@ const members = computed(() =>
     values: props.rows.find((r) => r.platform_sku === m.platform_sku)?.visible || m.values,
   })),
 );
+const columns = computed(() => variantEditorColumns(axes.value, props.schema?.properties || {}));
+const manual = computed(
+  () =>
+    props.group.manual ||
+    props.rows.some((r) => props.group.skus.includes(r.platform_sku) && r.variant_manual),
+);
+function canEdit(sku: string) {
+  return !props.disabled && props.editableSkus.includes(sku);
+}
 const primary = computed(
   () =>
     props.rows.find(
@@ -53,14 +65,20 @@ function display(value: unknown) {
         <h3>多变体上架 · {{ group.members.length }} 个规格</h3>
         <p>同一来源商品、同一店铺共享一个变体组，各规格保留独立编码、价格和库存。</p>
       </div>
-      <span class="group-badge">{{ group.locked ? '沿用已提交分组' : '自动分组' }}</span>
+      <span class="group-badge">{{
+        group.locked ? '沿用已提交分组' : manual ? '人工复验中' : '自动分组'
+      }}</span>
     </header>
     <small class="group-id">组编号：{{ group.group_id }}</small>
     <div class="skill-mapping">
       <strong>自动匹配规则</strong>
       <p>优先同名属性，再匹配可自定义字段；必要时用 ** 合并同一规格的原始属性值。</p>
-      <p v-if="!group.locked">
-        保存或重新校验时，系统会按来源规格修复无法区分的选项，不会将两项都为 1 的总数作为差异。
+      <p>生成后可在下方同一张表中复验和修改 Color、Finish、Size 等参数，无需逐个切换子 SKU。</p>
+      <p v-if="manual">
+        已进入人工复验：保存、校验及再次生成保留人工修改；相同规格组合会提示修正。
+      </p>
+      <p v-else-if="!group.locked">
+        首次自动匹配后可更换差异属性和参数，人工编辑后系统不再自动替换。
       </p>
       <details v-if="group.rule_mappings?.length">
         <summary>查看属性对应依据（{{ group.rule_mappings.length }} 项）</summary>
@@ -78,6 +96,16 @@ function display(value: unknown) {
     </div>
     <div data-listing-path="visible.variantAttributeNames">
       <strong>用哪些属性区分规格</strong>
+      <button type="button" class="refresh-fields" :disabled="disabled" @click="emit('refresh')">
+        刷新类目属性
+      </button>
+      <p v-if="!group.allowed_axes.length" class="field-notice">
+        {{
+          group.spec_ready === false
+            ? '类目规格尚未加载或已过期，请刷新后选择。'
+            : '该类目没有可选的变体属性，请刷新字段或核对商品类型。'
+        }}
+      </p>
       <div class="axis-options">
         <label v-for="key in group.allowed_axes" :key="key"
           ><input
@@ -103,12 +131,19 @@ function display(value: unknown) {
         </option>
       </select></label
     >
+    <div class="table-heading">
+      <strong>规格参数 · 同页编辑全部子 SKU</strong
+      ><small>带“分组”标记的列用于区分规格；其余列也可独立复验。表格可左右滚动。</small>
+    </div>
     <div class="variant-table-wrap">
       <table>
         <thead>
           <tr>
             <th>子 SKU</th>
-            <th v-for="key in axes" :key="key">{{ labels[key] || key }}</th>
+            <th v-for="key in columns" :key="key">
+              {{ labels[key] || key }}<small>{{ key }}</small
+              ><span v-if="axes.includes(key)" class="axis-badge">分组</span>
+            </th>
             <th>角色</th>
           </tr>
         </thead>
@@ -128,26 +163,34 @@ function display(value: unknown) {
               ><span v-else>{{ member.source_sku }}（历史成员）</span
               ><small>{{ member.platform_sku }}</small>
             </td>
-            <td v-for="key in axes" :key="key">{{ display(member.values[key]) }}</td>
+            <td
+              v-for="key in columns"
+              :key="key"
+              class="variant-edit-cell"
+              :data-listing-path="member.platform_sku === activeSku ? 'visible.' + key : undefined"
+            >
+              <ListingSchemaField
+                v-if="member.in_batch && schema?.properties?.[key]"
+                :key="member.platform_sku + '.' + key"
+                :name="key"
+                :schema="schema.properties[key]"
+                :labels="labels"
+                :model-value="member.values[key]"
+                :path="'variants.' + member.platform_sku + '.visible.' + key"
+                :required="axes.includes(key)"
+                :disabled="!canEdit(member.platform_sku)"
+                @update:model-value="emit('value', member.platform_sku, key, $event)"
+              />
+              <span v-else>{{ display(member.values[key]) }}</span>
+              <small v-if="!member.in_batch || !editableSkus.includes(member.platform_sku)"
+                >已提交，仅查看</small
+              >
+              <small v-else-if="!schema?.properties?.[key]">请刷新类目属性后编辑</small>
+            </td>
             <td>{{ member.platform_sku === primary ? '主变体' : '子变体' }}</td>
           </tr>
         </tbody>
       </table>
-    </div>
-    <div v-if="current && axes.length" class="axis-fields">
-      <strong>当前规格：{{ current.source_sku }}</strong
-      ><ListingSchemaField
-        v-for="key in axes.filter((k) => schema?.properties?.[k])"
-        :key="key"
-        :name="key"
-        :schema="schema!.properties![key]"
-        :labels="labels"
-        :model-value="current.visible[key]"
-        :path="'visible.' + key"
-        :required="true"
-        :disabled="disabled"
-        @update:model-value="emit('value', key, $event)"
-      />
     </div>
   </section>
 </template>
@@ -264,6 +307,74 @@ td {
 td small {
   display: block;
   margin-top: 3px;
+}
+.table-heading {
+  display: grid;
+  gap: 5px;
+  margin: 20px 0 10px;
+}
+.refresh-fields {
+  margin-left: 14px;
+  padding: 7px 12px;
+  border: 1px solid #b6cddd;
+  border-radius: 8px;
+  background: white;
+  color: #245f8b;
+  cursor: pointer;
+}
+.field-notice {
+  padding: 10px 0;
+  color: #865020;
+}
+th small {
+  display: block;
+  font-weight: normal;
+  color: #617889;
+  margin-top: 4px;
+}
+.axis-badge {
+  display: inline-block;
+  margin-top: 5px;
+  border-radius: 5px;
+  padding: 2px 6px;
+  background: #dfedf7;
+  color: #315e7c;
+  font-size: 11px;
+}
+.variant-edit-cell {
+  min-width: 220px;
+  vertical-align: top;
+}
+.variant-edit-cell :deep(.listing-field) {
+  display: block;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.variant-edit-cell :deep(.listing-field-label) {
+  display: none;
+}
+.variant-edit-cell :deep(input),
+.variant-edit-cell :deep(select),
+.variant-edit-cell :deep(textarea) {
+  min-width: 0;
+  width: 100%;
+  padding: 10px;
+  font-size: 15px;
+  border: 1px solid #b8ccdb;
+  border-radius: 7px;
+  background: white;
+  box-sizing: border-box;
+}
+.variant-edit-cell :deep(.listing-field-control) {
+  min-width: 0;
+}
+td:first-child {
+  min-width: 185px;
+  vertical-align: top;
+}
+td .listing-array-row button {
+  text-decoration: none;
 }
 td button {
   background: none;

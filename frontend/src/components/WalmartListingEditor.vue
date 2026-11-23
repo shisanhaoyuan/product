@@ -20,7 +20,7 @@ import { errorMessage, plain, money } from '../utils/display';
 import { listingSourceImages } from '../utils/listingSourceImages';
 import { claimAutomaticCollection } from '../utils/automaticCollection';
 import { shouldPrepareOnEntry } from '../utils/listingPreparation';
-import { completeGroupCandidates, toggleVariantSelection } from '../utils/listingVariants';
+import { completeGroupCandidates, toggleVariantSelection, reviewVariantValue, reviewedVariantAttributes } from '../utils/listingVariants';
 import { collectMissingPrices, collectListingSources, preferLocalSourceBrowser } from '../utils/sourceCollection';
 import { applyListingDefaults } from '../utils/listingDefaults';
 import ListingSchemaField from './ListingSchemaField.vue';
@@ -349,14 +349,28 @@ const variantGroup = computed(() => doc.value?.variant_groups?.find((g) => g.lis
 function setVariantAxes(axes: string[]) {
   if (!doc.value || !variantGroup.value || locked.value || variantGroup.value.locked) return;
   for (const row of doc.value.rows.filter((r) => variantGroup.value!.skus.includes(r.platform_sku))) {
+    row.variant_manual = true;
     row.visible.variantAttributeNames = [...axes];
   }
 }
 function setPrimaryVariant(sku: string) {
   if (!doc.value || !variantGroup.value || locked.value || variantGroup.value.locked) return;
   for (const row of doc.value.rows.filter((r) => variantGroup.value!.skus.includes(r.platform_sku))) {
+    row.variant_manual = true;
     row.visible.isPrimaryVariant = row.platform_sku === sku ? 'Yes' : 'No';
   }
+}
+function setVariantValue(sku: string, key: string, value: unknown) {
+  if (!doc.value || !variantGroup.value || busy.value || generating.value || !canEdit.value) return;
+  reviewVariantValue(doc.value.rows, variantGroup.value.skus, eligible.value.map((r) => r.platform_sku), sku, key, value);
+}
+async function refreshVariantFields() {
+  await run(async () => {
+    await save();
+    await getSpec();
+    await load();
+    message.value = '类目属性已刷新，可以在规格表中逐项复验修改';
+  });
 }
 function setTargetStock(event: Event) {
   if (!current.value || locked.value) return;
@@ -665,6 +679,10 @@ function fieldIssues(key: string, section = 'Visible') {
 }
 function update(section: 'visible' | 'orderable', key: string, value: unknown) {
   if (!current.value) return;
+  if (section === 'visible' && variantGroup.value && (reviewedVariantAttributes.includes(key) || (current.value.visible.variantAttributeNames as string[] || []).includes(key))) {
+    setVariantValue(current.value.platform_sku,key,value);
+    return;
+  }
   if (section === 'visible' && key === 'productSecondaryImageURL' && Array.isArray(value)) {
     value = [...new Set(value)].filter((u) => u !== current.value?.visible.mainImageUrl);
   }
@@ -1376,11 +1394,13 @@ onBeforeUnmount(() => {
               :active-sku="activeSku"
               :schema="currentSpec?.sections.visible"
               :labels="doc.labels"
-              :disabled="locked || busy || generating"
+              :disabled="busy || generating || allocatingCodes || !canEdit"
+              :editable-skus="eligible.map((row) => row.platform_sku)"
+              @refresh="refreshVariantFields"
               @select="activeSku = $event"
               @axes="setVariantAxes"
               @primary="setPrimaryVariant"
-              @value="(key, value) => update('visible', key, value)"
+              @value="setVariantValue"
             />
             <div class="listing-field" data-listing-path="fulfillment_center_id">
               <label class="listing-field-label"

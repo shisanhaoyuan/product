@@ -144,3 +144,74 @@ def test_previously_submitted_multipack_group_keeps_routing_under_new_rule():
     group = plan(rows, basis, schemas, history=history, latest=latest, apply=True)[0]
     assert not group['errors'] and group['axes'] == ['multipackQuantity']
     assert rows == before
+
+
+def test_manual_review_blocks_auto_replacement_and_keeps_explicit_blank_values():
+    rows, basis, schemas = setup_rules([{'Size': '2 Pack'}, {'Size': '1 Pack'}], {'color': {'type': 'string'}})
+    plan(rows, basis, schemas, apply=True)
+    for row in rows:
+        row['variant_manual'] = True
+        row['variant_reviewed_fields'] = ['color']
+        row['visible']['color'] = 'Same manual value'
+    snapshot = copy.deepcopy(rows)
+    report = plan(rows, basis, schemas, apply=True)[0]
+    assert report['manual'] and report['errors'] and rows == snapshot
+    assert any('人工编辑值会保留' in e['message'] for e in report['errors'])
+    rows[0]['visible'].pop('color')
+    plan(rows, basis, schemas, apply=True)
+    assert 'color' not in rows[0]['visible']
+    for row in rows:
+        row['visible']['variantAttributeNames'] = []
+    assert plan(rows, basis, schemas, apply=True)[0]['errors']
+    assert all(row['visible']['variantAttributeNames'] == [] for row in rows)
+
+
+def test_manual_fields_preserved_during_generation_including_unselected_attributes():
+    from catalog.listing_variants import preserve_manual
+    from catalog.listing_generation import fill_row
+    from test_listing_generation import listing, AI
+    from test_walmart_publishing import spec
+    row = listing()
+    row['variant_manual'] = True
+    row['variant_reviewed_fields'] = ['finish', 'size']
+    row['visible'].update(variantAttributeNames=['color'], color='User Color', finish='User Finish')
+    schema = spec()
+    props = sections(schema, PT)['visible']['properties']
+    props.update(color={'type': 'string'}, finish={'type': 'string'}, size={'type': 'string'})
+    updated = copy.deepcopy(row)
+    updated['visible'].update(color='AI color', finish='AI finish', size='AI size')
+    preserve_manual(updated, row)
+    assert updated['visible']['color'] == 'User Color' and updated['visible']['finish'] == 'User Finish'
+    assert 'size' not in updated['visible']
+    generated, _ = fill_row(row, schema, {'content.copy': {'title': 'Own chair'}}, AI(), {})
+    assert generated['visible']['finish'] == 'User Finish' and generated['visible']['color'] == 'User Color'
+    assert 'size' not in generated['visible']
+
+
+def test_api_saves_multirow_manual_values_and_revalidates_without_overwriting(variant_publishing):
+    c, catalog, _, _, _, base, _ = variant_publishing
+    doc = ready(variant_publishing)
+    for row in doc['rows']:
+        row['variant_manual'] = True
+        row['variant_reviewed_fields'] = ['color']
+        row['visible']['color'] = 'Same manual value'
+    response = c.patch(base, json={k: doc[k] for k in ('revision','version','rows')})
+    assert response.status_code == 200, response.text
+    doc = response.json()
+    assert doc['variant_groups'][0]['manual'] and doc['variant_groups'][0]['errors']
+    response = c.post(base+'/validate', json={'revision': doc['revision']})
+    doc = response.json()
+    assert doc['validation']['valid_count'] == 0
+    assert all(row['visible']['color'] == 'Same manual value' for row in doc['rows'])
+    doc['rows'][1]['visible']['color'] = 'Different manual value'
+    response = c.patch(base, json={k: doc[k] for k in ('revision','version','rows')})
+    doc = response.json()
+    response = c.post(base+'/validate', json={'revision': doc['revision']})
+    checked = response.json()
+    assert checked['validation']['valid_count'] == 2, checked['validation']
+    assert [row['visible']['color'] for row in c.get(base).json()['rows']] == ['Same manual value','Different manual value']
+    with catalog.connect() as db:
+        db.execute("UPDATE walmart_listing_metadata SET fetched_at=0 WHERE kind='spec'")
+    missing = c.get(base).json()['variant_groups'][0]
+    assert not missing['spec_ready'] and not missing['allowed_axes']
+    assert any('缓存已过期' in e['message'] for e in missing['errors'])
