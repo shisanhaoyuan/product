@@ -6,6 +6,7 @@ import json
 import os
 import secrets
 import anyio
+from decimal import Decimal
 from pathlib import Path
 from urllib.parse import urlparse
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -26,6 +27,7 @@ from .images import image_routes
 from .source_capture import source_routes
 from .object_storage import configured_storage
 from .product_search import normalize_identifiers
+from .product_ranges import ProductRanges
 from .database import DatabaseBusy
 from .concurrency import AdmissionMiddleware, RequestGate, busy_response, setting
 from starlette.concurrency import run_in_threadpool
@@ -211,6 +213,16 @@ def create_app(database=None):
             raise HTTPException(422, '上架次数下限不能大于上限')
         return dict(listing_count_min=listing_count_min, listing_count_max=listing_count_max)
 
+    def product_ranges(stock_min: int | None = Query(None, ge=0, le=2147483647),
+                       stock_max: int | None = Query(None, ge=0, le=2147483647),
+                       price_min: Decimal | None = Query(None, ge=0, le=Decimal('9999999999.99'), max_digits=12, decimal_places=2),
+                       price_max: Decimal | None = Query(None, ge=0, le=Decimal('9999999999.99'), max_digits=12, decimal_places=2)):
+        try:
+            return ProductRanges(stock_min=stock_min, stock_max=stock_max,
+                                 price_min=price_min, price_max=price_max).model_dump()
+        except ValidationError as exc:
+            raise HTTPException(422, exc.errors()[0]['msg'].removeprefix('Value error, ')) from None
+
     def batch_identifiers(identifiers: str = Query('', max_length=6000)):
         try:
             return normalize_identifiers(identifiers)
@@ -225,8 +237,8 @@ def create_app(database=None):
             raise HTTPException(422, str(exc)) from None
 
     @app.get('/api/products')
-    def products(q:str='',store:str='',brand:str='',status:str='',date:str='',page:int=Query(1,ge=1),page_size:int=Query(24,ge=1,le=100),category:str='',seller_status:str=Query('',pattern='^(blocked|unblocked)?$'),deduplicate:bool=False,counts:dict=Depends(listing_counts),source:Literal['', 'Amazon', 'GigaB2B', 'GigaB2B_CA', 'Saleyee']='',inventory_status:Literal['', 'out_of_stock']='',identifiers:str=Depends(batch_identifiers),listed_store:str=Query('',pattern='^([0-9]+)?$'),price_change:Literal['', 'up', 'down', 'unchanged', 'unknown']='',multi:str=Depends(multi_filters),shipping_address:str=Query('',pattern='^([a-f0-9]{64})?$'),return_address:str=Query('',pattern='^([a-f0-9]{64})?$')):
-        return catalog.find(q,store,brand,status,date,page,page_size,category=category,seller_status=seller_status,deduplicate=deduplicate,source=source,inventory_status=inventory_status,identifiers=identifiers,listed_store=listed_store,price_change=price_change,multi=multi,shipping_address=shipping_address,return_address=return_address,**counts)
+    def products(q:str='',store:str='',brand:str='',status:str='',date:str='',page:int=Query(1,ge=1),page_size:int=Query(24,ge=1,le=100),category:str='',seller_status:str=Query('',pattern='^(blocked|unblocked)?$'),deduplicate:bool=False,counts:dict=Depends(listing_counts),ranges:dict=Depends(product_ranges),source:Literal['', 'Amazon', 'GigaB2B', 'GigaB2B_CA', 'Saleyee']='',inventory_status:Literal['', 'out_of_stock', 'in_stock']='',identifiers:str=Depends(batch_identifiers),listed_store:str=Query('',pattern='^([0-9]+)?$'),price_change:Literal['', 'up', 'down', 'unchanged', 'unknown']='',multi:str=Depends(multi_filters),shipping_address:str=Query('',pattern='^([a-f0-9]{64})?$'),return_address:str=Query('',pattern='^([a-f0-9]{64})?$')):
+        return catalog.find(q,store,brand,status,date,page,page_size,category=category,seller_status=seller_status,deduplicate=deduplicate,source=source,inventory_status=inventory_status,identifiers=identifiers,listed_store=listed_store,price_change=price_change,multi=multi,shipping_address=shipping_address,return_address=return_address,**counts,**ranges)
 
     @app.get('/api/products/{listing_id}')
     def detail(listing_id:str):
@@ -273,7 +285,7 @@ def create_app(database=None):
                         headers={'Content-Disposition':'attachment; filename="catalog-backup.json"'})
 
     @app.get('/api/export.csv')
-    def export_csv(q:str='',store:str='',brand:str='',status:str='',date:str='',category:str='',seller_status:str=Query('',pattern='^(blocked|unblocked)?$'),counts:dict=Depends(listing_counts),source:Literal['', 'Amazon', 'GigaB2B', 'GigaB2B_CA', 'Saleyee']='',inventory_status:Literal['', 'out_of_stock']='',identifiers:str=Depends(batch_identifiers),listed_store:str=Query('',pattern='^([0-9]+)?$'),price_change:Literal['', 'up', 'down', 'unchanged', 'unknown']='',multi:str=Depends(multi_filters),shipping_address:str=Query('',pattern='^([a-f0-9]{64})?$'),return_address:str=Query('',pattern='^([a-f0-9]{64})?$')):
+    def export_csv(q:str='',store:str='',brand:str='',status:str='',date:str='',category:str='',seller_status:str=Query('',pattern='^(blocked|unblocked)?$'),counts:dict=Depends(listing_counts),ranges:dict=Depends(product_ranges),source:Literal['', 'Amazon', 'GigaB2B', 'GigaB2B_CA', 'Saleyee']='',inventory_status:Literal['', 'out_of_stock', 'in_stock']='',identifiers:str=Depends(batch_identifiers),listed_store:str=Query('',pattern='^([0-9]+)?$'),price_change:Literal['', 'up', 'down', 'unchanged', 'unknown']='',multi:str=Depends(multi_filters),shipping_address:str=Query('',pattern='^([a-f0-9]{64})?$'),return_address:str=Query('',pattern='^([a-f0-9]{64})?$')):
         buffer=io.StringIO();writer=csv.writer(buffer)
         writer.writerow(['ASIN','商品SKU','平台SKU','店铺','品牌','商品来源','来源链接','商品卖家','标题','子变体数','保存确认','填写完整','证据类型','上传时间','商品类目','卖家黑名单原因'])
         page=1
@@ -281,7 +293,7 @@ def create_app(database=None):
             text='' if value is None else str(value)
             return "'"+text if text.lstrip().startswith(('=','+','-','@')) else text
         while True:
-            found=catalog.find(q,store,brand,status,date,page,100,category=category,seller_status=seller_status,source=source,inventory_status=inventory_status,identifiers=identifiers,listed_store=listed_store,price_change=price_change,multi=multi,shipping_address=shipping_address,return_address=return_address,**counts)
+            found=catalog.find(q,store,brand,status,date,page,100,category=category,seller_status=seller_status,source=source,inventory_status=inventory_status,identifiers=identifiers,listed_store=listed_store,price_change=price_change,multi=multi,shipping_address=shipping_address,return_address=return_address,**counts,**ranges)
             for row in found['items']:
                 detail=catalog.get(row['id'])
                 writer.writerow([safe(v) for v in [row['asin'],row['sku'],detail['platform_sku'],row['store'],row['brand'],row['source'],

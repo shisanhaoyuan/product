@@ -17,6 +17,7 @@ import ProductVariantsPreview from '../components/ProductVariantsPreview.vue';
 import { useVariantPreview } from '../composables/useVariantPreview';
 import ListingCoverage from '../components/ListingCoverage.vue';
 import ListingCountFilter from '../components/ListingCountFilter.vue';
+import ProductRangeFilter from '../components/ProductRangeFilter.vue';
 import ProductImage from '../components/ProductImage.vue';
 import StatusBadge from '../components/StatusBadge.vue';
 import PrelistingComposer from '../components/PrelistingComposer.vue';
@@ -72,6 +73,10 @@ const filters = computed(() => {
     'price_change',
     'shipping_address',
     'return_address',
+    'stock_min',
+    'stock_max',
+    'price_min',
+    'price_max',
     'multi',
     'brand',
     'status',
@@ -86,8 +91,8 @@ const filters = computed(() => {
     if (typeof value === 'string' && value) params.set(key, value);
   }
   if (route.path === '/review' && !params.has('status')) params.set('status', 'review');
-  if (isWarehouse.value && route.query.inventory_status === 'out_of_stock')
-    params.set('inventory_status', 'out_of_stock');
+  if (['out_of_stock', 'in_stock'].includes(String(route.query.inventory_status)))
+    params.set('inventory_status', String(route.query.inventory_status));
   params.set('source', source.value);
   return params;
 });
@@ -106,6 +111,22 @@ const categoryOptions = computed(() => {
     })),
   ];
 });
+const rangeValues = computed(() => ({
+  stock_min: filters.value.get('stock_min') || '',
+  stock_max: filters.value.get('stock_max') || '',
+  price_min: filters.value.get('price_min') || '',
+  price_max: filters.value.get('price_max') || '',
+}));
+function changeRanges(values: typeof rangeValues.value) {
+  clearTimeout(searchTimer);
+  const query = Object.fromEntries(filters.value);
+  for (const [key, value] of Object.entries(values)) {
+    if (value) query[key] = value;
+    else delete query[key];
+  }
+  delete query.page;
+  return router.push({ path: libraryPath.value, query });
+}
 const storeOptions = computed(() => [
   { value: '', label: '全部来源店铺' },
   ...(stats.value?.stores.map((item) => ({ value: item.store, label: item.store })) || []),
@@ -518,13 +539,13 @@ onBeforeUnmount(() => {
         />
       </div>
       <FilterSelect
-        v-if="isWarehouse"
         label="筛选库存"
-        title="按供应商已匹配的可售库存筛选；未返回库存不计入无库存"
+        title="按已记录的可售库存筛选；未返回库存不计入有库存或无库存"
         multiple
         :model-value="filterValue('inventory_status')"
         :options="[
           { value: '', label: '全部库存状态' },
+          { value: 'in_stock', label: '有库存（可售库存大于 0）' },
           { value: 'out_of_stock', label: '无库存（可售库存为 0）' },
         ]"
         @update:model-value="changeMultiFilter('inventory_status', $event)"
@@ -632,7 +653,21 @@ onBeforeUnmount(() => {
       >
         <AppIcon name="RotateCcw" />
       </button>
+      <ProductRangeFilter
+        :values="rangeValues"
+        :currency="source === 'GigaB2B_CA' ? 'CAD' : 'USD'"
+        @change="changeRanges"
+      />
     </form>
+    <p class="batch-search-hint">
+      范围包含上下限，留空不限。{{
+        isGiga
+          ? '价格按预计总额筛选，价格区间有交集即可。'
+          : source === 'Saleyee'
+            ? '价格按采购价筛选。'
+            : '价格按当前售价筛选；库存和价格须由同一子变体满足。'
+      }}未知值不按 0 计算。
+    </p>
     <p v-if="storeFilterError" class="error-box">上架店铺列表加载失败：{{ storeFilterError }}</p>
     <p
       v-if="filterValue('listed_store') || filterValue('price_change') || filters.get('multi')"

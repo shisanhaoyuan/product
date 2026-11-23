@@ -22,7 +22,7 @@ def normalize_multi(value):
                 raise ValueError('地址筛选值无效')
             if key=='listed_store' and not re.fullmatch('[0-9]+', v):
                 raise ValueError('上架店铺筛选值无效')
-            enums = {'price_change': {'up','down','unchanged','unknown'}, 'seller_status': {'blocked','unblocked'}, 'inventory_status': {'out_of_stock'}}
+            enums = {'price_change': {'up','down','unchanged','unknown'}, 'seller_status': {'blocked','unblocked'}, 'inventory_status': {'out_of_stock', 'in_stock'}}
             if key in enums and v not in enums[key]:
                 raise ValueError('筛选值无效')
         if values:

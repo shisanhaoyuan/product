@@ -19,12 +19,14 @@ def refresh(db, lid):
     raw = local_product(row['data_json'], edit.get('changes_json'), edit.get('revision'),
                         edit.get('updated_at'), edit.get('source_digest'), row['digest'])
     data = json.loads(raw)
+    from .product_ranges import encoded_metrics
     values = {k: row[k] for k in ('id','product_id','namespace','external_id','sku','store',
                                    'template','uploaded_at','observed_at','evidence_kind')}
     values.update(brand=data['brand'], saved=int(data['save_succeeded']), complete=int(data['fill_complete']),
                   verified=int(data['readback_verified']),search_text=local_search(raw),data_json=raw,
                   digest=hashlib.sha256(raw.encode()).hexdigest(),source_digest=row['digest'],
-                  edit_version=edit.get('revision',0),category=category(data))
+                  edit_version=edit.get('revision',0),category=category(data),
+                  filter_metrics_json=encoded_metrics(raw))
     columns = ','.join(values)
     updates = ','.join(f'{k}=excluded.{k}' for k in values if k != 'id')
     db.execute(f'INSERT INTO current_listings({columns}) VALUES({",".join("?" for _ in values)}) '

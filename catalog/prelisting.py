@@ -13,6 +13,7 @@ from .blacklist import active_entries, matches, seller_key
 from .database import INTEGRITY_ERRORS, write_lock, read_snapshot, insert_id, is_postgres
 from . import platform_sku
 from .product_search import normalize_identifiers
+from .product_ranges import ProductRanges
 from .giga_prelisting import claim_identity, prepare as prepare_giga
 
 # Only names visible in the user's screenshots; marketplace aliases are explicit.
@@ -104,12 +105,12 @@ class StoreState(StoreCodeInput):
         return self
 
 
-class Filters(StrictInput):
+class Filters(StrictInput, ProductRanges):
     source: Literal['', 'Amazon', 'GigaB2B', 'GigaB2B_CA', 'Saleyee'] = ''
     deduplicate: bool = False
     q: str = Field(default='', max_length=300)
     identifiers: str = Field(default='', max_length=6000)
-    inventory_status: Literal['', 'out_of_stock'] = ''
+    inventory_status: Literal['', 'out_of_stock', 'in_stock'] = ''
     listed_store: str = Field(default='', pattern='^([0-9]+)?$')
     price_change: Literal['', 'up', 'down', 'unchanged', 'unknown'] = ''
     shipping_address: str = Field(default='', pattern='^([a-f0-9]{64})?$')

@@ -24,7 +24,7 @@ def test_zero_source_stock_filter_pagination_export_and_patrol(tmp_path, setting
     assert {first['items'][0]['sku'], second['items'][0]['sku']} == {'ZERO-A','ZERO-B'}
     assert not client.get('/api/products', params={**query, 'page':3}).json()['items']
     assert client.get('/api/products', params={**query, 'q':'ZERO-A'}).json()['total'] == 1
-    assert client.get('/api/products', params={**query, 'source':'Amazon'}).json()['total'] == 0
+    assert client.get('/api/products', params={**query, 'source':'Amazon'}).json()['total'] == 1
     assert client.get('/api/products', params={'source':'GigaB2B'}).json()['total'] == 4
     exported = client.get('/api/export.csv',params=query)
     rows = list(csv.reader(io.StringIO(exported.content.decode('utf-8-sig'))))
@@ -33,10 +33,10 @@ def test_zero_source_stock_filter_pagination_export_and_patrol(tmp_path, setting
     changed = client.patch('/api/products/'+zero['id']+'/edits',json={
         'expected_revision':item['local_edit']['revision'], 'field':'stock','value':'10'})
     assert changed.status_code == 200
-    assert c.find(inventory_status='out_of_stock')['total'] == 2
+    assert c.find(source='GigaB2B',inventory_status='out_of_stock')['total'] == 2
     fake.stock[0]['sellerInventoryInfo']['sellerAvailableInventory'] = 5
     run_patrol(c, settings, fake)
-    remaining = c.find(inventory_status='out_of_stock')
+    remaining = c.find(source='GigaB2B',inventory_status='out_of_stock')
     assert remaining['total'] == 1 and remaining['items'][0]['sku'] == 'ZERO-B'
     assert client.get('/api/products',params={'inventory_status':'typo'}).status_code == 422
     assert client.get('/api/export.csv',params={'inventory_status':'typo'}).status_code == 422

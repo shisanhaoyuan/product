@@ -59,6 +59,8 @@ class Catalog:
                 initialize_saleyee_pricing(db, True)
                 from .saleyee_addresses import initialize as initialize_saleyee_addresses
                 initialize_saleyee_addresses(db, True)
+                from .product_ranges import initialize as initialize_product_ranges
+                initialize_product_ranges(db, True)
             return
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -118,6 +120,8 @@ class Catalog:
             initialize_saleyee_pricing(db)
             from .saleyee_addresses import initialize as initialize_saleyee_addresses
             initialize_saleyee_addresses(db)
+            from .product_ranges import initialize as initialize_product_ranges
+            initialize_product_ranges(db)
 
     def pool(self):
         from psycopg_pool import ConnectionPool
@@ -161,6 +165,8 @@ class Catalog:
         db.row_factory = sqlite3.Row
         db.create_function("seller_key", 1, seller_key, deterministic=True)
         register_editing(db)
+        from .product_ranges import encoded_metrics
+        db.create_function('product_filter_metrics', 1, encoded_metrics, deterministic=True)
         db.execute("PRAGMA foreign_keys=ON")
         try:
             with db:
@@ -278,8 +284,10 @@ class Catalog:
             return counts
 
     def filter_sql(self, q="", store="", brand="", status="", date="", category="", seller_status="",
-                   listing_count_min=None, listing_count_max=None, source="", inventory_status="", identifiers="", listed_store="", price_change="", multi="", shipping_address="", return_address=""):
+                   listing_count_min=None, listing_count_max=None, source="", inventory_status="", identifiers="", listed_store="", price_change="", multi="", shipping_address="", return_address="", stock_min=None, stock_max=None, price_min=None, price_max=None):
         clauses, args = ["1=1"], []
+        from .product_filters import normalize_multi
+        groups = json.loads(normalize_multi(multi) or '{}')
         if source:
             clauses.append("listings.product_id IN (SELECT id FROM products WHERE source=?)")
             args.append(source)
@@ -288,21 +296,13 @@ class Catalog:
             if value:
                 clauses.append(address_clause(kind, self.postgres))
                 args.append(value)
-        if inventory_status == 'out_of_stock':
-            # Filter source stock before pagination; local edits are not supplier availability.
-            paths = [('GigaB2B_CA', ['source_facts','giga','inventory','sellerInventoryInfo','sellerAvailableInventory']),
-                     ('GigaB2B', ['source_facts','giga','inventory','sellerInventoryInfo','sellerAvailableInventory']),
-                     ('Saleyee', ['source_facts','inventory'])]
-            choices = []
-            for supplier, parts in paths:
-                if self.postgres:
-                    stock = "(data_json::jsonb #> '{" + ','.join(parts) + "}')"
-                    condition = f"jsonb_typeof({stock})='number' AND {stock}::text='0'"
-                else:
-                    path = '$.' + '.'.join(parts)
-                    condition = f"json_type(data_json,'{path}')='integer' AND json_extract(data_json,'{path}')=0"
-                choices.append(f"(listings.product_id IN (SELECT id FROM products WHERE source='{supplier}') AND {condition})")
-            clauses.append('(' + ' OR '.join(choices) + ')')
+        from .product_ranges import clause as range_clause
+        condition, parameters = range_clause(postgres=self.postgres, inventory_status=inventory_status,
+            inventory_states=groups.get('inventory_status', []), stock_min=stock_min, stock_max=stock_max,
+            price_min=price_min, price_max=price_max)
+        if condition:
+            clauses.append(condition)
+            args.extend(parameters)
         if listed_store:
             from .product_filters import store_clause
             clauses.append(store_clause(self.postgres))
@@ -342,8 +342,9 @@ class Catalog:
                     clauses.append(f'{count_sql}{operator}?')
                     args.append(value)
         if multi:
-            from .product_filters import normalize_multi
-            for key, values in json.loads(normalize_multi(multi) or '{}').items():
+            for key, values in groups.items():
+                if key == 'inventory_status':
+                    continue  # Combined with ranges on the same candidate above.
                 choices = []
                 for value in values:
                     condition, parameters = self.filter_sql(**{key: value})
@@ -373,10 +374,10 @@ class Catalog:
         return query, args
 
     def find(self, q="", store="", brand="", status="", date="", page=1, page_size=24, category="", seller_status="", deduplicate=False,
-             listing_count_min=None, listing_count_max=None, source="", inventory_status="", identifiers="", listed_store="", price_change="", multi="", shipping_address="", return_address=""):
+             listing_count_min=None, listing_count_max=None, source="", inventory_status="", identifiers="", listed_store="", price_change="", multi="", shipping_address="", return_address="", stock_min=None, stock_max=None, price_min=None, price_max=None):
         query, args = self.selection_sql(q=q,store=store,brand=brand,status=status,date=date,
                                          category=category,seller_status=seller_status,deduplicate=deduplicate,
-                                         listing_count_min=listing_count_min,listing_count_max=listing_count_max,source=source,inventory_status=inventory_status,identifiers=identifiers,listed_store=listed_store,price_change=price_change,multi=multi,shipping_address=shipping_address,return_address=return_address)
+                                         listing_count_min=listing_count_min,listing_count_max=listing_count_max,source=source,inventory_status=inventory_status,identifiers=identifiers,listed_store=listed_store,price_change=price_change,multi=multi,shipping_address=shipping_address,return_address=return_address,stock_min=stock_min,stock_max=stock_max,price_min=price_min,price_max=price_max)
         with self.connect() as db:
             read_snapshot(db)
             total = db.execute(f"SELECT COUNT(*) FROM ({query}) AS listings",args).fetchone()[0]

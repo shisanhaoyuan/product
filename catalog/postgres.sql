@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS current_listings(
  evidence_kind TEXT NOT NULL,saved INTEGER NOT NULL,complete INTEGER NOT NULL,verified INTEGER NOT NULL,
  search_text TEXT NOT NULL,data_json TEXT NOT NULL,digest TEXT NOT NULL,
  source_digest TEXT NOT NULL,edit_version INTEGER NOT NULL,category TEXT NOT NULL);
+ALTER TABLE current_listings ADD COLUMN IF NOT EXISTS filter_metrics_json TEXT NOT NULL DEFAULT '[]';
 CREATE INDEX IF NOT EXISTS current_store ON current_listings(store,uploaded_at DESC,id);
 CREATE INDEX IF NOT EXISTS current_category ON current_listings(category);
 CREATE INDEX IF NOT EXISTS current_brand ON current_listings(brand);
