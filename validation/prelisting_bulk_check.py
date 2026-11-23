@@ -1,8 +1,9 @@
 """Browser acceptance with mocked batch APIs; never generates or publishes real items."""
 import json
 import os
+from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from playwright.sync_api import sync_playwright, expect
 
@@ -12,13 +13,14 @@ OUTPUT.mkdir(parents=True, exist_ok=True)
 
 
 def main():
-    items = [dict(id=f'batch-{n}', status=status, created_at='2026-11-23T02:00:00Z',
+    items = [dict(id=f'batch-{n}', status=status, created_at=f'2026-11-{24-n}T02:00:00Z',
                   store=f'测试店铺 {n}', brand='TestBrand', multiplier='1.4', total=1,
                   ready_count=1, variant_count=1, review_failed_count=0, unsubmitted_count=1)
              for n, status in [(1, 'draft'), (2, 'confirmed')]]
     generated, validated, deleted, cancel_requests = [], [], [], []
     jobs = {}
     errors = []
+    queries = []
 
     def document(bid, validation=False):
         valid = bid == 'batch-1'
@@ -31,7 +33,16 @@ def main():
     def handler(route):
         path = urlsplit(route.request.url).path
         if path == '/api/prelisting/batches':
-            return route.fulfill(json=dict(items=items, total=len(items), page=1, page_size=20))
+            query = parse_qs(urlsplit(route.request.url).query)
+            queries.append(query)
+            filtered = items[:]
+            for key, direction in [('created_from', 1), ('created_to', -1)]:
+                if key in query:
+                    boundary = datetime.fromisoformat(query[key][0].replace('Z', '+00:00'))
+                    filtered = [item for item in filtered if
+                                (datetime.fromisoformat(item['created_at'].replace('Z', '+00:00'))
+                                 - boundary).total_seconds() * direction >= 0]
+            return route.fulfill(json=dict(items=filtered, total=len(filtered), page=1, page_size=20))
         if path == '/api/prelisting/batches/bulk-action':
             payload = route.request.post_data_json
             deleted.append(payload)
@@ -59,12 +70,41 @@ def main():
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(channel='chrome', headless=True)
-        page = browser.new_page(viewport={'width': 1440, 'height': 1080})
+        page = browser.new_page(viewport={'width': 1440, 'height': 1080}, timezone_id='Asia/Shanghai')
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.route('**/api/**', handler)
         page.goto(BASE + '/#/prelisting')
         expect(page.get_by_role('heading', name='预上架批次', exact=True)).to_be_visible()
         expect(page.get_by_label('选择批次 batch-1')).not_to_be_checked()
+        time_filter = page.locator('summary[aria-label^="创建时间"]')
+        time_filter.click()
+        page.get_by_label('创建开始时间', exact=True).fill('2026-11-23T00:00')
+        page.get_by_label('创建结束时间', exact=True).fill('2026-11-23T23:59:59')
+        page.screenshot(path=str(OUTPUT / 'time-desktop.png'), full_page=True)
+        page.get_by_role('button', name='应用时间', exact=True).click()
+        expect(page.get_by_label('选择批次 batch-2')).to_have_count(0)
+        expect(page.get_by_label('选择批次 batch-1')).to_be_visible()
+        assert queries[-1]['created_from'] == ['2026-11-22T16:00:00.000Z']
+        assert queries[-1]['created_to'] == ['2026-11-23T15:59:59.999Z']
+        time_filter.click()
+        page.get_by_label('创建结束时间', exact=True).fill('2026-11-22T23:59:59')
+        request_count = len(queries)
+        page.get_by_role('button', name='应用时间', exact=True).click()
+        expect(page.get_by_role('alert')).to_have_text('开始时间不能晚于结束时间')
+        assert len(queries) == request_count
+        page.get_by_role('button', name='清空', exact=True).click()
+        expect(page.get_by_label('选择批次 batch-2')).to_be_visible()
+        assert 'created_from' not in queries[-1] and 'created_to' not in queries[-1]
+        for width in [390, 801, 1440]:
+            page.set_viewport_size({'width': width, 'height': 1000})
+            time_filter.click()
+            panel = page.get_by_role('form', name='创建时间范围')
+            bounds = panel.bounding_box()
+            assert bounds and bounds['x'] >= 0 and bounds['x'] + bounds['width'] <= width
+            if width == 390:
+                page.screenshot(path=str(OUTPUT / 'time-mobile.png'), full_page=True)
+            page.get_by_label('创建开始时间', exact=True).press('Escape')
+            expect(panel).not_to_be_visible()
         page.get_by_label('全选本页记录', exact=True).check()
         expect(page.get_by_label('选择批次 batch-1')).to_be_checked()
         expect(page.get_by_label('选择批次 batch-2')).to_be_checked()

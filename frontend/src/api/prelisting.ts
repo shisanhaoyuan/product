@@ -35,7 +35,14 @@ export const prelistingApi = {
   batches: (
     page = 1,
     signal?: AbortSignal,
-    filters: { status?: string; store_id?: string; q?: string; trash?: string } = {},
+    filters: {
+      status?: string;
+      store_id?: string;
+      q?: string;
+      trash?: string;
+      created_from?: string;
+      created_to?: string;
+    } = {},
   ) =>
     request<BatchPage>(
       '/api/prelisting/batches?' + new URLSearchParams({ page: String(page), ...filters }),

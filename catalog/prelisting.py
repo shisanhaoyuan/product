@@ -7,7 +7,7 @@ from decimal import Decimal, InvalidOperation, ROUND_FLOOR, ROUND_HALF_UP
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, BackgroundTasks
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .blacklist import active_entries, matches, seller_key
 from .database import INTEGRITY_ERRORS, write_lock, read_snapshot, insert_id, is_postgres
@@ -547,7 +547,10 @@ def prelisting_routes(catalog):
     @router.get('/api/prelisting/batches')
     def batches(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
                 status:Literal['','draft','confirmed','cancelled','review_failed']='',store_id:int=Query(0,ge=0),
-                q:str=Query('',max_length=200),trash:bool=False):
+                q:str=Query('',max_length=200),trash:bool=False,
+                created_from:AwareDatetime | None=None,created_to:AwareDatetime | None=None):
+        if created_from and created_to and created_from>created_to:
+            raise HTTPException(422,'开始时间不能晚于结束时间')
         with catalog.connect() as db:
             read_snapshot(db)
             store_expr="CAST(b.preview_json AS jsonb)->'store'->>'id'" if catalog.postgres else "CAST(json_extract(b.preview_json,'$.store.id') AS TEXT)"
@@ -569,6 +572,13 @@ def prelisting_routes(catalog):
             if status=='review_failed':where.append(f'{failed}>0')
             elif status:where.append('b.status=?');args.append(status)
             if store_id:where.append(f'{store_expr}=?');args.append(str(store_id))
+            for value,operator in ((created_from,'>='),(created_to,'<=')):
+                if value is not None:
+                    # Stored timestamps are text; compare instants, including legacy offsets.
+                    column='CAST(b.created_at AS timestamptz)' if catalog.postgres else 'julianday(b.created_at)'
+                    parameter='CAST(? AS timestamptz)' if catalog.postgres else 'julianday(?)'
+                    where.append(f'{column}{operator}{parameter}')
+                    args.append(value.astimezone(timezone.utc).isoformat())
             if q.strip():
                 where.append(f'(lower(b.id) LIKE ? OR lower({brand_expr}) LIKE ? OR lower({name_expr}) LIKE ?)')
                 args.extend(['%'+q.strip().lower()+'%']*3)

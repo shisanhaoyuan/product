@@ -1,5 +1,6 @@
 """Direct batch cleanup preserves audit, identifiers and platform safety."""
 from fastapi.testclient import TestClient
+import pytest
 
 from catalog.app import create_app
 from test_prelisting import local, inputs, create
@@ -33,6 +34,48 @@ def test_status_store_brand_search_and_filtered_pagination(local):
     result=client.get('/api/prelisting/batches',params={'store_id':other['id']}).json()
     assert [item['id'] for item in result['items']]==[draft['id']]
     assert client.get('/api/prelisting/batches?status=published').status_code==422
+
+
+def test_creation_time_filters_use_instants_include_boundaries_and_paginate(local):
+    client,catalog=local
+    first=cancelled(client,brand='FirstDay')
+    middle=cancelled(client,brand='SecondDay')
+    last=cancelled(client,brand='EndOfDay')
+    with catalog.connect() as db:
+        for bid,at in [(first['id'],'2026-11-20T00:00:00+08:00'),
+                       (middle['id'],'2026-11-20T16:00:00.123456+00:00'),
+                       (last['id'],'2026-11-21T15:59:59.999000+00:00')]:
+            db.execute('UPDATE prelisting_batches SET created_at=? WHERE id=?',(at,bid))
+    filters={'created_from':'2026-11-21T00:00:00+08:00','created_to':'2026-11-21T23:59:59.999+08:00'}
+    result=client.get('/api/prelisting/batches',params=filters).json()
+    assert result['total']==2
+    assert {row['id'] for row in result['items']}=={middle['id'],last['id']}
+    pages=[client.get('/api/prelisting/batches',params=filters|{'page_size':1,'page':page}).json() for page in (1,2)]
+    assert all(result['total']==2 and len(result['items'])==1 for result in pages)
+    assert len({result['items'][0]['id'] for result in pages})==2
+    exact={'created_from':'2026-11-19T16:00:00Z','created_to':'2026-11-19T16:00:00Z'}
+    assert [row['id'] for row in client.get('/api/prelisting/batches',params=exact).json()['items']]==[first['id']]
+    before=client.get('/api/prelisting/batches',params={'created_to':'2026-11-20T16:00:00Z'}).json()
+    assert [row['id'] for row in before['items']]==[first['id']]
+    after=client.get('/api/prelisting/batches',params={'created_from':'2026-11-21T15:59:59.999Z'}).json()
+    assert [row['id'] for row in after['items']]==[last['id']]
+    combined=client.get('/api/prelisting/batches',params=filters|{'status':'cancelled',
+        'store_id':last['preview']['store']['id'],'q':'EndOfDay'}).json()
+    assert [row['id'] for row in combined['items']]==[last['id']]
+    assert change(client,[first['id'],middle['id'],last['id']]).status_code==200
+    assert client.get('/api/prelisting/batches',params=filters).json()['total']==0
+    assert client.get('/api/prelisting/batches',params=filters|{'trash':'true'}).json()['total']==2
+
+
+@pytest.mark.parametrize('filters',[
+    {'created_from':'2026-11-20T00:00:00'},
+    {'created_to':'2026-11-31T00:00:00Z'},
+    {'created_from':'2026-11-21T00:00:00Z','created_to':'2026-11-20T00:00:00Z'},
+])
+def test_creation_time_filter_rejects_invalid_or_ambiguous_ranges(local,filters):
+    client,_=local
+    response=client.get('/api/prelisting/batches',params=filters)
+    assert response.status_code==422,response.text
 
 
 def test_batch_delete_restore_is_idempotent_persistent_and_preserves_records(local):

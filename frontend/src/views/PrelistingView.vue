@@ -9,6 +9,8 @@ import PrelistingPreview from '../components/PrelistingPreview.vue';
 import WalmartListingEditor from '../components/WalmartListingEditor.vue';
 import FilterSelect from '../components/FilterSelect.vue';
 import AppIcon from '../components/AppIcon.vue';
+import DateTimeRangeFilter from '../components/DateTimeRangeFilter.vue';
+import { dateTimeRangeQuery } from '../utils/dateTimeRange';
 import { publishingApi } from '../api/publishing';
 import {
   activeGeneration,
@@ -33,6 +35,8 @@ const labels = { draft: '上架准备中', confirmed: '已确认', cancelled: '�
 const status = ref(''),
   storeId = ref(''),
   query = ref(''),
+  createdStart = ref(''),
+  createdEnd = ref(''),
   trash = ref(false);
 const stores = ref<ListingStore[]>([]),
   selected = ref<string[]>([]);
@@ -208,6 +212,7 @@ async function load() {
         store_id: storeId.value || '0',
         q: query.value.trim(),
         trash: String(trash.value),
+        ...dateTimeRangeQuery(createdStart.value, createdEnd.value),
       });
       const lastPage = Math.max(1, Math.ceil(result.total / result.page_size));
       if (!current.signal.aborted && page.value > lastPage) {
@@ -253,7 +258,7 @@ watch(
   },
   { immediate: true },
 );
-watch([status, storeId, trash], () => {
+watch([status, storeId, trash, createdStart, createdEnd], () => {
   page.value = 1;
   void load();
 });
@@ -334,6 +339,17 @@ onBeforeUnmount(() => {
         <AppIcon name="X" />
       </button>
     </div>
+    <DateTimeRangeFilter
+      class="batch-time-filter"
+      :start="createdStart"
+      :end="createdEnd"
+      @apply="
+        (start, end) => {
+          createdStart = start;
+          createdEnd = end;
+        }
+      "
+    />
     <button class="btn" :disabled="busy" @click="trash = !trash">
       {{ trash ? '返回批次列表' : '回收站' }}
     </button>
@@ -563,7 +579,9 @@ onBeforeUnmount(() => {
 }
 .batch-filters {
   display: grid;
-  grid-template-columns: minmax(150px, 190px) minmax(150px, 190px) minmax(240px, 1fr) auto;
+  grid-template-columns:
+    minmax(130px, 170px) minmax(130px, 170px) minmax(200px, 1fr) minmax(180px, 260px)
+    auto;
   align-items: center;
   gap: 12px;
   margin: 20px 0;
@@ -651,6 +669,9 @@ onBeforeUnmount(() => {
   .batch-search {
     grid-column: 1 / -1;
     grid-row: 1;
+  }
+  .batch-time-filter {
+    grid-column: 1 / -1;
   }
 }
 .batch-actions {
