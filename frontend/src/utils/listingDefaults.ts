@@ -81,19 +81,40 @@ export function applyListingDefaults(
   nodes: ShipNode[],
 ): boolean {
   let changed = false;
-  for (const row of doc.rows) {
-    const status = doc.results[row.platform_sku]?.status;
-    if (status && !['failed', 'rejected', 'unpublished'].includes(status)) continue;
-    if (!row.product_type) {
-      const item = doc.basis.items.find((item) => item.listing_id === row.listing_id);
-      const variant = item?.variants?.find((v) => v.platform_sku === row.platform_sku);
-      const title = variant?.content?.copy?.title || String(row.visible.productName || '');
-      const type = matchProductType(item?.category || '', types, item?.category_hints || [], title);
-      if (type) {
+  for (const lid of new Set(doc.rows.map((row) => row.listing_id))) {
+    const family = doc.rows.filter((row) => row.listing_id === lid);
+    const existing = new Set(family.map((row) => row.product_type).filter(Boolean));
+    const item = doc.basis.items.find((item) => item.listing_id === lid);
+    const candidates = new Set(
+      family
+        .map((row) => {
+          const variant = item?.variants?.find((v) => v.platform_sku === row.platform_sku);
+          return matchProductType(
+            item?.category || '',
+            types,
+            item?.category_hints || [],
+            variant?.content?.copy?.title || String(row.visible.productName || ''),
+          );
+        })
+        .filter(Boolean),
+    );
+    const choices = existing.size ? existing : candidates;
+    if (choices.size !== 1) continue;
+    const type = [...choices][0]!;
+    for (const row of family) {
+      const status = doc.results[row.platform_sku]?.status;
+      if (
+        !row.product_type &&
+        (!status || ['failed', 'rejected', 'unpublished'].includes(status))
+      ) {
         row.product_type = type;
         changed = true;
       }
     }
+  }
+  for (const row of doc.rows) {
+    const status = doc.results[row.platform_sku]?.status;
+    if (status && !['failed', 'rejected', 'unpublished'].includes(status)) continue;
     if (!row.fulfillment_center_id && nodes.length === 1) {
       row.fulfillment_center_id = nodes[0]!.id;
       changed = true;
@@ -108,4 +129,17 @@ export function applyListingDefaults(
     }
   }
   return changed;
+}
+
+export function setFamilyProductType(doc: ListingDocument, sku: string, type: string) {
+  const current = doc.rows.find((row) => row.platform_sku === sku);
+  if (!current) return;
+  const family = doc.rows.filter((row) => row.listing_id === current.listing_id);
+  const editable = (row: typeof current) =>
+    !doc.results[row.platform_sku] ||
+    ['failed', 'rejected', 'unpublished'].includes(doc.results[row.platform_sku]!.status);
+  if (!editable(current)) throw new Error('当前商品已提交，不能修改类目');
+  if (family.some((row) => !editable(row) && row.product_type !== type))
+    throw new Error('同组已有提交商品，类目必须沿用已提交的商品类型');
+  for (const row of family) if (editable(row)) row.product_type = type;
 }

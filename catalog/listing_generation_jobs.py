@@ -329,6 +329,14 @@ def run_job(catalog, publisher, jid, ai):
                 for n,value in enumerate(live_rows):
                     if value['platform_sku']==sku:
                         live_rows[n]=updated
+                from .listing_variants import synchronize_types
+                synchronize_types(live_rows,latest_results(db,job['batch_id']))
+                # Persist the chosen type for every sibling immediately, including
+                # children whose own attribute generation has not run or failed.
+                shared={r['platform_sku']:r['product_type'] for r in live_rows}
+                for local in rows:
+                    local['product_type']=shared[local['platform_sku']]
+                updated['product_type']=shared[sku]
                 if live_rows!=json.loads(stored['rows_json']):
                     db.execute('UPDATE walmart_listing_documents SET revision=revision+1,rows_json=?,validation_json=?,updated_at=? WHERE batch_id=?',
                         (encoded(live_rows),'{}',now(),job['batch_id']))
@@ -357,6 +365,7 @@ def run_job(catalog, publisher, jid, ai):
                 write_lock(db);checked_context(db,job)
                 cache_put(db,bound,'taxonomy',types);cache_put(db,bound,'nodes',nodes)
             by_sku={v['platform_sku']:(i,v) for i in basis['items'] for v in i['variants']}
+            family_types={}
             for original in rows:
                 sku=original['platform_sku']
                 with catalog.connect() as db:
@@ -417,14 +426,26 @@ def run_job(catalog, publisher, jid, ai):
                         variant['_collected_images']=image_collection['images']
                     progress(sku,'generating',f'正在生成 {sku} 刊登资料')
                     try:
-                        pt,decision=choose_type(updated,item,facts,types,ai)
+                        lid=updated['listing_id']
+                        if lid in family_types:
+                            pt=family_types[lid]
+                            decision=dict(kind='family',reason='沿用同一来源商品整组已确定的类目',refs=[])
+                        else:
+                            choices={r['product_type'] for r in rows if r['listing_id']==lid and r['product_type']}
+                            if len(choices)>1:
+                                raise ListingAIError('同组子变体的类目不一致，请在商品类型中统一选择一次后重新生成')
+                            seed=copy.deepcopy(updated)
+                            if choices:
+                                seed['product_type']=next(iter(choices))
+                            pt,decision=choose_type(seed,item,facts,types,ai)
+                            family_types[lid]=pt
                     except ListingAIError as exc:
                         issues.append(dict(path='product_type',message=str(exc)))
                         blockers.append(dict(path='product_type',value=updated['product_type'],message=str(exc),source_digest=item['source_digest']))
                         raise
                     prior_type=provenance.get('product_type',{})
                     if (original['product_type'] and pt!=original['product_type'] and
-                            (prior_type.get('manual_locked') or prior_type.get('kind') not in ('source','ai_source'))):
+                            (prior_type.get('manual_locked') or prior_type.get('kind') not in ('source','ai_source','family'))):
                         blockers.append(dict(path='product_type',value=original['product_type'],source_digest=item['source_digest'],
                             message='现有人工商品类型与来源不一致，请确认类目后重新生成，系统未覆盖人工选择'))
                         raise ListingAIError('现有人工商品类型与来源不一致，已保留人工选择')

@@ -100,11 +100,58 @@ def test_shared_attributes_respect_row_schema_submission_and_missing_source():
     rows[1]['product_type'] = other
     plan(rows, basis, schemas, latest={rows[0]['platform_sku']: {'status': 'published'}}, apply=True)
     assert 'color' not in rows[0]['visible']
-    assert rows[1]['visible']['color'] == ['Blue']
+    assert rows[1]['product_type'] == PT
+    assert rows[1]['visible']['color'] == 'Blue'
     rows[1]['visible'].pop('color')
     basis['items'][0]['variants'][1]['content']['attributes'] = {}
     plan(rows, basis, schemas, latest={rows[0]['platform_sku']: {'status': 'published'}}, apply=True)
     assert 'color' not in rows[1]['visible']
+
+
+def test_family_type_repairs_blanks_and_explicit_choice_updates_editable_siblings():
+    from catalog.listing_variants import synchronize_types
+    rows, _, _ = family()
+    rows[0]['product_type'] = ''
+    synchronize_types(rows)
+    assert {r['product_type'] for r in rows} == {PT}
+    unrelated = copy.deepcopy(rows[0]); unrelated.update(listing_id='other', platform_sku='other')
+    rows.append(unrelated)
+    synchronize_types(rows, preferred={'parent': 'End Tables'})
+    assert [r['product_type'] for r in rows] == ['End Tables', 'End Tables', PT]
+    synchronize_types(rows, preferred={'parent': ''})
+    assert [r['product_type'] for r in rows] == ['', '', PT]
+
+
+def test_family_type_uses_submitted_history_and_rejects_incompatible_edits():
+    from catalog.listing_variants import synchronize_types
+    rows, _, _ = family()
+    historical = copy.deepcopy(rows[0]); historical['platform_sku'] = 'historical'
+    history = {'historical': {'row': historical, 'status': 'published'}}
+    rows[0]['product_type'] = ''
+    rows[1]['product_type'] = 'Different'
+    synchronize_types(rows, history=history)
+    assert {r['product_type'] for r in rows} == {PT}
+    with pytest.raises(ValueError, match='沿用'):
+        synchronize_types(rows, history=history, preferred={'parent': 'Different'})
+
+
+def test_prepare_repairs_existing_blank_family_types_and_save_shares_choice(variant_publishing):
+    c, catalog, _, _, batch, base, _ = variant_publishing
+    doc = ready(variant_publishing)
+    doc['rows'][1]['product_type'] = ''
+    with catalog.connect() as db:
+        db.execute('UPDATE walmart_listing_documents SET rows_json=? WHERE batch_id=?',
+                   (json.dumps(doc['rows']), batch['id']))
+    response = c.post(base+'/prepare')
+    assert response.status_code == 200, response.text
+    repaired = response.json()
+    assert all(r['product_type'] == PT for r in repaired['rows'])
+    assert repaired['specs'][PT]['sections']['visible']['properties']
+    repaired['rows'][0]['product_type'] = 'End Tables'
+    response = c.patch(base, json={k: repaired[k] for k in ('revision', 'version', 'rows')})
+    assert response.status_code == 200, response.text
+    assert {r['product_type'] for r in response.json()['rows']} == {'End Tables'}
+    assert {r['product_type'] for r in c.get(base).json()['rows']} == {'End Tables'}
 
 
 def test_duplicate_and_unsupported_discriminators_do_not_silently_become_standalone():
@@ -289,6 +336,47 @@ def test_generation_final_group_normalization_advances_job_revision(variant_publ
     assert final['revision'] == saved['revision'] and saved['revision'] > job['revision']
     assert not saved['variant_groups'][0]['errors']
     assert len({r['visible']['variantGroupId'] for r in saved['rows']}) == 1
+
+
+@pytest.mark.parametrize('fail_second', [False, True])
+def test_generation_selects_type_once_and_keeps_it_for_every_child(variant_publishing, monkeypatch, fail_second):
+    from test_listing_generation import AI
+    from test_images import picture
+    from catalog.listing_ai_client import ListingAIError
+    from catalog.listing_generation import source_facts
+    from catalog.listing_generation_jobs import start_job, run_job
+    from catalog.walmart_publishing import document
+    c, catalog, _, _, batch, base, remote = variant_publishing
+    doc = ready(variant_publishing)
+    for row in doc['rows']:
+        row['product_type'] = ''
+    with catalog.connect() as db:
+        db.execute('UPDATE walmart_listing_documents SET rows_json=?,validation_json=? WHERE batch_id=?',
+                   (json.dumps(doc['rows']), '{}', batch['id']))
+    def collected(catalog, job, report, progress, checked):
+        with catalog.connect() as db:
+            return document(db, job['batch_id'])
+    choices = []
+    def choose(row, item, facts, types, ai):
+        choices.append(row['platform_sku'])
+        return PT, dict(kind='ai_source', reason='整组家具类目', refs=['category'])
+    def facts(catalog, source, item, variant, ai):
+        if fail_second and variant['platform_sku'] == doc['rows'][1]['platform_sku']:
+            raise ListingAIError('模拟第二个子体资料采集失败')
+        return source_facts(source, item, variant), {'state': 'complete'}
+    monkeypatch.setattr('catalog.listing_preparation_source.collect_before_generation', collected)
+    monkeypatch.setattr('catalog.listing_generation_jobs.choose_type', choose)
+    monkeypatch.setattr('catalog.listing_generation_jobs.supplement_facts', facts)
+    monkeypatch.setattr('catalog.listing_vision.fetch_image', lambda url: picture())
+    monkeypatch.setenv('CATALOG_PUBLIC_ORIGIN', 'https://catalog.example.test')
+    ai = AI(); publisher = c.app.state.walmart_publisher
+    job = start_job(catalog, publisher, batch['id'], ai=ai, schedule=False, source_mode='server')
+    run_job(catalog, publisher, job['id'], ai)
+    final = c.get(base+'/generation').json()['job']
+    assert final['state'] == 'complete', final
+    assert len(choices) == 1
+    assert {r['product_type'] for r in c.get(base).json()['rows']} == {PT}
+    assert not remote.posts
 
 
 def test_equivalent_numeric_and_array_values_cannot_disguise_duplicate_variants():

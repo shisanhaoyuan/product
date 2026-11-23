@@ -32,6 +32,35 @@ SHARED_ATTRIBUTES = ('color', 'finish', 'size', 'sizeDescriptor', 'pattern', 'sh
                      'material', 'frameColor', 'bedSize')
 
 
+def synchronize_types(rows, latest=None, history=None, preferred=None):
+    """A source parent has one store-specific product type, not one per child.
+
+    A unique existing choice repairs old blank children. Explicit edits update
+    the whole editable family. Submitted siblings retain their original type.
+    Conflicting old choices require one explicit choice rather than guessing.
+    """
+    latest, history, preferred = latest or {}, history or {}, preferred or {}
+    for lid in {r['listing_id'] for r in rows}:
+        members = [r for r in rows if r['listing_id'] == lid]
+        locked = [r for r in members if latest.get(r['platform_sku'], {}).get('status', 'unsubmitted') not in EDITABLE]
+        locked += [h['row'] for h in history.values() if h['row']['listing_id'] == lid and h['status'] not in EDITABLE]
+        fixed = {r['product_type'] for r in locked if r['product_type']}
+        choices = {r['product_type'] for r in members if r['product_type']}
+        if lid in preferred:
+            chosen = preferred[lid]
+            if fixed and fixed != {chosen}:
+                raise ValueError('同组已有提交商品，类目必须沿用已提交的商品类型')
+        elif len(fixed) == 1:
+            chosen = next(iter(fixed))
+        elif not fixed and len(choices) == 1:
+            chosen = next(iter(choices))
+        else:
+            continue
+        for row in members:
+            if latest.get(row['platform_sku'], {}).get('status', 'unsubmitted') in EDITABLE:
+                row['product_type'] = chosen
+
+
 def group_id(store_id, listing_id):
     return 'JW-' + hashlib.sha256(f'{store_id}:{listing_id}'.encode()).hexdigest()[:32]
 
@@ -134,6 +163,7 @@ def plan(rows, basis, schemas, *, sources=None, history=None, latest=None, apply
     original = rows
     rows = copy.deepcopy(rows)
     if apply:
+        synchronize_types(rows, latest, history)
         fill_shared_attributes(rows, basis, schemas, latest)
     groups = []
     for item in basis['items']:
@@ -302,6 +332,10 @@ def context(db, rows, basis, version):
             for row in json.loads(record['rows_json']):
                 if row['listing_id'] == lid:
                     history[row['platform_sku']] = dict(row=row, status=results.get(row['platform_sku'], {}).get('status', 'unknown'))
+    if bound:
+        for pt in {h['row']['product_type'] for h in history.values()} - set(schemas):
+            if pt:
+                schemas[pt]=cache_value(db,bound,'spec',version,pt)
     return dict(schemas=schemas, sources=sources, history=history)
 
 

@@ -557,8 +557,10 @@ def normalize_document_titles(db, doc):
     from .listing_variants import synchronize
     before_groups=copy.deepcopy(rows)
     variant_groups=synchronize(db,rows,basis,doc['version'],latest_results(db,doc['batch_id']),apply=True)
-    group_changes=[dict(platform_sku=after['platform_sku'],before=before['visible'],after=after['visible'])
-                   for before,after in zip(before_groups,rows) if before['visible']!=after['visible']]
+    group_changes=[dict(platform_sku=after['platform_sku'],before=before['visible'],after=after['visible'],
+                        before_type=before['product_type'],after_type=after['product_type'])
+                   for before,after in zip(before_groups,rows)
+                   if before['visible']!=after['visible'] or before['product_type']!=after['product_type']]
     if changes or encoded(rows)!=doc['rows_json']:
         db.execute('UPDATE walmart_listing_documents SET rows_json=?,revision=revision+1,validation_json=?,updated_at=? WHERE batch_id=?',
             (encoded(rows),'{}',now(),doc['batch_id']))
@@ -671,7 +673,18 @@ def publishing_routes(catalog):
                 if any(k in r['orderable'] for k in ('sku','productIdentifiers','inventory','SkuUpdate','ProductIdUpdate')) or any(k in r['extra'] for k in ('Visible','Orderable')):
                     raise HTTPException(422,'店铺 SKU 和商品编码只能通过专用字段设置')
             rule_changes=normalize_titles(db,rows,json.loads(doc['basis_json']),latest,data.version)
-            from .listing_variants import synchronize
+            from .listing_variants import synchronize, synchronize_types, context
+            preferred={}
+            for r in rows:
+                if r['product_type']!=old_map[r['platform_sku']]['product_type']:
+                    lid=r['listing_id']
+                    if lid in preferred and preferred[lid]!=r['product_type']:
+                        raise HTTPException(422,'同一商品的子变体只能选择一个沃尔玛商品类型')
+                    preferred[lid]=r['product_type']
+            try:
+                synchronize_types(rows,latest,context(db,rows,json.loads(doc['basis_json']),data.version)['history'],preferred)
+            except ValueError as exc:
+                raise HTTPException(422,str(exc)) from None
             variant_groups=synchronize(db,rows,json.loads(doc['basis_json']),data.version,latest,apply=True)
             if data.version!=doc['version'] and latest:
                 raise HTTPException(409,'已有提交记录的批次不能切换规格版本，请保留原版本')

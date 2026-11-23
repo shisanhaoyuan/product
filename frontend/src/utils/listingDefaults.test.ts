@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ListingDocument, ProductType } from '../api/publishing';
-import { applyListingDefaults, matchProductType } from './listingDefaults';
+import { applyListingDefaults, matchProductType, setFamilyProductType } from './listingDefaults';
 
 const types: ProductType[] = ['Chairs', 'Desks'].map((name) => ({
   name,
@@ -33,6 +33,42 @@ function document(): ListingDocument {
 }
 
 describe('listing metadata defaults', () => {
+  it('inherits the family type even when the unclassified child is listed first', () => {
+    const doc = document();
+    doc.rows[1]!.listing_id = 'a';
+    doc.rows[1]!.product_type = 'Chairs';
+    const before = doc.rows.map((row) =>
+      JSON.stringify([row.visible, row.orderable, row.identification]),
+    );
+    expect(applyListingDefaults(doc, types, [])).toBe(true);
+    expect(doc.rows.map((row) => row.product_type)).toEqual(['Chairs', 'Chairs']);
+    expect(
+      doc.rows.map((row) => JSON.stringify([row.visible, row.orderable, row.identification])),
+    ).toEqual(before);
+    expect(applyListingDefaults(doc, types, [])).toBe(false);
+  });
+  it('changes the type for the entire source family and leaves other products untouched', () => {
+    const doc = document();
+    doc.rows.push({
+      ...structuredClone(doc.rows[0]!),
+      platform_sku: 'a-child',
+      product_type: 'Chairs',
+    });
+    setFamilyProductType(doc, 'a-child', 'Desks');
+    expect(doc.rows.map((row) => row.product_type)).toEqual(['Desks', '', 'Desks']);
+    setFamilyProductType(doc, 'a', '');
+    expect(doc.rows.map((row) => row.product_type)).toEqual(['', '', '']);
+  });
+  it('inherits a submitted sibling type but prevents changing its family routing', () => {
+    const doc = document();
+    doc.rows[1]!.listing_id = 'a';
+    doc.rows[1]!.product_type = 'Chairs';
+    doc.results.b = { status: 'published', message: '', errors: [] };
+    applyListingDefaults(doc, types, []);
+    expect(doc.rows[0]!.product_type).toBe('Chairs');
+    expect(() => setFamilyProductType(doc, 'a', 'Desks')).toThrow('沿用');
+    expect(doc.rows.every((row) => row.product_type === 'Chairs')).toBe(true);
+  });
   it('matches each source listing, preserves content, and is idempotent', () => {
     const doc = document();
     const content = doc.rows.map((r) => JSON.stringify([r.visible, r.orderable, r.identification]));

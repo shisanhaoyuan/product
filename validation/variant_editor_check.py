@@ -1,5 +1,7 @@
 """Real editor regression using disposable fixtures and mocked Walmart transport."""
 import os
+import copy
+import json
 from pathlib import Path
 import socket
 import sys
@@ -11,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / 'tests')]
 
 import pytest
+import httpx
 import uvicorn
 from playwright.sync_api import expect, sync_playwright
 
@@ -18,6 +21,7 @@ from test_listing_variants import variant_publishing
 from test_walmart_accounts import vault
 from test_walmart_publishing import PT, ready
 from catalog.walmart_listing_schema import sections
+from catalog.walmart_publishing_client import WalmartPublishingClient
 
 
 def main():
@@ -30,8 +34,29 @@ def main():
         shape = sections(remote.schema, PT)['visible']
         shape['properties'].update(finish={'type': 'string'}, size={'type': 'string'})
         shape['required'].append('color')
+        other_type = 'End Tables'
+        original_handler = remote.handler
+        def handler(request):
+            if request.url.path == '/v3/items/taxonomy':
+                return httpx.Response(200, json={'itemTaxonomy': [{'category': 'Furniture', 'productTypeGroup': [
+                    {'productTypeGroupName': 'Furniture', 'productType': [
+                        {'productTypeName': PT}, {'productTypeName': other_type}]}]}]})
+            if request.url.path == '/v3/items/spec' and json.loads(request.content)['productTypes'] == [other_type]:
+                schema = copy.deepcopy(remote.schema)
+                visible = schema['properties']['MPItem']['items']['properties']['Visible']
+                visible['properties'][other_type] = visible['properties'].pop(PT)
+                visible['required'] = [other_type]
+                return httpx.Response(200, json={'schema': schema})
+            return original_handler(request)
+        client.app.state.walmart_publisher = WalmartPublishingClient(httpx.MockTransport(handler))
         doc = ready(fixture)
         first, second = doc['rows']
+        # Reproduce a legacy batch with one classified child and one blank.
+        incomplete = copy.deepcopy(doc['rows'])
+        incomplete[1]['product_type'] = ''
+        with catalog.connect() as db:
+            db.execute('UPDATE walmart_listing_documents SET rows_json=?,validation_json=? WHERE batch_id=?',
+                       (json.dumps(incomplete), '{}', batch['id']))
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0))
             port = sock.getsockname()[1]
@@ -64,6 +89,8 @@ def main():
                 table_second = table.locator(f'[data-listing-path="variants.{second["platform_sku"]}.visible.color"] input')
                 detail = page.locator('#listing-required [data-listing-path="visible.color"] input')
                 expect(detail).to_be_enabled()
+                type_picker = page.get_by_label('沃尔玛商品类型', exact=True)
+                expect(type_picker).to_have_value(PT)
                 detail.fill('Child editor Brown')
                 expect(table_first).to_have_value('Child editor Brown')
                 table_first.fill('Table Coffee')
@@ -77,6 +104,7 @@ def main():
                 asin = next(v['asin'] for item in doc['basis']['items'] for v in item['variants']
                             if v['platform_sku'] == second['platform_sku'])
                 page.get_by_role('button', name='填写变体 ASIN ' + asin, exact=True).click()
+                expect(type_picker).to_have_value(PT)
                 expect(detail).to_have_value('Blue')
                 detail.fill('Child editor Navy')
                 expect(table_second).to_have_value('Child editor Navy')
@@ -86,13 +114,23 @@ def main():
                 expect(dialog).to_be_visible()
                 expect(dialog.locator('.product-info-facts')).to_contain_text(asin)
                 page.get_by_role('button', name='关闭商品档案', exact=True).click()
+                type_picker.select_option(other_type)
+                expect(type_picker).to_be_enabled()
+                expect(detail).to_be_visible()
+                saved = client.get(base).json()
+                assert {row['product_type'] for row in saved['rows']} == {other_type}
+                first_asin = next(v['asin'] for item in doc['basis']['items'] for v in item['variants']
+                                  if v['platform_sku'] == first['platform_sku'])
+                page.get_by_role('button', name='填写变体 ASIN ' + first_asin, exact=True).click()
+                expect(type_picker).to_have_value(other_type)
+                expect(detail).to_have_value('Table Coffee')
                 table.scroll_into_view_if_needed()
                 output = Path(os.environ.get('CATALOG_TEST_OUTPUT', '/tmp/jiwu-variant-editor'))
                 output.mkdir(parents=True, exist_ok=True)
                 page.screenshot(path=str(output / 'shared-color.png'))
                 assert not errors, errors
                 browser.close()
-            print('Passed: actual color-only columns, edits in both directions, SKU isolation, save and reload.')
+            print('Passed: color-only columns, shared attributes, ASIN identity, legacy type repair, family category editing and fields.')
         finally:
             server.should_exit = True
             thread.join(timeout=10)

@@ -23,7 +23,7 @@ import { claimAutomaticCollection } from '../utils/automaticCollection';
 import { shouldPrepareOnEntry } from '../utils/listingPreparation';
 import { completeGroupCandidates, toggleVariantSelection, reviewVariantValue, reviewedVariantAttributes } from '../utils/listingVariants';
 import { collectMissingPrices, collectListingSources, preferLocalSourceBrowser } from '../utils/sourceCollection';
-import { applyListingDefaults } from '../utils/listingDefaults';
+import { applyListingDefaults, setFamilyProductType } from '../utils/listingDefaults';
 import ListingSchemaField from './ListingSchemaField.vue';
 import ListingVariantGroup from './ListingVariantGroup.vue';
 import ListingPriceRecovery from './ListingPriceRecovery.vue';
@@ -707,10 +707,14 @@ async function getSpec() {
   if (!live) return;
   specs.value[pt] = value;
 }
-async function changeType() {
+async function changeType(event: Event) {
+  const type = (event.target as HTMLSelectElement).value;
   await run(async () => {
+    if (!doc.value || !current.value) return;
+    setFamilyProductType(doc.value, current.value.platform_sku, type);
     await save();
     await getSpec();
+    if (!dirty.value) await load();
   });
 }
 watch(activeSku, async () => {
@@ -1353,7 +1357,7 @@ onBeforeUnmount(() => {
                 />
                 <div class="listing-inline-controls">
                   <select
-                    v-model="current.product_type"
+                    :value="current.product_type"
                     :disabled="locked || busy"
                     aria-label="沃尔玛商品类型"
                     @change="changeType"
@@ -1386,7 +1390,7 @@ onBeforeUnmount(() => {
                 </div>
                 <small v-if="source?.category" class="muted">来源类目：{{ source.category }}</small>
                 <small class="muted"
-                  >系统匹配当前店铺的实际商品类型；有冲突时记录原因，确认来源后可重新生成。</small
+                  >同一商品的所有子变体共用此类目，选择一次即可同步整组。</small
                 >
               </div>
             </div>
