@@ -354,6 +354,65 @@ def default_quote_fixture():
     return f
 
 
+def legacy_default_quote(settings):
+    f = default_quote_fixture()
+    item = listing_from_api('65567143', f.details[0], f.prices[0], f.stock[0], SyncInput(),
+                           settings.namespace, '2026-11-19T00:00:00+00:00')
+    item.price = None; item.stock = None
+    item.source_facts.update(price=None, inventory=None, landed=None, selected_offer=None, currency='',
+        warnings=['请选择唯一的美国仓库及物流报价'])
+    return item
+
+
+def test_legacy_saved_quote_repairs_list_detail_and_preview_without_refresh(tmp_path, settings):
+    app = create_app(tmp_path/'legacy-default.db'); catalog = app.state.catalog; client = TestClient(app)
+    catalog.ingest(ImportBundle(namespace=settings.namespace,label='legacy',listings=[legacy_default_quote(settings)]))
+    original = catalog.export()
+    card = catalog.find(source='Saleyee')['items'][0]
+    assert card['prices'] == ['69.29'] and card['saleyee_summary']['inventory'] == 90
+    pid = card['id']; item = catalog.get(pid)
+    assert item['price'] == '69.29' and item['stock'] == '90'
+    assert item['source_facts']['selected_offer']['LogisticsProductName'] == 'Standard Shipping'
+    assert item['source_facts']['warnings'] == []
+    assert item['observed_at'] == '2026-11-19T00:00:00+00:00'
+    batch,_ = create(client,inputs(client,filters={'source':'Saleyee'},multiplier='1.4'))
+    assert batch['preview']['items'][0]['variants'][0]['price'] == '97.01'
+    assert catalog.export() == original
+    # A human override is applied after default resolution and survives reopening.
+    response = client.patch('/api/products/'+pid+'/edits',json={
+        'expected_revision':item['local_edit']['revision'],'field':'price','value':'80'})
+    assert response.status_code == 200, response.text
+    with catalog.connect() as db:
+        db.execute('DELETE FROM migrations WHERE version=23')
+        if catalog.postgres:
+            stale = json.loads(db.execute('SELECT data_json FROM current_listings WHERE id=?',(pid,)).fetchone()[0])
+            stale['price'] = None; stale['stock'] = None
+            db.execute('UPDATE current_listings SET data_json=? WHERE id=?',(json.dumps(stale),pid))
+    upgraded = Catalog(catalog.path)
+    assert upgraded.get(pid)['price'] == '80.00' and upgraded.get(pid)['stock'] == '90'
+    assert upgraded.find(source='Saleyee')['items'][0]['prices'] == ['80.00']
+    assert upgraded.export() == original
+    with upgraded.connect() as db:
+        assert db.execute('SELECT 1 FROM migrations WHERE version=23').fetchone()
+
+
+@pytest.mark.parametrize('failure',['sku','country','ambiguous','manual'])
+def test_saved_quote_resolution_does_not_guess_or_replace_a_selection(settings, failure):
+    from catalog.saleyee_pricing import resolve_saved_quote
+    data = legacy_default_quote(settings).model_dump()
+    facts = data['source_facts']; raw = facts['saleyee']
+    if failure == 'sku': raw['price']['Sku'] = 'OTHER'
+    if failure == 'country':
+        for offer in raw['price']['WarehousePriceList']: offer['ReceiveCountryCode'] = 'CA'
+    if failure == 'ambiguous': raw['price']['WarehousePriceList'].append(copy.deepcopy(raw['price']['WarehousePriceList'][1]))
+    if failure == 'manual':
+        facts['selected_offer'] = raw['price']['WarehousePriceList'][0]
+        data['price'] = '1'
+    original = copy.deepcopy(data)
+    resolve_saved_quote(data)
+    assert data == original
+
+
 def test_default_standard_shipping_route_uses_current_price_and_respects_explicit_choice():
     f = default_quote_fixture(); d,p,s = f.details[0],f.prices[0],f.stock[0]
     info = summarize(d,p,s,SyncInput())

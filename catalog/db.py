@@ -55,6 +55,8 @@ class Catalog:
                     from .projection import rebuild
                     rebuild(db)
                     db.execute('INSERT INTO migrations VALUES(12) ON CONFLICT DO NOTHING')
+                from .saleyee_pricing import initialize as initialize_saleyee_pricing
+                initialize_saleyee_pricing(db, True)
             return
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -110,6 +112,8 @@ class Catalog:
             from .source_capture import initialize as initialize_source_capture
             initialize_source_capture(db)
             db.execute('INSERT OR IGNORE INTO migrations VALUES(12)')
+            from .saleyee_pricing import initialize as initialize_saleyee_pricing
+            initialize_saleyee_pricing(db)
 
     def pool(self):
         from psycopg_pool import ConnectionPool
