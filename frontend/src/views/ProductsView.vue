@@ -59,6 +59,12 @@ const loading = ref(true),
   error = ref(''),
   search = ref('');
 const view = ref(localStorage.getItem('catalog-view') === 'table' ? 'table' : 'grid');
+const pageSizes = Array.from({ length: 10 }, (_, index) => (index + 1) * 50);
+const savedPageSize = ref(Number(localStorage.getItem('catalog-page-size')) || 50);
+const pageSize = computed(() => {
+  const value = Number(route.query.page_size || savedPageSize.value);
+  return pageSizes.includes(value) ? value : 50;
+});
 const batchSearchCount = computed(
   () => parseBatchIdentifiers(filters.value.get('identifiers') || '').identifiers.length,
 );
@@ -94,6 +100,7 @@ const filters = computed(() => {
   if (['out_of_stock', 'in_stock'].includes(String(route.query.inventory_status)))
     params.set('inventory_status', String(route.query.inventory_status));
   params.set('source', source.value);
+  params.set('page_size', String(pageSize.value));
   return params;
 });
 const categoryOptions = computed(() => {
@@ -159,6 +166,7 @@ function addressOptions(kind: 'shipping_addresses' | 'return_addresses') {
 const selectionFilters = computed(() => {
   const values = new URLSearchParams(filters.value);
   values.delete('page');
+  values.delete('page_size');
   values.set('deduplicate', 'true');
   return Object.fromEntries(values);
 });
@@ -220,7 +228,7 @@ watch(
   },
 );
 const pages = computed(() =>
-  Math.max(1, Math.ceil((data.value?.total || 0) / (data.value?.page_size || 24))),
+  Math.max(1, Math.ceil((data.value?.total || 0) / pageSize.value)),
 );
 const metrics = computed(() =>
   stats.value
@@ -401,6 +409,16 @@ function changePage(offset: number) {
     query: { ...Object.fromEntries(filters.value), page: String((data.value?.page || 1) + offset) },
   });
   window.scrollTo(0, 0);
+}
+function changePageSize(event: Event) {
+  const value = Number((event.target as HTMLSelectElement).value);
+  if (!pageSizes.includes(value)) return;
+  savedPageSize.value = value;
+  localStorage.setItem('catalog-page-size', String(value));
+  const query = Object.fromEntries(filters.value);
+  delete query.page;
+  query.page_size = String(value);
+  void router.push({ path: libraryPath.value, query });
 }
 async function load() {
   controller?.abort();
@@ -897,32 +915,6 @@ onBeforeUnmount(() => {
           </tbody>
         </table>
       </div>
-      <div class="pagination">
-        <span>每页 {{ data.page_size }} 条 · 共 {{ data.total }} 条</span>
-        <div class="page-buttons">
-          <button
-            class="btn"
-            id="prev"
-            title="上一页"
-            aria-label="上一页"
-            :disabled="data.page <= 1"
-            @click="changePage(-1)"
-          >
-            <AppIcon name="ChevronLeft" /></button
-          ><span class="page-number">{{ data.page }}</span
-          ><span>/ {{ pages }}</span
-          ><button
-            class="btn"
-            id="next"
-            title="下一页"
-            aria-label="下一页"
-            :disabled="data.page >= pages"
-            @click="changePage(1)"
-          >
-            <AppIcon name="ChevronRight" />
-          </button>
-        </div>
-      </div>
     </template>
     <div v-else class="empty">
       没有找到对应商品
@@ -930,6 +922,27 @@ onBeforeUnmount(() => {
       <button class="btn small" @click="router.push(libraryPath)">重置筛选</button>
     </div>
   </section>
+  <nav class="product-pagination-dock" aria-label="商品库分页">
+    <label class="page-size-control">
+      每页
+      <select :value="pageSize" aria-label="每页显示数量" @change="changePageSize">
+        <option v-for="size in pageSizes" :key="size" :value="size">{{ size }} 条</option>
+      </select>
+    </label>
+    <span class="page-total" aria-live="polite">{{ loading ? '加载中…' : `共 ${data?.total ?? 0} 条` }}</span>
+    <div class="page-buttons">
+      <button class="btn" id="prev" title="上一页" aria-label="上一页"
+        :disabled="loading || !data || data.page <= 1" @click="changePage(-1)">
+        <AppIcon name="ChevronLeft" />
+      </button>
+      <span class="page-number">{{ data?.page || 1 }} / {{ pages }}</span>
+      <button class="btn" id="next" title="下一页" aria-label="下一页"
+        :disabled="loading || !data || data.page >= pages" @click="changePage(1)">
+        <AppIcon name="ChevronRight" />
+      </button>
+    </div>
+  </nav>
+  <div class="product-pagination-space" aria-hidden="true"></div>
   <PrelistingComposer
     v-if="composer"
     :selection="composerSelection"
@@ -950,6 +963,54 @@ onBeforeUnmount(() => {
   </div>
 </template>
 <style scoped>
+.product-pagination-dock {
+  position: fixed;
+  left: 18px;
+  bottom: max(18px, env(safe-area-inset-bottom));
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 18px;
+  max-width: calc(100vw - 36px);
+  padding: 12px 16px;
+  border: 1px solid #cbdbe9;
+  border-radius: 16px;
+  background: #f0f6fcf5;
+  box-shadow: 0 6px 28px #34536b26;
+  backdrop-filter: blur(12px);
+  color: #456078;
+  font-size: 14px;
+}
+.page-size-control {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 600;
+}
+.page-size-control select {
+  width: 104px;
+  min-height: 38px;
+  padding: 6px 10px;
+  border: 1px solid #bfd0e1;
+  border-radius: 9px;
+  background: #fff;
+  color: #34536b;
+  font: inherit;
+  cursor: pointer;
+}
+.page-size-control select:focus-visible {
+  outline: 2px solid #638bb1;
+  outline-offset: 2px;
+}
+.product-pagination-dock .page-buttons { gap: 10px; }
+.product-pagination-dock .btn { min-width: 36px; min-height: 36px; padding: 7px; }
+.product-pagination-space { height: 90px; }
+@media (max-width: 480px) {
+  .product-pagination-dock { left: 10px; max-width: calc(100vw - 20px); gap: 8px 12px; padding: 10px 12px; }
+  .page-total { font-size: 12px; }
+  .product-pagination-space { height: 140px; }
+}
 .filter-select.address-filter {
   width: 280px;
 }
