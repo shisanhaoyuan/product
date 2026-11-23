@@ -371,7 +371,9 @@ def unchanged_sources(db, doc):
 def source_issues(item, variant, price_verified=False, target_stock=None):
     # Presentation gaps can be filled in this document. Core evidence cannot be overridden here.
     ignored = ('缺少标题，', '缺少描述，', '缺少卖点，', '缺少商品图片，', '缺少UPC / GTIN', '来源类目缺失，')
-    errors = [e for e in item['errors'] if not e.startswith(ignored)]
+    # This flag describes an imported ERP snapshot, not the current Walmart
+    # draft. check_rows validates this draft's actual required fields instead.
+    errors = [e for e in item['errors'] if e != '商品填写尚未核验完整' and not e.startswith(ignored)]
     from .listing_price_review import eligible, MISSING
     # Each row owns its source-price warning; another SKU's acknowledgement cannot clear it.
     other_prices = {f"{v['sku']}：{MISSING}" for v in item.get('variants', []) if v.get('sku') != variant.get('sku') and eligible(item,v)}
