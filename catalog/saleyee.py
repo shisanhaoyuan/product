@@ -254,6 +254,14 @@ def summarize(detail, price, stock, options):
             continue
         offers.append(entry)
     selected = offers[0] if len(offers) == 1 else None
+    if selected is None:
+        # User's default purchase route, never the cheapest quote or API order.
+        defaults = [v for v in offers
+                    if str(v.get('Store') or '').strip().lower() == 'www.saleyee.com'
+                    and str(v.get('StockCode') or '').strip().upper() == 'SZ0001'
+                    and ' '.join(str(v.get('LogisticsProductName') or '').casefold().split()) == 'standard shipping']
+        if len(defaults) == 1:
+            selected = defaults[0]
     original = amount(selected.get('OriginalPrice')) if selected else None
     selling = amount(selected.get('SellingPrice')) if selected else None
     # Purchase price is the current selling price, not the struck-through original.

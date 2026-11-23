@@ -51,8 +51,18 @@ const selectableOffers = computed(() => facts.value.available_offers || []);
 watch(
   () => props.product,
   () => {
-    choice.value = '';
+    const selected = facts.value.selected_offer;
+    const index = selected
+      ? selectableOffers.value.findIndex(
+          (offer) =>
+            offer.Store === selected.Store &&
+            offer.StockCode === selected.StockCode &&
+            offer.LogisticsProductCode === selected.LogisticsProductCode,
+        )
+      : -1;
+    choice.value = index < 0 ? '' : String(index);
   },
+  { immediate: true },
 );
 const attributes = computed(() => props.product.fields['Saleyee attributes'] || {});
 const packaging = computed(() => {
@@ -180,7 +190,7 @@ async function refresh() {
       <div v-if="canEdit" class="saleyee-selection">
         <label
           >选择美国 USD 报价<select v-model="choice" :disabled="busy">
-            <option value="">沿用当前选择 / 自动匹配唯一报价</option>
+            <option value="">沿用已选方案 / 默认 SZ0001 · Standard Shipping</option>
             <template v-for="(offer, i) in selectableOffers" :key="i"
               ><option :value="String(i)">
                 {{ offer.Store }} / {{ offer.StockCode }} ·

@@ -12,7 +12,7 @@ from catalog.giga import sync_lease
 from catalog.giga_patrol import run_patrol
 from catalog.saleyee import SaleyeeSettings, SaleyeeError, SyncInput, sync_page
 from catalog.walmart_publishing_client import WalmartPublishingClient
-from test_saleyee import settings, FakeClient, actual_quote_fixture
+from test_saleyee import settings, FakeClient, actual_quote_fixture, default_quote_fixture
 from test_giga_walmart_sync import OfferRemote, actions
 from test_prelisting import create, inputs
 from test_walmart_accounts import vault, Remote, bind
@@ -254,3 +254,15 @@ def test_multiple_quotes_remain_pinned_to_selected_logistics(tmp_path, settings)
     data = raw(catalog)
     assert data['price'] == '85'
     assert data['source_facts']['selected_offer']['LogisticsProductCode'] == 'L1'
+
+
+def test_default_standard_shipping_route_is_followed_by_weekly_patrol(tmp_path, settings):
+    _, catalog, fake = seeded(tmp_path, settings, default_quote_fixture())
+    assert raw(catalog, '65567143')['price'] == '69.29'
+    standard = next(v for v in fake.prices[0]['WarehousePriceList'] if v['LogisticsProductCode'] == 'GP97372')
+    standard['SellingPrice'] = '79.29'
+    assert run_patrol(catalog, settings, fake)['status'] == 'completed'
+    item = raw(catalog, '65567143')
+    assert item['price'] == '79.29'
+    assert item['source_facts']['selected_offer']['LogisticsProductCode'] == 'GP97372'
+    assert item['source_facts']['saleyee']['options']['warehouse'] == 'SZ0001'

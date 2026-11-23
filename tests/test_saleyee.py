@@ -345,6 +345,50 @@ def actual_quote_fixture():
     return f
 
 
+def default_quote_fixture():
+    f = actual_quote_fixture()
+    standard = f.prices[0]['WarehousePriceList'][0]
+    standard.update(LogisticsProductName='Standard Shipping', OriginalPrice='69.99', SellingPrice='69.29')
+    f.prices[0]['WarehousePriceList'].insert(0, standard | dict(
+        LogisticsProductCode='EXPRESS', LogisticsProductName='Express Shipping', SellingPrice='1'))
+    return f
+
+
+def test_default_standard_shipping_route_uses_current_price_and_respects_explicit_choice():
+    f = default_quote_fixture(); d,p,s = f.details[0],f.prices[0],f.stock[0]
+    info = summarize(d,p,s,SyncInput())
+    assert info['price'] == '69.29' and info['original_price'] == '69.99'
+    assert info['inventory'] == 90 and info['warnings'] == []
+    assert info['selected_offer']['LogisticsProductCode'] == 'GP97372'
+    assert len(info['available_offers']) == 2
+    p['WarehousePriceList'].reverse()
+    assert summarize(d,p,s,SyncInput())['price'] == '69.29'
+    assert summarize(d,p,s,SyncInput(logistics='EXPRESS'))['price'] == '1'
+    p['WarehousePriceList'][0]['ReceiveCountryCode'] = 'CA'
+    assert summarize(d,p,s,SyncInput(logistics='GP97372'))['price'] is None
+
+
+def test_default_quote_import_existing_refresh_and_prelisting(tmp_path, settings, monkeypatch):
+    app = create_app(tmp_path/'standard-shipping.db'); catalog = app.state.catalog; client = TestClient(app)
+    f = default_quote_fixture()
+    # An old unselected snapshot can refresh without choosing a quote manually.
+    old = listing_from_api('65567143', f.details[0], f.prices[0], f.stock[0], SyncInput(),
+                           settings.namespace, '2026-11-19T00:00:00+00:00')
+    old.price = None; old.stock = None
+    old.source_facts.update(price=None, inventory=None, landed=None, selected_offer=None)
+    catalog.ingest(ImportBundle(namespace=settings.namespace,label='legacy',listings=[old]))
+    pid = catalog.find(source='Saleyee')['items'][0]['id']
+    monkeypatch.setattr('catalog.saleyee.SaleyeeClient',lambda _:f)
+    response = client.post(f'/api/integrations/saleyee/products/{pid}/refresh',json={})
+    assert response.status_code == 200, response.text
+    assert response.json()['price'] == '69.29'
+    assert response.json()['source_facts']['selected_offer']['StockCode'] == 'SZ0001'
+    assert catalog.find(source='Saleyee')['items'][0]['prices'] == ['69.29']
+    batch,_ = create(client,inputs(client,filters={'source':'Saleyee'},multiplier='1.4'))
+    assert batch['preview']['items'][0]['variants'][0]['price'] == '97.01'
+    assert sync_page(catalog,settings,SyncInput(),client=f)['unchanged'] == 1
+
+
 def test_actual_null_destination_quote_price_inventory_refresh_and_prelisting(tmp_path, settings, monkeypatch):
     app=create_app(tmp_path/'actual.db'); catalog=app.state.catalog; client=TestClient(app)
     f=actual_quote_fixture()
