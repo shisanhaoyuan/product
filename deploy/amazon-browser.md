@@ -4,6 +4,9 @@
 
 ## 阿里云服务器启用
 
+Python 依赖默认从清华 PyPI 镜像下载，可用 `JIWU_PIP_INDEX_URL` 指定其他 HTTPS 镜像。
+Wraith 固定提交仍从 GitHub 下载，Camoufox 浏览器文件仍走其官方下载源；PyPI 镜像不会加速这两部分。
+
 在 root 终端先运行原有 Git 更新脚本，再运行安装脚本：
 
 ```bash

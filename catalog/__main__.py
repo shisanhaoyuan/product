@@ -44,7 +44,7 @@ def main():
             diag=Path(args.db).parent/'import-diagnostics.json'
             diag.write_text(json.dumps(info,ensure_ascii=False,indent=2))
         print(json.dumps(info,ensure_ascii=False,indent=2))
-    elif args.command=='import-json':
+    elif args.command=='import-json': 
         result=Catalog(args.db).ingest(ImportBundle.model_validate_json(args.file.read_text()))
         print(json.dumps(result,ensure_ascii=False))
     elif args.command in {'create-admin','reset-password'}:

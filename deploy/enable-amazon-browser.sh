@@ -23,6 +23,7 @@ PY
 root=/www/server/jiwu-data/amazon-browser
 runtime=$root/venv/bin/python
 cache=$root/cache
+pip_index=${JIWU_PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
 install -d -m 700 -o jiwu -g jiwu "$root" "$cache"
 as_app() { runuser -u jiwu -- env HOME="$root" XDG_CACHE_HOME="$cache" "$@"; }
 if [[ ! -x $runtime ]]; then
@@ -31,7 +32,8 @@ fi
 req=$(mktemp)
 trap 'rm -f -- "$req"' EXIT
 install -m 644 deploy/amazon-browser-requirements.txt "$req"
-as_app "$runtime" -m pip install --no-cache-dir -r "$req"
+as_app env PIP_CONFIG_FILE=/dev/null PIP_EXTRA_INDEX_URL= PIP_INDEX_URL="$pip_index" \
+  "$runtime" -m pip install --no-cache-dir --index-url "$pip_index" -r "$req"
 rm -f -- "$req"
 as_app "$runtime" -m pip check
 as_app "$runtime" -m camoufox fetch official/158.0-beta.40
