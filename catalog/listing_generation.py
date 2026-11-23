@@ -12,7 +12,7 @@ from .listing_titles import branded_title, source_brands
 from .walmart_listing_schema import plain, sections, feed_item, schema_errors, identifier_errors, precise_validator
 from .listing_skill_defaults import has_default, skill_default, length_fallback, fixed_origin, enforce_origin
 
-RULES_VERSION = 'listing-generation-v20-source-variant-color-quantity'
+RULES_VERSION = 'listing-generation-v21-category-schema-cleanup'
 RULES = Path(__file__).with_name('listing_generation_rules.md').read_text()
 BLOCKED = re.compile(r'prop.?65|warranty|certif|nrtl|chemical|origin|warning|exempt|gtin|upc|ean|model|partnumber', re.I)
 PROTECTED = {'variantGroupId','variantAttributeNames','isPrimaryVariant','swatchImages','sku','productIdentifiers','inventory','price','msrp','SkuUpdate','ProductIdUpdate','fulfillmentCenterID'}
@@ -408,19 +408,13 @@ def fill_row(row, schema, facts, ai, provenance):
         and empty((facts.get('content.copy') or {}).get('description'))
         and empty(facts.get('detail.description')))
     spec = sections(schema, row['product_type'])
-    # A class change may leave old fields in the document. Keep their full values
-    # in the audit so cleanup is recoverable, without sending unsupported fields.
+    from .listing_schema_cleanup import cleanup
+    provenance.update(cleanup(row, schema))
+    # Remove empty placeholders after archiving unsupported fields above.
     for section in ('visible','orderable'):
-        definition = spec[section]
         for key,value in list(row[section].items()):
-            unsupported = (definition.get('additionalProperties') is False and
-                key not in definition.get('properties', {}) and
-                not any(re.search(pattern,key) for pattern in definition.get('patternProperties', {})))
-            if key not in PROTECTED and (unsupported and key not in CONTENT_FIELDS or empty(value)):
+            if key not in PROTECTED and empty(value):
                 del row[section][key]
-                if not empty(value):
-                    provenance[section+'.'+key] = dict(kind='schema_cleanup',value=None,previous_value=value,
-                        refs=[],reason='当前商品类型不接受此旧字段，原值保留在审计中')
     prepare_copy(row,facts,provenance)
     problems = enforce_origin(row,spec,provenance)
     attempted = set()

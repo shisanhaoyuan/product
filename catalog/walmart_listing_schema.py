@@ -237,7 +237,13 @@ def chinese_schema_error(error):
     elif error.validator in ('maxLength', 'maxItems'):
         message = f'{name}超出上限 {error.validator_value}'
     elif error.validator == 'additionalProperties':
-        message = name + '包含当前类目不支持的属性，请移除或更换正确类目'
+        from .listing_schema_cleanup import additional_fields
+        fields = additional_fields(error.instance, error.schema)
+        labels = [LABELS.get(key, key) + (f'（{key}）' if key in LABELS else '') for key in fields]
+        message = name + '不支持以下属性：' + '、'.join(labels) if fields else name + '包含当前类目不支持的属性'
+        message += '；请重新获取字段并清理旧属性'
+        if fields:
+            path += '.' + fields[0]
     elif error.validator == 'type':
         message = name + '格式不正确，应为 ' + str(error.validator_value)
     else:

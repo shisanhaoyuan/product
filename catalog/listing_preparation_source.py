@@ -48,8 +48,8 @@ def refresh_amazon(catalog, db, doc, actor_id=None, job_id=None, refreshed_sku=N
                     row['orderable']['price']=float(new['price'])
                 else:
                     row['orderable'].pop('price',None)
-            if not positive(row['orderable'].get('msrp')) and positive(revised.get('msrp')):
-                row['orderable']['msrp']=float(revised['msrp'])
+            from .listing_prices import fill_msrp
+            fill_msrp(row['orderable'])
             if before!=row['orderable']:
                 changes.append(dict(platform_sku=row['platform_sku'],before=before,after=row['orderable']))
         basis['items'][n]=revised

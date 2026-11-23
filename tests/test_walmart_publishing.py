@@ -318,7 +318,7 @@ def test_source_refresh_no_double_markup_binding_and_stale_validation_guards(pub
         doc=response.json()
         row=next(r for r in doc['rows'] if r['source_sku']=='W1')
         assert row['orderable']['price']==83.18 # (70+2.33)*1.15, never already marked-up price.
-        assert row['orderable']['msrp']==159.46 # Preserve the existing suggestion; no forced repricing.
+        assert row['orderable']['msrp']==159.99 # Preserve the existing suggestion; no forced repricing.
         assert row['visible']['assembledProductHeight']['measure']==32.5
     checked=c.post(base+'/validate',json={'revision':doc['revision']}).json()
     assert checked['validation']['valid_count']==2,checked['validation']

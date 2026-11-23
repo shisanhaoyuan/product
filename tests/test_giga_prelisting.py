@@ -38,7 +38,7 @@ def test_multiple_no_asin_products_freeze_content_price_stock_and_confirm(wareho
     for item in preview['items']:
         v = item['variants'][0]
         assert item['asin'] == '' and not item['errors']
-        assert (v['unit_price'], v['shipping_fee'], v['base'], v['price'], item['msrp']) == ('67.00', '2.33', '69.33', '79.73', '159.46')
+        assert (v['unit_price'], v['shipping_fee'], v['base'], v['price'], item['msrp']) == ('67.00', '2.33', '69.33', '79.73', '159.99')
         assert v['stock'] == '10' and v['source_stock'] == 25
         assert v['content']['copy']['title'] == 'Chair ' + v['sku']
         assert v['content']['images'] == ['https://example.com/' + v['sku'] + '.jpg']

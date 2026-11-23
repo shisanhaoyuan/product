@@ -358,7 +358,8 @@ def build_preview(catalog, db, data, exclude_batch=None):
             errors += [f"{v['sku']}：库存缺失或不符合 0 / 10 规则，执行前需核验" for v in priced if str(v['stock']) not in {'0', '10'}]
         if not d['seller'] or any(not v['seller'] for v in children):
             warnings.append('部分卖家未采集，无法完整检查卖家黑名单')
-        msrp = None if any(v['price'] is None for v in priced) else f"{max(Decimal(v['price']) for v in priced)*2:.2f}"
+        from .listing_prices import suggested_msrp
+        msrp = None if any(v['price'] is None for v in priced) else f"{suggested_msrp(max(Decimal(v['price']) for v in priced)):.2f}"
         items.append(dict(listing_id=row['id'], source_digest=row['digest'], source=d['source'],
                           asin=d['asin'], sku=d['sku'], title=d['copy']['title'], source_store=d['store'],
                           template=d['template'], observed_at=d['observed_at'], variants=priced, msrp=msrp,

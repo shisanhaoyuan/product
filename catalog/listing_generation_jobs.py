@@ -174,7 +174,7 @@ def start_job(catalog, publisher, bid, actor_id=None, ai=None, schedule=True, so
                 (bid,1,os.environ.get('CATALOG_WALMART_SPEC_VERSION',DEFAULT_VERSION),encoded(default_rows(basis)),encoded(basis),'{}',now()))
         from .listing_preparation_source import refresh_amazon
         refresh_amazon(catalog,db,document(db,bid),actor_id)
-        stored = normalize_document_titles(db,document(db,bid))
+        stored = normalize_document_titles(db,document(db,bid),clean_schema=False)
         from .listing_prerequisites import allocate_document_identifiers
         allocate_document_identifiers(db,stored,actor_id)
         stored = document(db,bid)

@@ -118,7 +118,7 @@ def test_manual_original_calculates_and_confirms_only_current_sku(amazon):
     assert response.status_code==200,response.text
     result=response.json();row=result['rows'][0]
     assert row['orderable']['price']==87.47  # fixture multiplier 1.2, ROUND_HALF_UP
-    assert row['orderable']['msrp']==174.94
+    assert row['orderable']['msrp']==174.99
     assert result['rows'][1]==before_other and result['basis']==basis
     review=result['source_price_reviews'][sku]
     assert review['original_price']=='72.89' and review['multiplier']=='1.2'

@@ -314,8 +314,8 @@ def default_rows(preview):
             orderable = {}
             if v.get('price') is not None:
                 orderable['price'] = float(v['price'])
-                if item.get('msrp'):
-                    orderable['msrp'] = float(item['msrp'])
+                from .listing_prices import fill_msrp
+                fill_msrp(orderable)
             if c.get('shipping_weight'):
                 try:
                     weight = Decimal(str(c['shipping_weight']))
@@ -526,6 +526,8 @@ def normalize_titles(db, rows, basis, latest, version=None):
         brands=source_brands(json.loads(source[0])) if source else []
         old_content=copy.deepcopy(row['visible'])
         old_orderable=copy.deepcopy(row['orderable'])
+        from .listing_prices import fill_msrp
+        fill_msrp(row['orderable'])
         origin_audit={}
         if version:
             bound=db.execute('SELECT * FROM walmart_accounts WHERE store_id=?',(basis['store']['id'],)).fetchone()
@@ -549,7 +551,7 @@ def normalize_titles(db, rows, basis, latest, version=None):
     return changes
 
 
-def normalize_document_titles(db, doc):
+def normalize_document_titles(db, doc, *, clean_schema=True):
     """Caller holds write lock. Explicit user rule also applies to existing drafts."""
     basis=unchanged_sources(db,doc)
     rows=json.loads(doc['rows_json'])
@@ -561,12 +563,25 @@ def normalize_document_titles(db, doc):
                         before_type=before['product_type'],after_type=after['product_type'])
                    for before,after in zip(before_groups,rows)
                    if before['visible']!=after['visible'] or before['product_type']!=after['product_type']]
+    cleanup_changes=[]
+    if clean_schema:
+        from .listing_schema_cleanup import cleanup
+        bound=db.execute('SELECT * FROM walmart_accounts WHERE store_id=?',(basis['store']['id'],)).fetchone()
+        latest=latest_results(db,doc['batch_id'])
+        for row in rows:
+            if latest.get(row['platform_sku'],{}).get('status','unsubmitted') not in EDITABLE:
+                continue
+            schema=cache_value(db,bound,'spec',doc['version'],row['product_type']) if bound else None
+            if schema:
+                audit=cleanup(row,schema)
+                if audit:
+                    cleanup_changes.append(dict(platform_sku=row['platform_sku'],product_type=row['product_type'],fields=audit))
     if changes or encoded(rows)!=doc['rows_json']:
         db.execute('UPDATE walmart_listing_documents SET rows_json=?,revision=revision+1,validation_json=?,updated_at=? WHERE batch_id=?',
             (encoded(rows),'{}',now(),doc['batch_id']))
         db.execute('INSERT INTO walmart_listing_events VALUES(?,?,?,?,?,?)',
             (uuid.uuid4().hex,doc['batch_id'],None,'variant_group_rule' if group_changes else 'title_brand_rule',now(),
-             encoded({'rule':'target_brand_and_listing_content','changes':changes,'variant_changes':group_changes,'variant_rules':{g['listing_id']:g['rule_mappings'] for g in variant_groups}})))
+             encoded({'rule':'target_brand_and_listing_content','changes':changes,'schema_cleanup':cleanup_changes,'variant_changes':group_changes,'variant_rules':{g['listing_id']:g['rule_mappings'] for g in variant_groups}})))
     return document(db,doc['batch_id'])
 
 
@@ -725,8 +740,8 @@ def publishing_routes(catalog):
                 except ValueError as exc:
                     raise HTTPException(422,'原价乘倍率后的售价无效：'+str(exc)) from None
                 row['orderable']['price']=float(price)
-                if not positive(row['orderable'].get('msrp')) and price*2<=Decimal('10000000'):
-                    row['orderable']['msrp']=float(price*2)
+                from .listing_prices import fill_msrp
+                fill_msrp(row['orderable'])
                 audit=dict(original_price=str(data.original_price),multiplier=str(multiplier),method='manual_original')
             key=review_key(basis,item,variant,row)
             if not key:
@@ -755,6 +770,8 @@ def publishing_routes(catalog):
                         r['orderable']['price']=defaults[r['platform_sku']]['orderable']['price']
                     else:
                         r['orderable'].pop('price',None)
+                    from .listing_prices import fill_msrp
+                    fill_msrp(r['orderable'])
             # MSRP is an editable suggestion; refreshing source prices preserves it.
             db.execute('UPDATE walmart_listing_documents SET revision=revision+1,rows_json=?,basis_json=?,validation_json=?,updated_at=? WHERE batch_id=?',
                 (encoded(rows),encoded(basis),'{}',now(),bid))
