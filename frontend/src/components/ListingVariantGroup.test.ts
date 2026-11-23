@@ -55,6 +55,7 @@ const props = {
   group,
   rows,
   activeSku: 'red',
+  asins: { red: 'B000000001', blue: 'B000000002' },
   labels: { color: '颜色', finish: '饰面', size: '尺寸' },
   specs: {
     Chairs: {
@@ -84,6 +85,10 @@ describe('variant review table', () => {
     expect(table).toContain('颜色');
     expect(table).not.toContain('饰面');
     expect(table).not.toContain('尺寸');
+    expect(table).toContain('ASIN B000000001');
+    expect(table).toContain('ASIN B000000002');
+    expect(table).not.toContain('Red source');
+    expect(table).not.toContain('Blue source');
     expect(html).not.toContain('当前规格：');
   });
   it('keeps submitted rows read-only while allowing a failed sibling to be edited', async () => {

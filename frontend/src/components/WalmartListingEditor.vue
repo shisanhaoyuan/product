@@ -18,6 +18,7 @@ import { catalogApi as api } from '../api/client';
 import { useAuth } from '../composables/useAuth';
 import { errorMessage, plain, money } from '../utils/display';
 import { listingSourceImages } from '../utils/listingSourceImages';
+import { listingAsins, listingIdentityLabel } from '../utils/listingIdentity';
 import { claimAutomaticCollection } from '../utils/automaticCollection';
 import { shouldPrepareOnEntry } from '../utils/listingPreparation';
 import { completeGroupCandidates, toggleVariantSelection, reviewVariantValue, reviewedVariantAttributes } from '../utils/listingVariants';
@@ -186,6 +187,8 @@ const serialized = () =>
   doc.value ? JSON.stringify({ version: doc.value.version, rows: doc.value.rows }) : '';
 const dirty = computed(() => !!doc.value && serialized() !== saved.value);
 const current = computed(() => doc.value?.rows.find((r) => r.platform_sku === activeSku.value));
+const asins = computed(() => doc.value ? listingAsins(doc.value.rows, doc.value.basis) : {});
+const identityLabel = (row: ListingRow) => listingIdentityLabel(row.platform_sku, asins.value);
 watch(() => current.value?.product_type, () => (activeOptional.value = new Set()));
 const generation = ref<GenerationJob | null>(null);
 const aiReady = ref(false);
@@ -1198,7 +1201,7 @@ onBeforeUnmount(() => {
               type="button"
               class="listing-sku-select"
               :disabled="busy"
-              :aria-label="'填写变体 ' + row.source_sku"
+              :aria-label="'填写变体 ' + identityLabel(row)"
               :aria-current="row.platform_sku === activeSku ? 'true' : undefined"
               @click.stop="activeSku = row.platform_sku"
             >
@@ -1207,8 +1210,8 @@ onBeforeUnmount(() => {
                 image-class="listing-sku-image"
               />
               <span
-                ><strong>{{ row.source_sku }}</strong
-                ><small>{{ row.platform_sku }}</small
+                ><strong>{{ identityLabel(row) }}</strong
+                ><small v-if="asins[row.platform_sku]">{{ row.platform_sku }}</small
                 ><span class="listing-sku-title">{{
                   plain(String(row.visible.productName || '未填写标题'))
                 }}</span
@@ -1236,7 +1239,7 @@ onBeforeUnmount(() => {
               class="listing-sku-detail-link"
               :disabled="busy"
               aria-haspopup="dialog"
-              :aria-label="'查看商品档案 ' + row.source_sku"
+              :aria-label="'查看商品档案 ' + identityLabel(row)"
               @click.stop="detailRow = row"
             >
               查看商品档案
@@ -1250,7 +1253,7 @@ onBeforeUnmount(() => {
             <div>
               <span class="muted"
                 >{{ sourceInfo(source?.source || 'Amazon').label }} ·
-                {{ current.source_sku }}</span
+                {{ identityLabel(current) }}</span
               >
               <h3>{{ plain(String(current.visible.productName || '请填写商品标题')) }}</h3>
               <p>
@@ -1393,6 +1396,7 @@ onBeforeUnmount(() => {
               :rows="doc.rows"
               :active-sku="activeSku"
               :specs="specs"
+              :asins="asins"
               :labels="doc.labels"
               :disabled="busy || generating || allocatingCodes || !canEdit"
               :editable-skus="eligible.map((row) => row.platform_sku)"
@@ -1850,7 +1854,7 @@ onBeforeUnmount(() => {
             <table class="data-table">
               <thead>
                 <tr>
-                  <th>来源 SKU / 店铺 SKU</th>
+                  <th>ASIN / 店铺 SKU</th>
                   <th>状态</th>
                   <th>中文原因</th>
                 </tr>
@@ -1858,7 +1862,7 @@ onBeforeUnmount(() => {
               <tbody>
                 <tr v-for="row in doc.rows" :key="row.platform_sku">
                   <td>
-                    {{ row.source_sku }}<br /><strong>{{ row.platform_sku }}</strong>
+                    <template v-if="asins[row.platform_sku]">ASIN {{ asins[row.platform_sku] }}<br /></template><strong>{{ row.platform_sku }}</strong>
                   </td>
                   <td
                     :class="{
@@ -1977,9 +1981,9 @@ onBeforeUnmount(() => {
               v-for="row in eligible.filter((r) => validSkus.includes(r.platform_sku))"
               :key="row.platform_sku"
               ><input type="checkbox" :checked="selected.includes(row.platform_sku)" @change="toggleSubmission(row.platform_sku, $event)" />{{
-                row.source_sku
+                identityLabel(row)
               }}
-              · {{ row.platform_sku }}</label
+              <template v-if="asins[row.platform_sku]"> · {{ row.platform_sku }}</template></label
             >
           </details>
         </div>
@@ -2031,6 +2035,7 @@ onBeforeUnmount(() => {
         :key="current.platform_sku"
         :listing-id="current.listing_id"
         :sku="current.source_sku"
+        :label="identityLabel(current)"
         :asin="sourceVariant?.asin || ''"
         :existing="photos"
         :source-images="latestSourceImages"
@@ -2105,6 +2110,7 @@ onBeforeUnmount(() => {
       v-if="detailRow"
       :listing-id="detailRow.listing_id"
       :row="doc?.rows.find((row) => row.platform_sku === detailRow?.platform_sku) || detailRow"
+      :asin="asins[detailRow.platform_sku] || ''"
       @close="detailRow = undefined"
     />
     <ListingPreparationSettings

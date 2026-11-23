@@ -38,7 +38,7 @@ defineProps<{ preview: PrelistingPreview }>();
       <StatusBadge :type="item.status === 'ready' ? 'good' : 'warn'">{{
         item.status === 'ready' ? '预检查通过' : '待复核'
       }}</StatusBadge
-      ><strong>{{ item.sku }}</strong
+      ><strong>{{ item.source === 'Amazon' ? item.asin || '缺少 ASIN' : item.sku }}</strong
       ><span
         >{{ isSupplier(item.source) ? sourceInfo(item.source).label + ' · ' : ''
         }}{{ item.title }}</span
@@ -70,7 +70,7 @@ defineProps<{ preview: PrelistingPreview }>();
         <table class="data-table">
           <thead>
             <tr>
-              <th>SKU / ASIN</th>
+              <th>ASIN / 供应商商品编号</th>
               <th>目标店铺 SKU</th>
               <th>预上架编码</th>
               <th>
@@ -100,9 +100,7 @@ defineProps<{ preview: PrelistingPreview }>();
           <tbody>
             <tr v-for="v in item.variants" :key="v.sku">
               <td>
-                {{ v.sku }}<br /><span class="muted">{{
-                  isSupplier(item.source) ? '供应商 SKU' : v.asin || '缺少 ASIN'
-                }}</span>
+                {{ item.source === 'Amazon' ? v.asin || '缺少 ASIN' : v.sku }}
               </td>
               <td class="platform-sku">
                 <strong v-if="v.platform_sku">{{ v.platform_sku }}</strong>

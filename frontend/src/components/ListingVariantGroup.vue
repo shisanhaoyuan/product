@@ -3,11 +3,13 @@ import { computed } from 'vue';
 import type { ListingVariantGroup, ListingRow, ListingSpec } from '../api/publishing';
 import ListingSchemaField from './ListingSchemaField.vue';
 import { variantEditorColumns } from '../utils/listingVariants';
+import { listingIdentityLabel } from '../utils/listingIdentity';
 const props = defineProps<{
   group: ListingVariantGroup;
   rows: ListingRow[];
   activeSku: string;
   specs: Record<string, ListingSpec>;
+  asins: Record<string, string>;
   labels: Record<string, string>;
   disabled: boolean;
   editableSkus: string[];
@@ -131,7 +133,8 @@ function display(value: unknown) {
         @change="emit('primary', ($event.target as HTMLSelectElement).value)"
       >
         <option v-for="member in members" :key="member.platform_sku" :value="member.platform_sku">
-          {{ member.source_sku }}
+          {{ listingIdentityLabel(member.platform_sku, asins)
+          }}<template v-if="asins[member.platform_sku]"> · {{ member.platform_sku }}</template>
         </option>
       </select></label
     >
@@ -143,7 +146,7 @@ function display(value: unknown) {
       <table>
         <thead>
           <tr>
-            <th>子 SKU</th>
+            <th>ASIN / 店铺 SKU</th>
             <th v-for="key in columns" :key="key">
               {{ labels[key] || key }}<small>{{ key }}</small
               ><span v-if="axes.includes(key)" class="axis-badge">分组</span>
@@ -163,9 +166,9 @@ function display(value: unknown) {
                 type="button"
                 @click="emit('select', member.platform_sku)"
               >
-                {{ member.source_sku }}</button
-              ><span v-else>{{ member.source_sku }}（历史成员）</span
-              ><small>{{ member.platform_sku }}</small>
+                {{ listingIdentityLabel(member.platform_sku, asins) }}</button
+              ><span v-else>{{ listingIdentityLabel(member.platform_sku, asins) }}（历史成员）</span
+              ><small v-if="asins[member.platform_sku]">{{ member.platform_sku }}</small>
             </td>
             <td
               v-for="key in columns"

@@ -8,6 +8,7 @@ import AppIcon from './AppIcon.vue';
 const props = defineProps<{
   listingId: string;
   sku: string;
+  label?: string;
   asin?: string;
   existing: string[];
   sourceImages: string[];
@@ -56,7 +57,10 @@ onMounted(async () => {
     <header>
       <div>
         <h3>编辑商品图片</h3>
-        <p>{{ sku }} · 已选 {{ selected.length }} 张 · 点击可选择或取消，不限数量</p>
+        <p>
+          {{ label || asin || '当前商品' }} · 已选 {{ selected.length }} 张 ·
+          点击可选择或取消，不限数量
+        </p>
       </div>
       <button class="icon-btn" aria-label="关闭图片选择" @click="emit('close')">
         <AppIcon name="X" />

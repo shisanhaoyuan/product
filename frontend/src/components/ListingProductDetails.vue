@@ -12,7 +12,8 @@ import SaleyeeSourceFacts from './SaleyeeSourceFacts.vue';
 import GigaSourceFacts from './GigaSourceFacts.vue';
 import AppIcon from './AppIcon.vue';
 import { useFloatingDialog } from '../composables/useFloatingDialog';
-const props = defineProps<{ listingId: string; row?: ListingRow }>();
+import { listingSourceRecord } from '../utils/listingIdentity';
+const props = defineProps<{ listingId: string; row?: ListingRow; asin?: string }>();
 const emit = defineEmits<{ close: [] }>();
 const titleId = useId();
 const dialog = ref<HTMLDialogElement>();
@@ -36,12 +37,7 @@ let requestId = 0;
 const sourceRecord = computed(() => {
   const value = product.value;
   if (!value || !props.row) return value;
-  // A missing child must never display another variant's copy or price.
-  if (value.variants.length) {
-    const matches = value.variants.filter((v) => v.sku === props.row!.source_sku);
-    return matches.length === 1 ? matches[0] : undefined;
-  }
-  return value.sku === props.row.source_sku ? value : undefined;
+  return listingSourceRecord(value, props.row.source_sku, props.asin || '');
 });
 const images = computed(() => sourceRecord.value?.images || []);
 const attributes = computed(() => {
@@ -127,7 +123,7 @@ onBeforeUnmount(() => {
         @dblclick="reset($event)"
       >
         <div>
-          <span class="muted">商品档案 · {{ row?.source_sku || product?.sku || '读取中' }}</span>
+          <span class="muted">商品档案 · {{ row?.platform_sku || product?.asin || '读取中' }}</span>
           <span class="drag-hint">拖动移动 · 边框缩放 · 双击复原</span>
           <h2 :id="titleId">{{ title }}</h2>
         </div>
@@ -152,8 +148,10 @@ onBeforeUnmount(() => {
           </div>
           <template v-else-if="product && sourceRecord">
             <dl class="product-info-facts">
-              <dt>来源 SKU / ASIN</dt>
-              <dd>{{ sourceRecord.sku }} / {{ sourceRecord.asin || '—' }}</dd>
+              <dt>{{ product.source === 'Amazon' ? 'ASIN' : '供应商商品编号' }}</dt>
+              <dd>
+                {{ product.source === 'Amazon' ? sourceRecord.asin || '—' : sourceRecord.sku }}
+              </dd>
               <dt>来源 / 卖家</dt>
               <dd>{{ product.source }} / {{ sourceRecord.seller || '未采集' }}</dd>
               <dt>类目 / 品牌</dt>
@@ -208,14 +206,16 @@ onBeforeUnmount(() => {
             </details>
           </template>
           <p v-else-if="product" class="error-box" role="alert">
-            商品档案中未找到唯一对应的子 SKU {{ row?.source_sku }}，请核对商品关联。
+            商品档案中未找到唯一对应的商品 {{ asin || row?.platform_sku }}，请核对商品关联。
           </p>
         </template>
         <template v-else-if="row">
           <p class="muted">当前批次的填写内容，包含尚未保存的修改。</p>
           <dl class="product-info-facts">
-            <dt>来源 SKU / 店铺 SKU</dt>
-            <dd>{{ row.source_sku }} / {{ row.platform_sku }}</dd>
+            <dt>{{ asin ? 'ASIN / 店铺 SKU' : '店铺 SKU' }}</dt>
+            <dd>
+              <template v-if="asin">{{ asin }} / </template>{{ row.platform_sku }}
+            </dd>
             <dt>类型 / 品牌</dt>
             <dd>{{ row.product_type || '未选择' }} / {{ row.visible.brand || '未填写' }}</dd>
             <dt>售价 / 商品编码</dt>
