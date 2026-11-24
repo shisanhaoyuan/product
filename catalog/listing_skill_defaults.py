@@ -121,7 +121,7 @@ ORIGIN_KEY = 'countryoforiginsubstantialtransformation'
 
 
 def fixed_origin(key, schema):
-    return name(key, schema) == ORIGIN_KEY
+    return name(key, schema) == ORIGIN_KEY or compact(key) == 'countryoforiginassembly'
 
 
 def enforce_origin(row, spec, audit=None):
@@ -131,7 +131,7 @@ def enforce_origin(row, spec, audit=None):
         for key, shape in spec.get(section, {}).get('properties', {}).items():
             if not fixed_origin(key, shape):
                 continue
-            value = adapt(shape, 'China')
+            value = adapt(shape, 'CN - China' if compact(key)=='countryoforiginassembly' else 'China')
             path = section+'.'+key
             if value is None:
                 errors.append(dict(path=path, message='原产国固定规则需要 China，但当前沃尔玛字段不接受此选项'))
@@ -140,5 +140,5 @@ def enforce_origin(row, spec, audit=None):
             row[section][key] = value
             if audit is not None:
                 audit[path] = dict(kind='user_rule', value=value, previous_value=previous, refs=[],
-                    reason='user_authorized_rule：原产国（实质性转变）固定 China，覆盖旧值；不是供应商来源事实，不由 AI 推测')
+                    reason='user_authorized_rule：原产国固定 China（加拿大官方枚举 CN - China），覆盖旧值；不是供应商来源事实，不由 AI 推测')
     return errors

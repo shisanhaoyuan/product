@@ -21,7 +21,7 @@ class WalmartVerifier:
         if marketplace not in ('US', 'CA'):
             raise WalmartError('请选择美国 US 或加拿大 CA 站点')
         with httpx.Client(base_url=BASE_URL, timeout=httpx.Timeout(20, connect=10),
-                          headers={'WM_MARKET': marketplace.lower()},
+                          headers={'WM_MARKET': marketplace.lower(), **({'WM_GLOBAL_VERSION':'3.1'} if marketplace=='CA' else {})},
                           follow_redirects=False, trust_env=False, transport=self.transport) as client:
             token_data = self.call(client, 'POST', '/v3/token', auth=(client_id, client_secret),
                                    data={'grant_type': 'client_credentials'})

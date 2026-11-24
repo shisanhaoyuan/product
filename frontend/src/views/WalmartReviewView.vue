@@ -276,7 +276,11 @@ onBeforeUnmount(() => {
             <td>
               <strong>{{ row.store_name }}</strong
               ><small>{{ row.brand || '未记录品牌' }}</small
-              ><small>Partner：{{ row.partner_id }}</small>
+              ><small>{{
+                row.marketplace === 'CA'
+                  ? '加拿大站 · CAD · OAuth 授权'
+                  : '美国站 · Partner：' + row.partner_id
+              }}</small>
             </td>
             <td class="review-outcome">
               <span class="review-status" :class="tone(row.status)">{{ row.status_label }}</span>
@@ -373,7 +377,12 @@ onBeforeUnmount(() => {
       <dl class="review-facts">
         <dt>目标店铺</dt>
         <dd>
-          {{ selected.store_name }} · {{ selected.brand }} · Partner {{ selected.partner_id }}
+          {{ selected.store_name }} · {{ selected.brand }} ·
+          {{
+            selected.marketplace === 'CA'
+              ? '加拿大站 · CAD · OAuth 授权'
+              : '美国站 · Partner ' + selected.partner_id
+          }}
         </dd>
         <dt>平台 SKU</dt>
         <dd>{{ selected.platform_sku }}</dd>

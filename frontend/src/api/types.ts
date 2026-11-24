@@ -251,6 +251,8 @@ export interface SellerBlockPage {
 }
 
 export interface ListingStore {
+  marketplace?: 'US' | 'CA';
+  currency?: 'USD' | 'CAD';
   default_brand?: string;
   id: number;
   name: string;

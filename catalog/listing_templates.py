@@ -41,7 +41,7 @@ def resolve(db, listing_id, bid, source, selected=None):
             raise HTTPException(409,'模板未覆盖所选子 SKU、身份已变化或尚未填写类目与标题，请更换模板')
         matches.append(row)
     preview=json.loads(record['preview_json'])
-    info=dict(batch_id=bid,revision=record['revision'],version=record['version'],
+    info=dict(batch_id=bid,revision=record['revision'],version=record['version'],marketplace=preview['store'].get('marketplace','US'),
               store_name=preview['store']['name'],brand=preview['brand'],
               multiplier=preview['multiplier'],
               updated_at=record['updated_at'],sku_count=len(matches),
@@ -98,6 +98,8 @@ def annotate_preview(db, data, preview, existing_bid=None):
         else:
             source=json.loads(db.execute('SELECT data_json FROM current_listings WHERE id=?',(item['listing_id'],)).fetchone()[0])
             info,_=resolve(db,item['listing_id'],bid,source,{v['sku'] for v in item['variants']})
+        if info.get('marketplace','US') != preview['store'].get('marketplace','US'):
+            raise HTTPException(409,'上架模板不能跨美国站和加拿大站复用，请使用同站点模板')
         item['reuse_template']=info
         versions.add(info['version'])
     if len(versions)>1:
@@ -127,7 +129,8 @@ def create_document(catalog, db, bid, data, actor_id):
     by_identity={(r['listing_id'],r['source_sku']):r for r in rows}
     bound=db.execute('SELECT * FROM walmart_accounts WHERE store_id=?',(data.store_id,)).fetchone()
     node=preparation_settings(db,bound).get('fulfillment_center_id','') if bound and bound['status']=='verified' else ''
-    version=os.environ.get('CATALOG_WALMART_SPEC_VERSION','')
+    from .walmart_markets import spec_version
+    version=spec_version(db,data.store_id)
     for item in basis['items']:
         info=item.get('reuse_template')
         if not info:

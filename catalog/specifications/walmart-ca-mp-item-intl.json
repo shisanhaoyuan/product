@@ -1,0 +1,8 @@
+{
+  "file": "walmart-ca-mp-item-intl-3.16.json.gz",
+  "url": "https://developer.walmart.com/file/mp/ca/CA_MP_ITEM_INTL_SPEC.json",
+  "version": "3.16",
+  "product_types": 80,
+  "sha256": "f1471a2e306072ef5a226339416336f05469cd097e3cbd5cf394697d9055db9e",
+  "verified_at": "2026-11-24"
+}

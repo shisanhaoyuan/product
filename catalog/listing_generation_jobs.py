@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from .database import write_lock
 from .concurrency import BoundedExecutor, WorkQueueFull, background_call, setting
-from .credential_vault import decrypt
+from .walmart_markets import spec_version, session as market_session
 from .listing_ai_client import ListingAIClient, ListingAISettings, ListingAIError
 from .listing_generation import (RULES_VERSION, source_facts, choose_type, fill_row,
                                  validate_generated, summarize_generation_issues)
@@ -23,7 +23,7 @@ from .listing_prerequisites import resource_digest, apply_prerequisites, validat
 from .listing_repair import repair_row, repair_fields, MAX_REPAIR_ROUNDS, prerequisite_issue
 from .listing_source_evidence import supplement_facts
 from .listing_vision import image_evidence, vision_identity
-from .walmart_listing_schema import DEFAULT_VERSION, normalize_spec, taxonomy_options
+from .walmart_listing_schema import normalize_spec, taxonomy_options
 from .walmart_publishing import (batch, binding, document, public_document, fresh_basis,
     default_rows, normalize_titles, normalize_document_titles, latest_results, EDITABLE, cache_value, cache_put, unchanged_sources, source_issues, check_rows, validate_document)
 
@@ -155,6 +155,9 @@ def start_job(catalog, publisher, bid, actor_id=None, ai=None, schedule=True, so
     with catalog.connect() as db:
         write_lock(db)
         current = batch(db,bid)
+        _,current_bound=binding(db,json.loads(current['preview_json'])['store']['id'])
+        if current_bound['marketplace']=='CA' and not current_bound.get('_ca_bundle'):
+            raise HTTPException(409,'加拿大官方规格未就绪，请重新部署或导入完整 MP_ITEM_INTL 规格')
         prior = latest(db,bid)
         if prior and prior['state'] in ('queued','running','awaiting_sources'):
             return public_job(prior)
@@ -171,7 +174,7 @@ def start_job(catalog, publisher, bid, actor_id=None, ai=None, schedule=True, so
         if not doc:
             basis = fresh_basis(catalog,db,current)
             db.execute('INSERT INTO walmart_listing_documents VALUES(?,?,?,?,?,?,?)',
-                (bid,1,os.environ.get('CATALOG_WALMART_SPEC_VERSION',DEFAULT_VERSION),encoded(default_rows(basis)),encoded(basis),'{}',now()))
+                (bid,1,spec_version(db,basis['store']['id']),encoded(default_rows(basis)),encoded(basis),'{}',now()))
         from .listing_preparation_source import refresh_amazon
         refresh_amazon(catalog,db,document(db,bid),actor_id)
         stored = normalize_document_titles(db,document(db,bid),clean_schema=False)
@@ -357,8 +360,7 @@ def run_job(catalog, publisher, jid, ai):
             checked_context(db,job)
             sources={i['listing_id']:json.loads(db.execute('SELECT data_json FROM current_listings WHERE id=?',
                 (i['listing_id'],)).fetchone()[0]) for i in basis['items']}
-        creds=decrypt(bound['store_id'],bound['encrypted_credentials'])
-        with publisher.session(creds,bound['partner_id']) as remote:
+        with market_session(publisher,bound) as remote:
             if types is None:
                 types=taxonomy_options(remote.taxonomy())
             if nodes is None:

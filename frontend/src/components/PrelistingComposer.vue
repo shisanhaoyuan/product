@@ -29,7 +29,11 @@ const selectedTemplates = ref<Record<string, string>>({});
 const templatesLoading = ref(false);
 const storeOptions = computed(() =>
   stores.value
-    .filter((store) => store.active)
+    .filter(
+      (store) =>
+        store.active &&
+        (store.marketplace || 'US') === (props.source === 'GigaB2B_CA' ? 'CA' : 'US'),
+    )
     .map((store) => ({
       value: String(store.id),
       label:

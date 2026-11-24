@@ -16,7 +16,7 @@ import {
 } from '../api/publishing';
 import { catalogApi as api } from '../api/client';
 import { useAuth } from '../composables/useAuth';
-import { errorMessage, plain, money } from '../utils/display';
+import { errorMessage, plain, money as formatMoney } from '../utils/display';
 import { listingSourceImages } from '../utils/listingSourceImages';
 import { listingAsins, listingIdentityLabel } from '../utils/listingIdentity';
 import { claimAutomaticCollection } from '../utils/automaticCollection';
@@ -44,6 +44,24 @@ import AppIcon from './AppIcon.vue';
 import ListingPreparationSettings from './ListingPreparationSettings.vue';
 import { preparationApi } from '../api/preparation';
 const props = defineProps<{ bid: string }>();
+function money(value: string | number | null | undefined) {
+  return formatMoney(value, doc.value?.currency || 'USD');
+}
+const canadaSpecFile = ref<HTMLInputElement>();
+async function importCanadaSpecs(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  await run(async () => {
+    if (file.size > 15 * 1024 * 1024) throw new Error('规格文件不能超过 15 MB');
+    if (dirty.value) await save();
+    install(await publishingApi.importCanadaSpecs(props.bid, JSON.parse(await file.text())));
+    specs.value = { ...doc.value?.specs };
+    await loadMetadata();
+    message.value = '加拿大官方规格已导入，可开始 AI 填充并检查结果。';
+  });
+  input.value = '';
+}
 const route = useRoute();
 const { auth } = useAuth();
 const canEdit = computed(
@@ -604,7 +622,7 @@ async function prepare() {
     }
   });
   await pollGeneration();
-  if (canEdit.value && aiReady.value && shouldPrepareOnEntry(doc.value, generation.value)) await generate();
+  if (canEdit.value && aiReady.value && doc.value?.canada_specs_ready !== false && shouldPrepareOnEntry(doc.value, generation.value)) await generate();
 }
 async function loadMetadata() {
   const values = await Promise.allSettled([
@@ -905,6 +923,7 @@ onMounted(async () => {
     doc.value &&
     canEdit.value &&
     aiReady.value &&
+    doc.value.canada_specs_ready !== false &&
     (awaitingSources.value || shouldPrepareOnEntry(doc.value, generation.value)) &&
     claimAutomaticCollection('listing', [props.bid, generation.value?.id || 'first'])
   )
@@ -934,7 +953,7 @@ onBeforeUnmount(() => {
   <div ref="root" class="walmart-listing" @focusout="queueSave">
     <header class="listing-module-header">
       <div>
-        <p class="eyebrow">WALMART US</p>
+        <p class="eyebrow">WALMART {{ doc?.marketplace || 'US' }} · {{ doc?.currency || 'USD' }}</p>
         <h2>商品刊登资料</h2>
         <p>系统自动整理同 SKU 来源资料；检查生成结果，校验后提交到本批次指定店铺。</p>
         <p v-if="reusedTemplate" class="muted">
@@ -945,6 +964,30 @@ onBeforeUnmount(() => {
         saving ? '正在保存…' : dirty ? '有未保存修改' : '资料已保存'
       }}</span>
     </header>
+    <div v-if="doc?.marketplace === 'CA'" class="notice notice-space">
+      <strong>加拿大站刊登 · CAD</strong>
+      <p>
+        系统自动加载加拿大 MP_ITEM_INTL 官方规格，按加拿大类目自动填充并校验。目前支持英文资料与默认库存。
+        原产国沿用默认规则；商品税码须按实际税务分类填写，系统不会猜测。
+      </p>
+      <p v-if="doc.canada_specification">
+        {{ doc.canada_specification.source.kind === 'bundled_official' ? '已自动加载官方内置规格' : '使用店铺导入规格' }}：
+        {{ doc.canada_specification.version }} · {{ doc.canada_specification.product_types }} 个商品类型
+      </p>
+      <p v-else-if="!doc.canada_specs_ready">加拿大官方规格读取失败，请重新部署或导入完整官方规格。</p>
+      <template v-if="canSubmit">
+        <input
+          ref="canadaSpecFile"
+          type="file"
+          accept=".json,application/json"
+          hidden
+          @change="importCanadaSpecs"
+        />
+        <button class="btn" :disabled="busy || generating" @click="canadaSpecFile?.click()">
+          替换加拿大官方规格
+        </button>
+      </template>
+    </div>
     <p v-if="error" class="error-box" role="alert">
       {{ error }} <button v-if="dirty" class="btn small" @click="run(save)">重试保存</button>
     </p>
@@ -1910,7 +1953,7 @@ onBeforeUnmount(() => {
                 <strong>{{ a.feed_id ? '沃尔玛批次 ' + a.feed_id : '待确认提交 ' + a.id }}</strong>
                 <p>
                   {{ new Date(a.created_at).toLocaleString('zh-CN') }} · {{ a.skus.length }} 个 SKU
-                  · 店铺 {{ doc.store.name }} · Partner {{ a.partner_id }}
+                  · 店铺 {{ doc.store.name }} · {{ doc.marketplace === 'CA' ? '加拿大站 · OAuth 授权' : 'Partner ' + a.partner_id }}
                 </p>
                 <p>{{ a.message }}</p>
                 <p v-if="a.polling">
@@ -2069,8 +2112,7 @@ onBeforeUnmount(() => {
         </div>
         <p>
           以下商品将提交至 <strong>{{ doc.store.name }}</strong
-          >，Partner ID <strong>{{ doc.validation.partner_id }}</strong
-          >。
+          >，<strong>{{ doc.marketplace === 'CA' ? '加拿大站 · CAD' : 'Partner ID ' + doc.validation.partner_id }}</strong>。
         </p>
         <table class="data-table">
           <thead>

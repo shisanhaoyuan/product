@@ -286,8 +286,8 @@ def build_preview(catalog, db, data, exclude_batch=None):
     if not store:
         raise HTTPException(409, '目标店铺不存在或已停用')
     bound = db.execute('SELECT marketplace,encrypted_credentials FROM walmart_accounts WHERE store_id=?', (data.store_id,)).fetchone()
-    if bound and bound['encrypted_credentials'] and bound['marketplace'] != 'US':
-        raise HTTPException(409, '该店铺绑定的是加拿大站；加拿大刊登尚未接入，暂不能创建预上架批次')
+    from .walmart_markets import market_of, require_sources
+    marketplace = market_of(bound)
     if not store['sku_code']:
         raise HTTPException(409, '请先在店铺管理中设置该店铺唯一的两位 SKU 编码')
     rows = selected_rows(catalog, db, data)
@@ -295,8 +295,7 @@ def build_preview(catalog, db, data, exclude_batch=None):
     items, seen, seen_variants, conflict = [], set(), set(), False
     for row in rows:
         d = json.loads(row['data_json'])
-        if d['source'] == 'GigaB2B_CA':
-            raise HTTPException(409, '加拿大云仓商品需使用 Walmart 加拿大站店铺；加拿大站刊登接入后开放预上架，不能提交到美国站')
+        require_sources([d], marketplace)
         is_supplier = d['source'] in ('GigaB2B', 'GigaB2B_CA', 'Saleyee')
         key = (seller_key(d['source']), claim_identity(d))
         errors, warnings = [], ['使用历史核验记录；正式执行前需重新采集价格和库存']
@@ -364,7 +363,10 @@ def build_preview(catalog, db, data, exclude_batch=None):
                           asin=d['asin'], sku=d['sku'], title=d['copy']['title'], source_store=d['store'],
                           template=d['template'], observed_at=d['observed_at'], variants=priced, msrp=msrp,
                           status='review' if errors else 'ready', errors=errors, warnings=warnings))
-    result = dict(store=dict(store), brand=data.brand, multiplier=str(data.multiplier), items=items,
+    store_snapshot = dict(store)
+    if marketplace == 'CA':
+        store_snapshot.update(marketplace='CA', currency='CAD')
+    result = dict(store=store_snapshot, brand=data.brand, multiplier=str(data.multiplier), items=items,
                   total=len(items), variant_count=sum(len(d['variants']) for d in items),
                   ready_count=sum(d['status'] == 'ready' for d in items), can_create=not conflict,
                   execution_enabled=False,
@@ -456,7 +458,8 @@ def prelisting_routes(catalog):
             result=[]
             for r in db.execute('SELECT * FROM listing_stores ORDER BY lower(name)'):
                 bound=db.execute("SELECT * FROM walmart_accounts WHERE store_id=? AND encrypted_credentials<>''",(r['id'],)).fetchone()
-                result.append(dict(r) | {'default_brand':preparation_settings(db,bound).get('default_brand','') if bound else ''})
+                result.append(dict(r) | {'marketplace':dict(bound).get('marketplace','US') if bound else 'US',
+                    'default_brand':preparation_settings(db,bound).get('default_brand','') if bound else ''})
             return result
 
     @router.post('/api/listing-stores', status_code=201)

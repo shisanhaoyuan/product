@@ -1,4 +1,5 @@
 """Admin-managed real identifiers and store-scoped, verified prerequisites."""
+from .walmart_markets import session as market_session
 import json
 import secrets
 import time
@@ -10,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .database import write_lock, is_postgres
 from .prelisting import encoded, fingerprint
-from .credential_vault import decrypt, VaultError
+from .credential_vault import VaultError
 from .walmart_listing_schema import identifier_errors
 from .walmart_client import WalmartError
 
@@ -69,7 +70,13 @@ def preparation_settings(db, bound):
 def resource_digest(db, bound):
     # Assignment is transactional but does not change available business evidence.
     codes=[dict(r) for r in db.execute('SELECT code_key,proof FROM listing_real_identifiers ORDER BY code_key')]
-    return fingerprint(dict(settings=preparation_settings(db,bound),codes=codes))
+    resources=dict(settings=preparation_settings(db,bound),codes=codes)
+    if dict(bound).get('marketplace')=='CA':
+        from .walmart_publishing import cache_value
+        bundle=cache_value(db,bound,'ca_bundle')
+        from .walmart_canada import bundle_digest
+        resources['canada_specs']=(bundle.get('digest') or bundle_digest(bundle)) if bundle else None
+    return fingerprint(resources)
 
 
 def evidence_errors(db, doc, row, item):
@@ -218,6 +225,9 @@ def apply_prerequisites(catalog, bound, row, item, nodes, remote, audit, guard):
     with catalog.connect() as db:
         settings=preparation_settings(db,bound)
     node=settings.get('fulfillment_center_id')
+    if bound.get('marketplace')=='CA':
+        from .walmart_canada import DEFAULT_NODE
+        node = node or DEFAULT_NODE
     if not row['fulfillment_center_id'] and node in {n['id'] for n in nodes}:
         row['fulfillment_center_id']=node
         audit['fulfillment_center_id']=dict(kind='user_rule',value=node,refs=[],reason='目标店铺已配置并核验的默认发货仓')
@@ -322,7 +332,7 @@ def prerequisite_routes(catalog):
         with catalog.connect() as db:
             _,bound=binding(db,sid)
         try:
-            with request.app.state.walmart_publisher.session(decrypt(sid,bound['encrypted_credentials']),bound['partner_id']) as remote:
+            with market_session(request.app.state.walmart_publisher,bound) as remote:
                 nodes=normalize_nodes(remote.nodes());types=taxonomy_options(remote.taxonomy())
             with catalog.connect() as db:
                 write_lock(db);_,live=binding(db,sid,bound['partner_id'])
@@ -340,7 +350,7 @@ def prerequisite_routes(catalog):
         with catalog.connect() as db:
             _,bound=binding(db,sid)
         try:
-            with request.app.state.walmart_publisher.session(decrypt(sid,bound['encrypted_credentials']),bound['partner_id']) as remote:
+            with market_session(request.app.state.walmart_publisher,bound) as remote:
                 if data.fulfillment_center_id and data.fulfillment_center_id not in {n['id'] for n in normalize_nodes(remote.nodes())}:
                     raise HTTPException(422,'默认仓库必须是该店铺实际启用的仓库')
                 if data.exemptions:

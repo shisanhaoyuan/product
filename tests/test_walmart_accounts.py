@@ -270,10 +270,8 @@ def test_canada_binding_reverify_and_market_isolation(local):
         with pytest.raises(VaultError):
             decrypt(store,row['encrypted_credentials'],'US')
         from catalog.walmart_publishing import binding
-        from fastapi import HTTPException
-        with pytest.raises(HTTPException) as exc:
-            binding(db,store)
-        assert exc.value.status_code==409
+        _, bound=binding(db,store)
+        assert bound['marketplace']=='CA' and bound['_ca_bundle']['version']=='3.16'
     verified=c.post(f'/api/walmart/accounts/{store}/verify',json={'revision':1})
     assert verified.status_code==200 and verified.json()['status']=='verified'
     assert [r.url.path for r in remote.calls]==['/v3/token','/v3/token/detail']*2

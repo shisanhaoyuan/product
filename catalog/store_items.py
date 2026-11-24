@@ -199,6 +199,8 @@ def store_item_routes(catalog):
     def session(request, sid):
         with catalog.connect() as db:
             _, bound = binding(db, sid)
+            if bound['marketplace'] != 'US':
+                raise HTTPException(409, '店铺商品管理目前仅支持美国站；加拿大刊登请使用预上架与审核进度')
         try:
             with request.app.state.walmart_publisher.session(
                     decrypt(sid, bound['encrypted_credentials']), bound['partner_id']) as remote:
@@ -292,6 +294,8 @@ def store_item_routes(catalog):
     def history(sid: int):
         with catalog.connect() as db:
             _, bound = binding(db, sid)
+            if bound['marketplace'] != 'US':
+                raise HTTPException(409, '店铺商品管理目前仅支持美国站；加拿大刊登请使用预上架与审核进度')
             return [dict(row) for row in db.execute("""SELECT id,sku,kind,node,at,status,target,message
                 FROM walmart_offer_changes WHERE store_id=? AND partner=? ORDER BY at DESC LIMIT 50""",
                 (sid, bound['partner_id']))]

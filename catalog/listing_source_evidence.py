@@ -40,8 +40,8 @@ def supplement_facts(catalog,source,item,variant,ai,amazon_details_data=None):
     from .images import HumanVerificationRequired,fetch_amazon_page
     try:
         if source['source'] in ('GigaB2B', 'GigaB2B_CA'):
-            from .giga import GigaSettings,GigaClient,indexed
-            settings=GigaSettings()
+            from .giga import GigaSettings,GigaCanadaSettings,GigaClient,indexed
+            settings=GigaCanadaSettings() if source['source']=='GigaB2B_CA' else GigaSettings()
             with catalog.connect() as db:
                 stored=db.execute('SELECT namespace FROM listings WHERE id=?',(item['listing_id'],)).fetchone()
             if not settings.configured or not stored or stored['namespace']!=settings.namespace:

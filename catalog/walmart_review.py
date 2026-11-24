@@ -31,6 +31,7 @@ def queue_sql(postgres):
         brand = "CAST(b.preview_json AS jsonb)->>'brand'"
         result = "CAST(a.results_json AS jsonb)->(entry.value->>'platform_sku')"
         state = "result_json->>'status'"
+        market = "CASE WHEN CAST(a.payload_json AS jsonb)->'MPItemFeedHeader'->>'mart'='WALMART_CA' THEN 'CA' ELSE 'US' END"
     else:
         expanded = 'JOIN json_each(a.rows_json) AS entry'
         field = lambda name: f"json_extract(entry.value,'$.{name}')"
@@ -39,15 +40,17 @@ def queue_sql(postgres):
         brand = "json_extract(b.preview_json,'$.brand')"
         result = f"(SELECT value FROM json_each(a.results_json) WHERE key={field('platform_sku')})"
         state = "json_extract(result_json,'$.status')"
+        market = "CASE WHEN json_extract(a.payload_json,'$.MPItemFeedHeader.mart')='WALMART_CA' THEN 'CA' ELSE 'US' END"
     return f'''WITH expanded AS (
         SELECT a.id AS attempt_id,a.batch_id,a.store_id,a.partner_id,a.state AS attempt_state,
                a.feed_id,a.message AS attempt_message,a.created_at,a.updated_at,s.name AS store_name,
+               {market} AS marketplace,
                {field('platform_sku')} AS platform_sku,{field('source_sku')} AS source_sku,
                {field('listing_id')} AS listing_id,COALESCE({title},'') AS title,
                COALESCE({image},'') AS image_url,
                COALESCE({brand},'') AS brand,{result} AS result_json,
                t.state AS polling_state,t.next_at,t.last_error,
-               CASE WHEN w.partner_id=a.partner_id AND w.status='verified'
+               CASE WHEN w.partner_id=a.partner_id AND w.marketplace=({market}) AND w.status='verified'
                          AND w.encrypted_credentials<>'' AND s.active=1 THEN 1 ELSE 0 END AS binding_matches
         FROM walmart_listing_attempts a JOIN prelisting_batches b ON b.id=a.batch_id
         JOIN listing_stores s ON s.id=a.store_id {expanded}

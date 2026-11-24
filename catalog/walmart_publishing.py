@@ -25,7 +25,7 @@ from .product_store_history import histories
 from . import platform_sku
 from .listing_titles import branded_title, source_brands
 from .blacklist import active_entries, matches
-from .credential_vault import decrypt, VaultError
+from .credential_vault import VaultError
 from .database import write_lock, is_postgres
 from .object_storage import StorageError
 from .prelisting import PlanInput, build_preview, encoded, fingerprint
@@ -33,7 +33,8 @@ from .projection import category
 from .walmart_accounts import account, now, store
 from .walmart_client import WalmartError
 from .walmart_publishing_client import SubmissionUnknown
-from .walmart_listing_schema import (DEFAULT_VERSION, LABELS, feed_item, identifier_errors,
+from .walmart_markets import market_of, require_sources, spec_version, session as market_session, header as market_header
+from .walmart_listing_schema import (LABELS, feed_item, identifier_errors,
     image_signature, normalize_spec, schema_errors, sections, taxonomy_options, upstream_reason)
 
 ACTIVE = {'sending', 'unknown', 'processing'}
@@ -129,7 +130,7 @@ class ListingRow(Input):
 
 class Save(Input):
     revision: int = Field(ge=1)
-    version: str = Field(min_length=1, max_length=80, pattern=r'^5\.0\.[A-Za-z0-9_-]+$')
+    version: str = Field(min_length=1, max_length=80, pattern=r'^[0-9]+\.[A-Za-z0-9_.-]+$')
     rows: list[ListingRow] = Field(min_length=1, max_length=1000)
 
 
@@ -184,11 +185,12 @@ def binding(db, store_id, expected_partner=None):
     row = account(db, store_id)
     if not row or not row['encrypted_credentials'] or row['status'] != 'verified':
         raise HTTPException(409, '请先绑定并验证目标沃尔玛店铺')
-    if row['marketplace'] != 'US':
-        raise HTTPException(409, '加拿大站已支持 API 绑定验证，刊登和商品管理尚未接入，不能调用美国站操作')
     if expected_partner and row['partner_id'] != expected_partner:
         raise HTTPException(409, '当前绑定店铺与原提交店铺不同，已阻止查询或写入')
-    return target, dict(row)
+    bound = dict(row)
+    if market_of(bound) == 'CA':
+        bound['_ca_bundle'] = cache_value(db, bound, 'ca_bundle')
+    return target, bound
 
 
 def document(db, bid):
@@ -239,7 +241,7 @@ def public_document(db, bid):
     account=db.execute('SELECT * FROM walmart_accounts WHERE store_id=?',(p['store']['id'],)).fetchone()
     from .listing_prerequisites import validation_current
     validation['current']=validation_current(db,dict(row),account,validation)
-    validation={k:v for k,v in validation.items() if k not in ('payloads','schema_digests')}
+    validation={k:v for k,v in validation.items() if k not in ('payloads','schema_digests','feed_headers')}
     if account:
         for pt in {r['product_type'] for r in json.loads(row['rows_json']) if r['product_type']}:
             schema=cache_value(db,account,'spec',row['version'],pt)
@@ -271,7 +273,13 @@ def public_document(db, bid):
     from .listing_price_review import reviews
     from .listing_variants import synchronize
     groups=synchronize(db,json.loads(row['rows_json']),basis,row['version'],latest_results(db,bid))
+    ca_bundle=cache_value(db,account,'ca_bundle') if market_of(account)=='CA' else None
+    ca_info=({'version':ca_bundle['version'],'product_types':len(ca_bundle['specs']),
+              'source':ca_bundle.get('source',{'kind':'store_import'})} if ca_bundle else None)
     return dict(revision=row['revision'], version=row['version'], rows=json.loads(row['rows_json']),
+                marketplace=market_of(account), currency='CAD' if market_of(account)=='CA' else 'USD',
+                canada_specs_ready=bool(ca_bundle) if market_of(account)=='CA' else True,
+                canada_specification=ca_info,
                 variant_groups=groups,
                 source_price_reviews=reviews(db,row),
                 basis=basis, validation=validation, labels=LABELS,
@@ -320,7 +328,8 @@ def default_rows(preview):
                 try:
                     weight = Decimal(str(c['shipping_weight']))
                     if weight.is_finite() and weight > 0:
-                        orderable['ShippingWeight'] = float(weight)
+                        orderable['ShippingWeight'] = ({'measure':float(weight.quantize(Decimal('.001'),rounding=ROUND_HALF_UP)), 'unit':'lb'}
+                            if preview.get('store',{}).get('marketplace')=='CA' else float(weight))
                 except Exception:
                     pass
             visible = dict(productName=branded_title(copy_data.get('title') or '',preview['brand'],item.get('source_brands',[])), brand=preview['brand'],
@@ -332,7 +341,7 @@ def default_rows(preview):
             image_policy(visible, default_selection=True)
             normalize_content(visible)
             result.append(dict(platform_sku=v['platform_sku'], listing_id=item['listing_id'],source_sku=v['sku'],
-                product_type='',fulfillment_center_id='', identification=dict(mode='identifier',type=code_type,value=code,submission_id=''),
+                product_type='',fulfillment_center_id='__DEFAULT_CA__' if preview.get('store',{}).get('marketplace')=='CA' else '', identification=dict(mode='identifier',type=code_type,value=code,submission_id=''),
                 visible=visible,orderable=orderable,extra={}))
     if len(result) > 1000:
         raise HTTPException(422, '正式上架每批最多 1000 个 SKU，请拆分批次')
@@ -340,9 +349,21 @@ def default_rows(preview):
 
 
 def cache_value(db, binding_row, kind, version='', pt='', age=86400):
+    if market_of(binding_row)=='CA' and kind in ('spec','taxonomy'):
+        bundle=cache_value(db,binding_row,'ca_bundle') or {}
+        if kind=='spec':
+            return bundle.get('specs',{}).get(pt) if bundle.get('version')==version else None
+        if bundle:
+            from .walmart_canada import taxonomy
+            return taxonomy_options(taxonomy(bundle))
     r = db.execute('''SELECT * FROM walmart_listing_metadata WHERE store_id=? AND partner_id=?
         AND kind=? AND version=? AND product_type=?''', (binding_row['store_id'],binding_row['partner_id'],kind,version,pt)).fetchone()
-    return json.loads(r['data_json']) if r and r['fetched_at'] > time.time()-age else None
+    if r and (kind=='ca_bundle' or r['fetched_at'] > time.time()-age):
+        return json.loads(r['data_json'])
+    if kind=='ca_bundle' and market_of(binding_row)=='CA':
+        from .walmart_canada import official_bundle
+        return official_bundle()
+    return None
 
 
 def cache_put(db, account_row, kind, value, version='', pt=''):
@@ -440,10 +461,9 @@ def feedback_errors(db,doc,row,spec):
 
 def check_rows(db, doc, session, binding_row, skus=None):
     basis = unchanged_sources(db, doc)
-    if any(i['source'] == 'GigaB2B_CA' for i in basis['items']):
-        raise HTTPException(409, '加拿大云仓商品不能通过 Walmart 美国站接口提交')
+    require_sources(basis['items'], market_of(binding_row))
     by_sku = {v['platform_sku']: (i,v) for i in basis['items'] for v in i['variants']}
-    results, payloads, schema_digests = {}, {}, {}
+    results, payloads, schema_digests, headers = {}, {}, {}, {}
     taxonomy = cache_value(db,binding_row,'taxonomy',age=3600)
     if taxonomy is None:
         raise HTTPException(409, '请先获取沃尔玛实际类目列表')
@@ -510,13 +530,14 @@ def check_rows(db, doc, session, binding_row, skus=None):
                         if value!=row[section].get(key):
                             errors.append(dict(path=section+'.'+key,message='原产国须按用户固定规则填写 China，请重新保存资料'))
                 payloads[sku] = entry
+                headers[sku] = market_header(validation_schema, doc['version'])
             except (ValueError,VaultError) as exc:
                 errors.append(dict(path='visible.mainImageUrl',message=str(exc)))
         results[sku] = dict(valid=not errors,errors=errors)
     from .listing_prerequisites import resource_digest
     return dict(variant_policy=POLICY,feedback_policy='publication_feedback_v1',content_policy='default8_manual_images_copy_origin_v3',title_policy='brand_prefix_v1',feedback_digest=fingerprint(latest_results(db,doc['batch_id'])),resources_digest=resource_digest(db,binding_row),id=uuid.uuid4().hex,revision=doc['revision'],at=int(time.time()),binding_revision=binding_row['revision'],
                 partner_id=binding_row['partner_id'],rows=results,schema_digests=schema_digests,payloads=payloads,
-                valid_count=sum(r['valid'] for r in results.values()))
+                feed_headers=headers, marketplace=market_of(binding_row), valid_count=sum(r['valid'] for r in results.values()))
 
 
 def normalize_titles(db, rows, basis, latest, version=None):
@@ -649,7 +670,7 @@ def publishing_routes(catalog):
                 return existing
             basis=fresh_basis(catalog,db,current)
             rows=default_rows(basis)
-            version=os.environ.get('CATALOG_WALMART_SPEC_VERSION',DEFAULT_VERSION)
+            version=spec_version(db,basis['store']['id'])
             db.execute('INSERT INTO walmart_listing_documents VALUES(?,?,?,?,?,?,?)',
                 (bid,1,version,encoded(rows),encoded(basis),'{}',now()))
             from .listing_prerequisites import allocate_document_identifiers
@@ -671,6 +692,12 @@ def publishing_routes(catalog):
     def save(bid: str, data: Save, request: Request):
         with catalog.connect() as db:
             write_lock(db);batch(db,bid);doc=document(db,bid);revision_check(doc,data.revision)
+            basis_store=json.loads(doc['basis_json'])['store']
+            if basis_store.get('marketplace','US')=='CA':
+                if data.version!=spec_version(db,basis_store['id']):
+                    raise HTTPException(409,'加拿大资料版本须与已导入官方规格一致，请在当前批次重新导入规格')
+            elif not re.fullmatch(r'5\.0\.[A-Za-z0-9_-]+',data.version):
+                raise HTTPException(422,'美国站须使用正式的 5.0 商品规格版本')
             rows=[r.model_dump() for r in data.rows];old=json.loads(doc['rows_json'])
             for r in rows:
                 if not r.get('variant_reviewed_fields'):
@@ -784,7 +811,58 @@ def publishing_routes(catalog):
         with catalog.connect() as db:
             b=batch(db,bid);p=json.loads(b['preview_json'])
             _,bound=binding(db,p['store']['id'],expected_partner)
-        return bound,request.app.state.walmart_publisher.session(decrypt(bound['store_id'],bound['encrypted_credentials']),bound['partner_id'])
+        return bound,market_session(request.app.state.walmart_publisher,bound)
+
+    @router.post('/canada/specifications')
+    async def import_canadian_specs(bid: str, request: Request):
+        admin(request)
+        # Bounded streaming: a large file cannot exhaust worker memory.
+        raw = bytearray()
+        async for chunk in request.stream():
+            raw.extend(chunk)
+            if len(raw) > 15 * 1024 * 1024:
+                raise HTTPException(413, '加拿大规格文件不能超过 15 MB')
+        from .concurrency import background_call
+        return await background_call(persist_canadian_specs, bid, request, bytes(raw))
+
+    def persist_canadian_specs(bid, request, raw):
+        try:
+            from .walmart_canada import import_specs
+            bundle = import_specs(json.loads(raw))
+        except (ValueError, RecursionError, WalmartError) as exc:
+            raise HTTPException(422, str(exc) if isinstance(exc, WalmartError) else '规格文件不是有效 JSON') from None
+        with catalog.connect() as db:
+            write_lock(db); current=batch(db,bid)
+            sid=json.loads(current['preview_json'])['store']['id']
+            _,bound=binding(db,sid)
+            if market_of(bound) != 'CA':
+                raise HTTPException(409,'仅加拿大店铺可以导入加拿大官方规格')
+            doc=document(db,bid)
+            if db.execute("SELECT 1 FROM listing_generation_jobs WHERE store_id=? AND state IN ('queued','running','awaiting_sources')",(sid,)).fetchone():
+                raise HTTPException(409,'请等待当前生成任务结束后再导入规格')
+            if db.execute('SELECT 1 FROM walmart_listing_attempts WHERE batch_id=?',(bid,)).fetchone():
+                raise HTTPException(409,'已提交的批次不能切换规格，请新建预上架批次')
+            existing=cache_value(db,bound,'ca_bundle') or {}
+            if existing.get('version')==bundle['version']:
+                bundle['specs']={**existing.get('specs',{}),**bundle['specs']}
+            from .walmart_canada import bundle_digest
+            bundle['digest']=bundle_digest(bundle)
+            bundle['source']={'kind':'store_import'}
+            if len(encoded(bundle).encode()) > 15 * 1024 * 1024:
+                raise HTTPException(413,'店铺加拿大规格总量不能超过 15 MB，请按需导入')
+            cache_put(db,bound,'ca_bundle',bundle)
+            # Cached validation must observe the new canonical spec, even when
+            # the official version string did not change.
+            db.execute('DELETE FROM walmart_listing_metadata WHERE store_id=? AND partner_id=? AND kind IN (\'taxonomy\',\'spec\')',
+                       (sid,bound['partner_id']))
+            for pt,schema in bundle['specs'].items():
+                cache_put(db,bound,'spec',schema,bundle['version'],pt)
+            from .walmart_canada import taxonomy as ca_taxonomy
+            cache_put(db,bound,'taxonomy',taxonomy_options(ca_taxonomy(bundle)))
+            db.execute('UPDATE walmart_listing_documents SET version=?,revision=revision+1,validation_json=?,updated_at=? WHERE batch_id=?',
+                       (bundle['version'],'{}',now(),bid))
+            event(db,bid,request,'import_canada_specs',{'version':bundle['version'],'product_types':sorted(bundle['specs'])})
+            return public_document(db,bid)
 
     @router.post('/taxonomy')
     def taxonomy(bid: str,request: Request):
@@ -871,8 +949,7 @@ def publishing_routes(catalog):
                 return public_attempt(prior)
         try:
             bound,_=context(request,bid)
-            credentials=decrypt(bound['store_id'],bound['encrypted_credentials'])
-            with request.app.state.walmart_publisher.session(credentials,bound['partner_id'],writing=True) as remote:
+            with market_session(request.app.state.walmart_publisher,bound,writing=True) as remote:
                 aid=uuid.uuid4().hex
                 with catalog.connect() as db:
                     write_lock(db);b=batch(db,bid);doc=document(db,bid);revision_check(doc,data.revision)
@@ -932,7 +1009,12 @@ def publishing_routes(catalog):
                                     namespace=db.execute('SELECT namespace FROM listings WHERE id=?',
                                                          (row['listing_id'],)).fetchone()[0])
                         chosen.append(frozen_row)
-                    payload={'MPItemFeedHeader':{'businessUnit':'WALMART_US','locale':'en','version':doc['version']},
+                    chosen_headers=[report.get('feed_headers',{}).get(sku) for sku in data.skus]
+                    if any(h is None for h in chosen_headers):
+                        raise HTTPException(409,'提交格式已更新，请重新校验上架资料')
+                    if len({encoded(h) for h in chosen_headers}) != 1:
+                        raise HTTPException(409,'加拿大不同官方子类目或语言 Header 的商品需分开选择提交')
+                    payload={'MPItemFeedHeader':chosen_headers[0],
                              'MPItem':[report['payloads'][sku] for sku in data.skus]}
                     if len(encoded(payload).encode())>20*1024*1024:
                         raise HTTPException(413,'沃尔玛提交文件过大，请拆分批次')
@@ -980,7 +1062,7 @@ def publishing_routes(catalog):
             raise HTTPException(409,'只有结果未知且尚未关联编号的请求可关联原沃尔玛批次')
         try:
             bound,_=context(request,bid,a['partner_id'])
-            with request.app.state.walmart_publisher.session(decrypt(bound['store_id'],bound['encrypted_credentials']),a['partner_id']) as remote:
+            with market_session(request.app.state.walmart_publisher,bound) as remote:
                 metadata=verify_feed_owner(remote,data.feed_id,a['partner_id'])
                 if metadata.get('fileName') != f'jiwu-{aid}.json':
                     raise HTTPException(409,'沃尔玛批次文件名与本次提交编号不匹配，不能将旧批次冒认为本次提交')
@@ -1009,7 +1091,11 @@ def publishing_routes(catalog):
 def verify_feed_owner(remote, feed_id, partner_id):
     records=remote.feed_owner(feed_id).get('results',{}).get('feed',[])
     same=[r for r in records if r.get('feedId')==feed_id]
-    if len(same)!=1 or str(same[0].get('partnerId'))!=partner_id or same[0].get('feedType')!='MP_ITEM':
+    canada = getattr(remote,'marketplace','US') == 'CA'
+    # Canadian identity is the bound OAuth client hash, not a Walmart Partner ID.
+    # The authenticated feed API scopes results to that seller; callers also
+    # check the original request filename and the complete SKU list on recovery.
+    if len(same)!=1 or (not canada and str(same[0].get('partnerId'))!=partner_id) or same[0].get('feedType')!=('MP_ITEM_INTL' if canada else 'MP_ITEM'):
         raise WalmartError('沃尔玛批次编号不属于该店铺的商品上架请求，已阻止关联或查询')
     return same[0]
 
@@ -1028,7 +1114,7 @@ def read_feed(remote, feed_id):
         received=page.get('itemsReceived')
         if not isinstance(received,int) or received<0 or received>1000:
             raise WalmartError('沃尔玛批次商品数量异常，未更新状态')
-        if len(details)>=received or len(rows)<1000:
+        if len(details)>=received or len(rows)<getattr(remote,'feed_page_size',1000):
             break
         offset+=len(rows)
         if offset>1000:
@@ -1103,7 +1189,7 @@ def _refresh_attempt(catalog,bid,aid,request,poll_token,*,sync_inventory=True):
             raise HTTPException(409,'没有沃尔玛批次编号，结果未知；请在卖家中心核对并关联原批次，不能直接重提')
         _,bound=binding(db,a['store_id'],a['partner_id'])
     try:
-        with request.app.state.walmart_publisher.session(decrypt(a['store_id'],bound['encrypted_credentials']),a['partner_id'],writing=sync_inventory) as remote:
+        with market_session(request.app.state.walmart_publisher,bound,writing=sync_inventory) as remote:
             verify_feed_owner(remote,a['feed_id'],a['partner_id'])
             summary,details=read_feed(remote,a['feed_id'])
             submitted={r['platform_sku']:r for r in json.loads(a['rows_json'])}

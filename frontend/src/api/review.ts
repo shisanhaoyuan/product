@@ -6,6 +6,7 @@ export interface ReviewRow {
   store_id: number;
   store_name: string;
   partner_id: string;
+  marketplace?: 'US' | 'CA';
   feed_id: string;
   platform_sku: string;
   source_sku: string;

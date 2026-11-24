@@ -14,7 +14,7 @@ from .listing_skill_defaults import has_default, skill_default, length_fallback,
 
 RULES_VERSION = 'listing-generation-v24-skill-feature-splitting'
 RULES = Path(__file__).with_name('listing_generation_rules.md').read_text()
-BLOCKED = re.compile(r'prop.?65|warranty|certif|nrtl|chemical|origin|warning|exempt|gtin|upc|ean|model|partnumber', re.I)
+BLOCKED = re.compile(r'prop.?65|warranty|certif|nrtl|chemical|origin|warning|exempt|gtin|upc|ean|model|partnumber|taxcode', re.I)
 PROTECTED = {'variantGroupId','variantAttributeNames','isPrimaryVariant','swatchImages','sku','productIdentifiers','inventory','price','msrp','SkuUpdate','ProductIdUpdate','fulfillmentCenterID'}
 CONTENT_FIELDS = {'productName','brand','shortDescription','keyFeatures','mainImageUrl','productSecondaryImageURL'}
 
@@ -419,8 +419,16 @@ def mapped_value(key, schema, facts):
         # Multi-package shipping weight cannot be inferred from product weight.
         if not facts.get('detail.comboFlag'):
             number = converted(facts.get('detail.weight'), facts.get('detail.weightUnit'), 'lb', True)
-            if number is not None and candidate_value(schema, number) is not None:
-                return number, ['detail.weight','detail.weightUnit']
+            if number is not None:
+                value = number
+                if schema.get('type') == 'object':
+                    step = schema.get('properties', {}).get('measure', {}).get('multipleOf')
+                    if step:
+                        step = Decimal(str(step))
+                        number = float((Decimal(str(number)) / step).quantize(Decimal('1')) * step)
+                    value = {'measure':number, 'unit':'lb'}
+                if candidate_value(schema, value) is not None:
+                    return value, ['detail.weight','detail.weightUnit']
     return None, []
 
 
@@ -433,6 +441,17 @@ def fill_row(row, schema, facts, ai, provenance):
     spec = sections(schema, row['product_type'])
     from .listing_schema_cleanup import cleanup
     provenance.update(cleanup(row, schema))
+    if '_ca' in schema:
+        weight = row['orderable'].get('ShippingWeight')
+        shape = spec['orderable'].get('properties', {}).get('ShippingWeight', {})
+        # Legacy templates store pounds as a scalar; preserve its meaning and
+        # convert only for a schema that explicitly requires a weight object.
+        if type(weight) in (int,float) and shape.get('type') == 'object':
+            value = {'measure':float(Decimal(str(weight)).quantize(Decimal('.001'))), 'unit':'lb'}
+            if candidate_value(shape,value) is not None:
+                row['orderable']['ShippingWeight'] = value
+                provenance['orderable.ShippingWeight'] = dict(kind='source',value=value,
+                    previous_value=weight,refs=[],reason='保留旧资料中的磅重，按加拿大官方重量格式转换，精度为 0.001 lb')
     # Remove empty placeholders after archiving unsupported fields above.
     for section in ('visible','orderable'):
         for key,value in list(row[section].items()):

@@ -458,7 +458,7 @@ onBeforeUnmount(() => {
 </script>
 <template>
   <p v-if="source === 'GigaB2B_CA'" class="notice">
-    加拿大独立商品库，价格保留 API 返回币种。Walmart 加拿大站接入后开放预上架。
+    加拿大独立商品库，价格使用 CAD；可选择已绑定的 Walmart 加拿大店铺进行预上架。
   </p>
   <div class="page-heading">
     <div>
@@ -728,8 +728,7 @@ onBeforeUnmount(() => {
         <span>已选 {{ selectedCount }} 件</span
         ><button
           class="btn primary"
-          :disabled="source === 'GigaB2B_CA' || loading || selectedCount < 1 || selectedCount > 500"
-          :title="source === 'GigaB2B_CA' ? '等待 Walmart 加拿大站接入后开放' : undefined"
+          :disabled="loading || selectedCount < 1 || selectedCount > 500"
           @click="openComposer"
         >
           预上架

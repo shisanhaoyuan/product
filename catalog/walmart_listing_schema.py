@@ -30,6 +30,7 @@ LABELS = {
     'productNetContentMeasure': '数值', 'productNetContentUnit': '单位', 'measure': '数值', 'unit': '单位',
     'country_of_origin_substantial_transformation': '原产国（实质性转变）',
     'countryOfOriginSubstantialTransformation': '原产国（实质性转变）',
+    'productTaxCode': '商品税码（按实际税务分类填写）', 'countryOfOriginAssembly': '原产国',
     'manufacturerPartNumber': '制造商零件编号', 'smallPartsWarningCode': '小零件警告',
     'color': '颜色', 'size': '尺寸', 'material': '材质', 'condition': '商品状况',
     'countPerPack': '每包数量', 'multipackQuantity': '组合包装数量', 'MustShipAlone': '是否必须单独运输',
@@ -214,6 +215,9 @@ def feed_item(row, schema, version, origin, *, exemption=False, stock=None):
         requirements = schema['properties']['MPItem']['items']['properties']['Orderable'].get('required', [])
         if 'productIdentifiers' in requirements:
             requirements.remove('productIdentifiers')
+    if '_ca' in schema:
+        from .walmart_canada import convert_item
+        return convert_item(result, schema)
     return result, schema
 
 
@@ -251,17 +255,18 @@ def chinese_schema_error(error):
     return dict(path=path, message=message)
 
 
-def precise_validator(schema, **kwargs):
+def precise_validator(schema, *, base=Draft7Validator, **kwargs):
     """Keep decimal multipleOf checks when nested official schemas repeat $schema.
 
     jsonschema.evolve otherwise switches our extended validator back to Draft7.
     Removing redundant declarations of the same dialect preserves its semantics.
     """
+    dialect = 'draft-07' if base is Draft7Validator else 'draft-04'
     def prepare(value):
         if isinstance(value, dict):
             return {k: v if k in ('enum','const','default','examples') else prepare(v) for k, v in value.items()
                     if not (k == '$schema' and isinstance(v, str) and
-                            v.endswith(('draft-07/schema#', 'draft-07/schema')))}
+                            v.endswith((dialect + '/schema#', dialect + '/schema')))}
         if isinstance(value, list):
             return [prepare(v) for v in value]
         return value
@@ -271,27 +276,42 @@ def precise_validator(schema, **kwargs):
             if Decimal(str(instance)) % Decimal(str(step)) != 0:
                 yield ValidationError('金额或数值精度不符合要求')
 
-    cls = validators.extend(Draft7Validator, {'multipleOf': exact_multiple})
+    cls = validators.extend(base, {'multipleOf': exact_multiple})
     return cls(prepare(schema), **kwargs)
 
 
 def schema_errors(schema, item, version):
     def refuse(uri):
         raise NoSuchResource(ref=uri)
-    payload = dict(MPItemFeedHeader={'businessUnit': 'WALMART_US', 'locale': 'en', 'version': version}, MPItem=[item])
+    from .walmart_markets import header
+    from jsonschema.validators import validator_for
+    payload = dict(MPItemFeedHeader=header(schema, version), MPItem=[item])
     try:
-        validator = precise_validator(schema, registry=Registry(retrieve=refuse), format_checker=FormatChecker())
+        validator = precise_validator(schema, base=validator_for(schema) if '_ca' in schema else Draft7Validator,
+                                      registry=Registry(retrieve=refuse), format_checker=FormatChecker())
         errors = [chinese_schema_error(e) for e in validator.iter_errors(payload)]
     except Exception:
         return [dict(path='', message='官方规格含无法解析的约束，不能确认资料完整；请重新获取规格并联系维护人员')]
-    for key in ('productName', 'shortDescription'):
-        visible = next(iter(item['Visible'].values()))
-        if not plain(visible.get(key)):
-            errors.append(dict(path='MPItem.0.Visible.' + next(iter(item['Visible'])) + '.' + key, message=LABELS[key] + '不能为空'))
     visible = next(iter(item['Visible'].values()))
-    for index, feature in enumerate(visible.get('keyFeatures', [])):
+    content = {**item['Orderable'], **visible} if '_ca' in schema else visible
+    for key in ('productName', 'shortDescription'):
+        value = content.get(key)
+        if isinstance(value, dict) and '_ca' in schema:
+            value = value.get('en')
+        if not plain(value):
+            errors.append(dict(path='MPItem.0.Visible.' + next(iter(item['Visible'])) + '.' + key, message=LABELS[key] + '不能为空'))
+    for index, feature in enumerate(content.get('keyFeatures', [])):
+        if isinstance(feature, dict) and '_ca' in schema:
+            feature = feature.get('en')
         if not plain(feature):
             errors.append(dict(path=f'MPItem.0.Visible.{next(iter(item["Visible"]))}.keyFeatures.{index}',message=f'第 {index+1} 条卖点不能为空或仅包含空白 HTML'))
+    if '_ca' in schema:
+        pt=schema['_ca']['product_type']
+        for error in errors:
+            for key in schema['_ca']['moved']:
+                error['path']=re.sub(r'^MPItem\.0\.Orderable\.'+re.escape(key)+r'(?=\.|$)',
+                    'MPItem.0.Visible.'+pt+'.'+key,error['path'])
+            error['path']=re.sub(r'\.en(?=\.|$)', '', error['path'])
     return errors[:200]
 
 

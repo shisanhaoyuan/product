@@ -96,6 +96,10 @@ export interface ListingVariantGroup {
   locked: boolean;
 }
 export interface ListingDocument {
+  marketplace?: 'US' | 'CA';
+  currency?: 'USD' | 'CAD';
+  canada_specs_ready?: boolean;
+  canada_specification?: { version: string; product_types: number; source: { kind: string; verified_at?: string } } | null;
   variant_groups?: ListingVariantGroup[];
   source_price_reviews?: Record<
     string,
@@ -225,6 +229,8 @@ export const publishingApi = {
     ),
   read: (bid: string) => request<ListingDocument | null>(path(bid)),
   prepare: (bid: string) => request<ListingDocument>(path(bid) + '/prepare', body('POST')),
+  importCanadaSpecs: (bid: string, specifications: unknown) =>
+    request<ListingDocument>(path(bid) + '/canada/specifications', body('POST', specifications)),
   save: (bid: string, doc: ListingDocument) =>
     request<ListingDocument>(
       path(bid),

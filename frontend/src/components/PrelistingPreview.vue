@@ -1,19 +1,26 @@
 <script setup lang="ts">
 import { isSupplier, sourceInfo } from '../utils/productSources';
 import type { PrelistingPreview } from '../api/types';
-import { money, plain } from '../utils/display';
+import { money as formatMoney, plain } from '../utils/display';
 import StatusBadge from './StatusBadge.vue';
 import ProductImage from './ProductImage.vue';
 import ListingProductDetails from './ListingProductDetails.vue';
 import { ref } from 'vue';
 const detailId = ref('');
 import AttributeValue from './AttributeValue.vue';
-defineProps<{ preview: PrelistingPreview }>();
+const props = defineProps<{ preview: PrelistingPreview }>();
+function money(value: string | number | null | undefined) {
+  return formatMoney(value, props.preview.store.currency || 'USD');
+}
 </script>
 <template>
   <div class="plan-summary">
     <div>
-      <span>目标店铺</span><strong>{{ preview.store.name }}</strong>
+      <span>目标店铺</span
+      ><strong
+        >{{ preview.store.name }} · {{ preview.store.marketplace || 'US' }} /
+        {{ preview.store.currency || 'USD' }}</strong
+      >
     </div>
     <div>
       <span>目标品牌</span><strong>{{ preview.brand }}</strong>
