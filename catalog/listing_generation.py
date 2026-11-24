@@ -12,7 +12,7 @@ from .listing_titles import branded_title, source_brands
 from .walmart_listing_schema import plain, sections, feed_item, schema_errors, identifier_errors, precise_validator
 from .listing_skill_defaults import has_default, skill_default, length_fallback, fixed_origin, enforce_origin
 
-RULES_VERSION = 'listing-generation-v22-official-category-recovery'
+RULES_VERSION = 'listing-generation-v23-skill-part-number'
 RULES = Path(__file__).with_name('listing_generation_rules.md').read_text()
 BLOCKED = re.compile(r'prop.?65|warranty|certif|nrtl|chemical|origin|warning|exempt|gtin|upc|ean|model|partnumber', re.I)
 PROTECTED = {'variantGroupId','variantAttributeNames','isPrimaryVariant','swatchImages','sku','productIdentifiers','inventory','price','msrp','SkuUpdate','ProductIdUpdate','fulfillmentCenterID'}
@@ -440,6 +440,18 @@ def fill_row(row, schema, facts, ai, provenance):
                 del row[section][key]
     prepare_copy(row,facts,provenance)
     problems = enforce_origin(row,spec,provenance)
+    from .listing_part_number import part_number_field, fill_part_number
+    for section in ('visible', 'orderable'):
+        for key, shape in spec[section].get('properties', {}).items():
+            if not part_number_field(key, shape) or not empty(row[section].get(key)):
+                continue
+            path = section + '.' + key
+            try:
+                value, evidence = fill_part_number(row, shape, facts, ai)
+                row[section][key] = value
+                provenance[path] = evidence
+            except ListingAIError as exc:
+                problems.append(dict(path=path, message=str(exc)))
     attempted = set()
     for turn in range(3):
         missing = {}
@@ -455,6 +467,8 @@ def fill_row(row, schema, facts, ai, provenance):
             for key in sorted(needed):
                 if key in PROTECTED or key not in props or fixed_origin(key,props[key]):
                     continue
+                if part_number_field(key, props[key]):
+                    continue  # Dedicated user rule above; never treat as generic identifier estimation.
                 field = section + '.' + key
                 current = row[section].get(key)
                 if not empty(current) and key != 'netContent':

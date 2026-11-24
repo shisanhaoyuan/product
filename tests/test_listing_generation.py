@@ -42,6 +42,9 @@ class AI:
         if purpose=='product_type':
             return dict(source_sku=payload['source_sku'],product_type=payload['candidates'][0]['name'],
                         confidence=.95,refs=['category'],reason='根据来源类目')
+        if purpose=='skill_part_number':
+            return dict(source_sku=payload['source_sku'],value='Storage Furniture',
+                        refs=['content.copy.title'],reason='概括同 SKU 商品类型')
         actions=[]
         for field in payload['fields']:
             if field=='visible.assembledProductHeight':
