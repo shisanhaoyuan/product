@@ -204,6 +204,40 @@ def test_persistent_job_preserves_identity_prices_and_never_publishes(publishing
     assert c.get(base).json()['rows']==doc['rows']
 
 
+def test_category_recovery_continues_to_official_spec_and_saves_document(publishing):
+    c,catalog,_,_,b,base,remote=publishing
+    before=c.get(base).json()
+    assert all(not row['product_type'] for row in before['rows'])
+    # A supplier path differs from Walmart's exact type, as with Saleyee Canopy
+    # vs Walmart Awnings. Keep the existing offline store/schema fixture.
+    with catalog.connect() as db:
+        basis=json.loads(db.execute('SELECT basis_json FROM walmart_listing_documents WHERE batch_id=?',
+                                    (b['id'],)).fetchone()[0])
+        for item in basis['items']:
+            item.update(category='Supplier > Seating furniture',category_hints=[])
+        db.execute('UPDATE walmart_listing_documents SET basis_json=? WHERE batch_id=?',
+                   (json.dumps(basis),b['id']))
+    class RetryCategory(AI):
+        def query(self,purpose,payload):
+            result=super().query(purpose,payload)
+            if purpose=='product_type' and payload['selection_attempt']==1:
+                result['product_type']='Supplier category, not an official type'
+            return result
+    ai=RetryCategory()
+    job=start_job(catalog,c.app.state.walmart_publisher,b['id'],ai=ai,schedule=False)
+    run_job(catalog,c.app.state.walmart_publisher,job['id'],ai)
+    status=c.get(base+'/generation').json()['job']
+    assert status['state']=='complete',status
+    doc=c.get(base).json()
+    assert all(row['product_type']==PT for row in doc['rows'])
+    assert all(row['visible']['assembledProductHeight']['measure']==32.5 for row in doc['rows'])
+    assert any(call.url.path=='/v3/items/spec' for call in remote.calls)
+    for row in doc['rows']:
+        assert [payload['selection_attempt'] for purpose,payload in ai.calls
+                if purpose=='product_type' and payload['source_sku']==row['source_sku']]==[1,2]
+    assert not remote.posts
+
+
 def test_concurrent_edit_rejected_and_completed_source_maps_kept(publishing):
     c,catalog,_,_,b,base,_=publishing
     ai=AI()

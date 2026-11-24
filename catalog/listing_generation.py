@@ -12,7 +12,7 @@ from .listing_titles import branded_title, source_brands
 from .walmart_listing_schema import plain, sections, feed_item, schema_errors, identifier_errors, precise_validator
 from .listing_skill_defaults import has_default, skill_default, length_fallback, fixed_origin, enforce_origin
 
-RULES_VERSION = 'listing-generation-v21-category-schema-cleanup'
+RULES_VERSION = 'listing-generation-v22-official-category-recovery'
 RULES = Path(__file__).with_name('listing_generation_rules.md').read_text()
 BLOCKED = re.compile(r'prop.?65|warranty|certif|nrtl|chemical|origin|warning|exempt|gtin|upc|ean|model|partnumber', re.I)
 PROTECTED = {'variantGroupId','variantAttributeNames','isPrimaryVariant','swatchImages','sku','productIdentifiers','inventory','price','msrp','SkuUpdate','ProductIdUpdate','fulfillmentCenterID'}
@@ -304,34 +304,55 @@ def choose_type(row, item, facts, types, ai):
     # Sofas for a Primary Living Space sofa. Never silently keep that mismatch.
     living = any('primary living space' in h or 'indoor' in h for h in hints)
     outdoor = any('outdoor' in h or 'patio' in h for h in hints)
-    conflict = living and 'outdoor' in norm(row['product_type']) or outdoor and row['product_type'] and 'outdoor' not in norm(row['product_type'])
+    # Outdoor types such as Awnings need not contain the literal word Outdoor.
+    conflict = living and 'outdoor' in norm(row['product_type']) or outdoor and 'indoor' in norm(row['product_type'])
     if row['product_type'] and not conflict:
         if row['product_type'] in {t['name'] for t in types}:
             return row['product_type'], dict(kind='existing', reason='保留现有有效商品类型', refs=[])
     if len(matches) == 1 and not (living and 'outdoor' in norm(matches[0]['name'])):
         return matches[0]['name'], dict(kind='source', reason='来源类目唯一准确匹配', refs=['category'])
-    # Token retrieval reduces the prompt, but cannot manufacture an option.
-    title = str((facts.get('content.copy') or {}).get('title') or facts.get('detail.productName')
-                or facts.get('detail.EnName') or row.get('visible', {}).get('productName') or '')
-    # Amazon title lives in content.copy, not the GIGA-only detail.productName.
-    tokenize = lambda value: {w[:-1] if w.endswith('s') and not w.endswith('ss') else w
-                              for w in re.findall(r'[a-z]{3,}', str(value).casefold())}
-    words = tokenize(' '.join(hints) + ' ' + title)
-    ranked = sorted(types, key=lambda t: -len(words & tokenize(t['name'] + ' ' + t['group'])))
+    from .listing_category_selection import ranked_types, recovery_candidates
+    if not types:
+        raise ListingAIError('当前店铺未返回可用商品类型，请重新获取沃尔玛类目')
+    ranked = ranked_types(types, item, facts, row)
     candidates = ranked[:60]
-    proposal = ai.query('product_type', dict(source_sku=row['source_sku'], facts=facts,
-        candidates=candidates, existing=row['product_type'], rules=RULES,
-        output_contract={'source_sku': row['source_sku'], 'product_type': 'exact candidate name or empty',
+    official_names = {t['name'] for t in types}
+
+    def official_type(value):
+        if not isinstance(value, str) or not value.strip():
+            return ''
+        if value in official_names:
+            return value
+        matches = [name for name in official_names if norm(name) == norm(value)]
+        return matches[0] if len(matches) == 1 else ''
+
+    def request(options, attempt):
+        return ai.query('product_type', dict(source_sku=row['source_sku'], facts=facts,
+        candidates=options, existing=row['product_type'], rules=RULES, selection_attempt=attempt,
+        instructions='Select the official type by the actual product, structure and use. '
+                     'Supplier categories are search hints, not Walmart product types. '
+                     'Consider synonyms; a door/window rain cover may be described as an awning. '
+                     'Return the exact official name, never a supplier category path or translated name.',
+        output_contract={'source_sku': row['source_sku'], 'product_type': 'exact official candidate name or empty',
                          'reason': '中文选择理由或冲突原因',
                          'refs': ['existing fact key or nested dotted path, e.g. content.copy.title'],
                          'confidence': 'number 0..1'}))
-    pt = proposal.get('product_type', '')
+
+    proposal = request(candidates, 1)
+    if proposal.get('source_sku') != row['source_sku']:
+        raise ListingAIError('AI 返回的来源 SKU 与当前商品不一致，未采用类目')
+    pt = official_type(proposal.get('product_type'))
+    if not pt:
+        # A shortlist is a prompt optimization, never the official validity set.
+        candidates = recovery_candidates(ranked, facts, row['source_sku'], ai)
+        proposal = request(candidates, 2)
+        pt = official_type(proposal.get('product_type'))
     refs = proposal.get('refs', [])
     confidence = proposal.get('confidence')
     if proposal.get('source_sku') != row['source_sku']:
         raise ListingAIError('AI 返回的来源 SKU 与当前商品不一致，未采用类目')
-    if not isinstance(pt,str) or not pt or pt not in {t['name'] for t in candidates}:
-        raise ListingAIError('AI 未选择当前店铺的有效商品类型，请重新生成')
+    if not pt:
+        raise ListingAIError('已扩大官方类目检索并重试，AI 仍未选出当前店铺的有效商品类型；请搜索并选择真实商品类型后重新生成')
     if type(confidence) not in (int,float) or not 0.75 < confidence <= 1:
         raise ListingAIError('AI 类目判断的置信度不足或格式无效，未强行选择')
     if not isinstance(refs,list) or not refs or any(not fact_reference_exists(facts,r) for r in refs):
@@ -340,6 +361,8 @@ def choose_type(row, item, facts, types, ai):
         raise ListingAIError('AI 未提供类目选择理由，未采用结果')
     if living and 'outdoor' in norm(pt):
         raise ListingAIError('来源明确为室内用途，AI 却选择户外商品类型，未采用结果')
+    if outdoor and 'indoor' in norm(pt):
+        raise ListingAIError('来源明确为户外用途，AI 却选择室内商品类型，未采用结果')
     return pt, dict(kind='ai_source', reason=proposal['reason'], refs=refs, confidence=confidence)
 
 
