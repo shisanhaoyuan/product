@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from catalog.app import create_app
 from catalog.listing_ai_client import ListingAIError
-from catalog.listing_content import normalize
+from catalog.listing_content import normalize, split_single_feature
 from catalog.listing_generation import fill_row
 from catalog.listing_generation_jobs import start_job, run_job
 from catalog.walmart_listing_schema import sections
@@ -20,6 +20,10 @@ DESCRIPTION = ('<p>A dining chair brings seating into the dining area with a coo
                '<p>The armless profile keeps the overall silhouette open, while the upholstered design '
                'adds a fabric element to the room.</p>')
 FEATURES = ['Beige upholstery for a neutral look.', 'Armless dining chair design.', 'Casters beneath the chair.']
+PACKED_FEATURES = ('【Key Features】 Student and Office Essential: This adjustable computer desk provides a workspace for studying or working. '
+                   'Adjustable Height: The adjustable mechanism allows users to change the desk height. '
+                   'Multi-functional Design: The desk has 3 USB ports and 2 AC outlets. '
+                   'Black Wood Grain: The desk has a black wood grain finish.')
 FACTS = {'content.copy': {'title': 'Linen Upholstered Armless Dining Chair with Casters, BEIGE',
                          'description': '', 'features': []}, 'category': 'Dining Chair'}
 
@@ -141,6 +145,76 @@ def test_description_minimum_word_count_is_checked():
     result,issues=fill_row(row,schema,FACTS,ai,{})
     assert not result['visible'].get('shortDescription')
     assert any('60 个英文单词' in i['message'] for i in issues)
+
+
+@pytest.mark.parametrize('minimum',[2,3,4])
+def test_skill_splits_one_packed_feature_to_actual_schema_without_losing_facts(minimum):
+    visible={'keyFeatures':[PACKED_FEATURES]}
+    definition={'type':'array','minItems':minimum,'maxItems':minimum,
+                'items':{'type':'string','minLength':1,'maxLength':1000}}
+    assert split_single_feature(visible,definition)
+    assert len(visible['keyFeatures']) == minimum
+    assert ' '.join(visible['keyFeatures']) == PACKED_FEATURES.removeprefix('【Key Features】 ')
+    before=copy.deepcopy(visible)
+    assert not split_single_feature(visible,definition) and visible==before
+
+
+def test_split_preserves_decimal_units_abbreviations_and_expands_for_item_limit():
+    source='U.S. design with a 24.5 in. wide desktop. The frame weighs 3.25 lb. The desk has 2 AC outlets.'
+    visible={'keyFeatures':[source]}
+    definition={'type':'array','minItems':1,'maxItems':3,'items':{'type':'string','maxLength':50}}
+    assert split_single_feature(visible,definition)
+    assert visible['keyFeatures']==['U.S. design with a 24.5 in. wide desktop.',
+                                    'The frame weighs 3.25 lb.', 'The desk has 2 AC outlets.']
+    assert ' '.join(visible['keyFeatures'])==source
+
+
+def test_split_can_use_independent_semicolon_and_parallel_clauses():
+    definition={'type':'array','minItems':3,'items':{'type':'string','minLength':1}}
+    for source in ('The desk has USB ports; the frame is steel; the top has a black finish.',
+                   'The desk has USB ports, and the frame is steel, and it has a black top.'):
+        visible={'keyFeatures':[source]}
+        assert split_single_feature(visible,definition)
+        assert len(visible['keyFeatures'])==3
+
+
+@pytest.mark.parametrize('features',[
+    ['One short fact.'], ['Black; White; Blue'], ['Soft fabric.', 'Two seats.'],
+    ['Has steel frame.','Has USB ports.','Black finish.'],
+])
+def test_split_keeps_multiple_points_or_insufficient_evidence_unchanged(features):
+    visible={'keyFeatures':copy.deepcopy(features)}
+    definition={'type':'array','minItems':3,'items':{'type':'string','minLength':1}}
+    assert not split_single_feature(visible,definition)
+    assert visible['keyFeatures']==features
+
+
+def test_existing_single_long_feature_is_filled_locally_without_copy_ai():
+    row,schema=empty_copy();row['visible'].update(shortDescription='An existing introduction.',keyFeatures=[PACKED_FEATURES])
+    ai=CopyAI();audit={}
+    result,issues=fill_row(row,schema,FACTS,ai,audit)
+    assert len(result['visible']['keyFeatures'])==3
+    assert ' '.join(result['visible']['keyFeatures'])==PACKED_FEATURES.removeprefix('【Key Features】 ')
+    assert audit['visible.keyFeatures']['kind']=='user_rule'
+    assert '按原 Skill' in audit['visible.keyFeatures']['reason']
+    assert not any(purpose=='listing_copy' for purpose,_ in ai.calls)
+    assert not any(i['path']=='visible.keyFeatures' for i in issues)
+    for key in ('source_sku','platform_sku','identification'):
+        assert result[key]==row[key]
+
+
+def test_ai_single_feature_output_is_split_before_raw_minitems_rejection():
+    class Packed(CopyAI):
+        def query(self,purpose,payload):
+            result=super().query(purpose,payload)
+            if purpose=='listing_copy':
+                result['copy']['keyFeatures']['value']=[' '.join(FEATURES)]
+            return result
+    row,schema=empty_copy();ai=Packed()
+    result,issues=fill_row(row,schema,FACTS,ai,{})
+    assert result['visible']['keyFeatures']==FEATURES
+    assert len([1 for purpose,_ in ai.calls if purpose=='listing_copy'])==1
+    assert not any(i['path']=='visible.keyFeatures' for i in issues)
 
 
 def test_saleyee_generation_saves_reopens_without_publishing(tmp_path,settings,vault):

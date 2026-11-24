@@ -241,6 +241,32 @@ def test_category_recovery_continues_to_official_spec_and_saves_document(publish
     assert not remote.posts
 
 
+def test_skill_single_feature_split_persists_and_reopens_without_submission(publishing):
+    from catalog.walmart_listing_schema import sections
+    c,catalog,_,_,b,base,remote=publishing
+    sections(remote.schema,PT)['visible']['properties']['keyFeatures']['minItems']=3
+    doc=c.get(base).json()
+    packed='【Key Features】 The chair has a wood frame. The seat has a natural finish. The chair is for indoor use.'
+    for row in doc['rows']:
+        row['visible']['keyFeatures']=[packed]
+    response=c.patch(base,json={k:doc[k] for k in ('revision','version','rows')})
+    assert response.status_code==200,response.text
+    before=response.json()['rows'];ai=AI()
+    job=start_job(catalog,c.app.state.walmart_publisher,b['id'],ai=ai,schedule=False)
+    run_job(catalog,c.app.state.walmart_publisher,job['id'],ai)
+    saved=c.get(base).json()['rows'];status=c.get(base+'/generation').json()['job']
+    assert status['state']=='complete',status
+    for old,row in zip(before,saved):
+        assert row['visible']['keyFeatures']==['The chair has a wood frame.',
+            'The seat has a natural finish.','The chair is for indoor use.']
+        assert '按原 Skill' in status['report']['rows'][row['platform_sku']]['fields']['visible.keyFeatures']['reason']
+        assert not any(i['path']=='visible.keyFeatures' for i in status['report']['rows'][row['platform_sku']]['issues'])
+        for key in ('platform_sku','source_sku','listing_id','identification'):
+            assert row[key]==old[key]
+        assert row['orderable']['price']==old['orderable']['price']
+    assert c.get(base).json()['rows']==saved and not remote.posts
+
+
 def test_concurrent_edit_rejected_and_completed_source_maps_kept(publishing):
     c,catalog,_,_,b,base,_=publishing
     ai=AI()

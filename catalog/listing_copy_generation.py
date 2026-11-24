@@ -3,7 +3,7 @@ import copy
 import re
 
 from .listing_ai_client import ListingAIError
-from .listing_content import FORBIDDEN, normalize, source_specifications, text
+from .listing_content import FORBIDDEN, normalize, source_specifications, split_single_feature, text
 from .walmart_listing_schema import precise_validator
 
 COPY_FIELDS = ('shortDescription', 'keyFeatures')
@@ -78,6 +78,10 @@ def fill_missing_copy(row, properties, facts, ai, provenance, rules, *, compose_
                         or not isinstance(action.get('reason'), str) or not action['reason'].strip()):
                     raise ListingAIError(LABELS[key]+'的基础信息引用无效，未写入')
                 value = action.get('value')
+                if key == 'keyFeatures':
+                    holder = dict(keyFeatures=value)
+                    split_single_feature(holder, fields[key])
+                    value = holder['keyFeatures']
                 errors = copy_errors(key, value, fields[key])
                 if errors:
                     raise ListingAIError(LABELS[key]+'：'+'；'.join(errors))

@@ -12,7 +12,7 @@ from .listing_titles import branded_title, source_brands
 from .walmart_listing_schema import plain, sections, feed_item, schema_errors, identifier_errors, precise_validator
 from .listing_skill_defaults import has_default, skill_default, length_fallback, fixed_origin, enforce_origin
 
-RULES_VERSION = 'listing-generation-v23-skill-part-number'
+RULES_VERSION = 'listing-generation-v24-skill-feature-splitting'
 RULES = Path(__file__).with_name('listing_generation_rules.md').read_text()
 BLOCKED = re.compile(r'prop.?65|warranty|certif|nrtl|chemical|origin|warning|exempt|gtin|upc|ean|model|partnumber', re.I)
 PROTECTED = {'variantGroupId','variantAttributeNames','isPrimaryVariant','swatchImages','sku','productIdentifiers','inventory','price','msrp','SkuUpdate','ProductIdUpdate','fulfillmentCenterID'}
@@ -581,15 +581,21 @@ def fill_row(row, schema, facts, ai, provenance):
                     reason='user_authorized_rule: unavailable parameter default 22 inch；来源缺失且 AI 未能补齐的长度兜底，非实测值')
     # The explicit brand-prefix rule also covers titles filled by this pass.
     prepare_copy(row,facts,provenance)
-    from .listing_content import normalize, source_specifications
+    from .listing_content import normalize, source_specifications, split_single_feature
     before_content=copy.deepcopy(row['visible'])
     source_specifications(row['visible'],facts)
     normalize(row['visible'])
+    before_features = copy.deepcopy(row['visible'].get('keyFeatures'))
+    features_split = split_single_feature(row['visible'], spec['visible'].get('properties', {}).get('keyFeatures', {}))
     for field in ('shortDescription','longDescription','keyFeatures','mainImageUrl','productSecondaryImageURL'):
         if row['visible'].get(field)!=before_content.get(field):
             provenance['visible.'+field]=dict(kind='user_rule',value=row['visible'].get(field),previous_value=before_content.get(field),
                 refs=[r for r in ('content.copy','detail.description','content.attributes','detail.attributes') if r in facts] if field=='shortDescription' else [],
                 reason='用户规则：从同 SKU 来源整理参数并整体覆盖描述，不追加旧编号；描述与卖点去重，默认优选8张图，手动选择数量不限')
+    if features_split:
+        provenance['visible.keyFeatures'] = dict(kind='user_rule', value=row['visible']['keyFeatures'],
+            previous_value=before_features, refs=[r for r in ('content.copy.features',) if fact_reference_exists(facts,r)],
+            reason='user_authorized_rule：按原 Skill 将单条长卖点按完整句子、独立分句拆分；遵守当前类目条数与字符限制，保留事实及顺序，不复制凑数')
     from .listing_copy_generation import fill_missing_copy
     copy_problems = fill_missing_copy(row,spec['visible'].get('properties',{}),facts,ai,provenance,RULES,
                                       compose_description=compose_description)

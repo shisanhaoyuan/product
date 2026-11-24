@@ -6,6 +6,7 @@ an explicit exception: independent Key Features have priority over description.
 import html
 import re
 import unicodedata
+from functools import lru_cache
 from html.parser import HTMLParser
 
 DEFAULT_IMAGE_COUNT = 8
@@ -86,6 +87,77 @@ def fingerprints(part):
     if ':' in part:
         result.add(key(part.split(':', 1)[1]))
     return result - {''}
+
+
+def split_single_feature(visible, definition):
+    """Skill exception: split a sole populated feature using the actual schema.
+
+    Keep complete facts, source order and every existing multi-entry list. Never
+    duplicate, truncate or invent a point just to reach minItems.
+    """
+    from .walmart_listing_schema import precise_validator
+    original = visible.get('keyFeatures')
+    if not isinstance(original, list):
+        return False
+    populated = [value for value in original if isinstance(value, str) and text(value)]
+    if len(populated) != 1:
+        return False
+    validator = precise_validator(definition)
+    if validator.is_valid(populated):
+        return False
+    raw = text(populated[0])
+    raw = re.sub(r'(?i)^\s*(?:【\s*(?:Key\s+)?Features?\s*】|'
+                 r'\[\s*(?:Key\s+)?Features?\s*\]|\*\*\s*(?:Key\s+)?Features?\s*:?\*\*)\s*:?\s*', '', raw)
+    # A unit can also end a sentence. Preserve the unit's dot, but expose a
+    # boundary before a clearly new capitalized subject, unlike "24.5 in. wide".
+    raw = re.sub(r'(\b(?:in|ft|oz|lb|lbs|cm|mm)\.)(\s+)(?=(?:The|This|These|It|Its|Each|A|An)\b)',
+                 r'\1\n', raw)
+    points = sentences(raw)
+    if not points or len(points) > 128:
+        return False
+    minimum = max(1, definition.get('minItems', 1))
+    maximum = min(definition.get('maxItems', 128), 128)
+    item_schema = definition.get('items', {})
+    if not isinstance(item_schema, dict):
+        return False
+    item_validator = precise_validator(item_schema)
+
+    def partition(atoms):
+        @lru_cache(None)
+        def pack(start, remaining):
+            if remaining == 0:
+                return () if start == len(atoms) else None
+            for end in range(start + 1, len(atoms) - remaining + 2):
+                value = ' '.join(atoms[start:end])
+                if not item_validator.is_valid(value):
+                    continue
+                tail = pack(end, remaining - 1)
+                if tail is not None:
+                    return (value, *tail)
+            return None
+        for count in range(minimum, min(maximum, len(atoms)) + 1):
+            result = pack(0, count)
+            if result is not None and validator.is_valid(list(result)):
+                return list(result)
+        return None
+
+    result = partition(points)
+    if result is None:
+        # Only split semicolons / parallel clauses that can stand independently;
+        # a list of colors, materials, dimensions or noun fragments stays intact.
+        expanded = []
+        for point in points:
+            clauses = re.split(r';\s*|,\s*(?=and\s+(?:it|the|this|these|each)\b)', point)
+            independent = lambda clause: bool(re.search(r'\b\w+\b\s*:\s*\S', clause) or (
+                len(re.findall(r'[A-Za-z]+', clause)) >= 3 and re.search(
+                    r'\b(?:is|are|has|have|includes?|provides?|offers?|supports?|features?|fits?|keeps?|allows?|comes?|holds?)\b', clause, re.I)))
+            expanded.extend(clauses if len(clauses) > 1 and all(independent(c) for c in clauses) else [point])
+        if len(expanded) <= 128:
+            result = partition(expanded)
+    if result is None or result == original:
+        return False
+    visible['keyFeatures'] = result
+    return True
 
 
 def copy_policy(visible):
