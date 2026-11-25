@@ -1,3 +1,5 @@
+import { compatibleCollectorPlugin, collectorPluginUpgrade } from './collectorPlugin';
+
 export type BrowserPage = { asin: string; source_url: string; html: string };
 const channel = 'catalog-capture-v1';
 
@@ -14,7 +16,7 @@ export function captureInBrowser(
     const send = (action: string) =>
       window.postMessage({ channel, action, requestId, asin, mode, foreground }, location.origin);
     const probeTimer = window.setTimeout(
-      () => finish(new Error('请先安装并连接浏览器验证助手。')),
+      () => finish(new Error('请先安装集物采集插件，点击“连接当前商品库网站”，再刷新商品库。')),
       1800,
     );
     const expiry = window.setTimeout(
@@ -52,16 +54,8 @@ export function captureInBrowser(
         return;
       }
       if (data.ready && !started) {
-        if (mode === 'import' && !data.modes?.includes('import')) {
-          finish(new Error('请下载并重新加载集物商品采集助手 2.0.0，再刷新页面。'));
-          return;
-        }
-        if (mode === 'source' && (!data.modes?.includes('source') || !data.backgroundSource)) {
-          finish(
-            new Error(
-              '请更新验证助手至 1.2.3 并在扩展管理中重新加载，再刷新商品库，以支持后台采集和按需打开网页。',
-            ),
-          );
+        if (!compatibleCollectorPlugin(data, mode)) {
+          finish(new Error(collectorPluginUpgrade));
           return;
         }
         started = true;

@@ -205,6 +205,8 @@ def run_fallback(catalog):
             (int(time.time())+900,'服务器 Wraith 处理中（最多 3 次验证尝试）',row['job_id'],row['root_asin'],row['asin']))
     try:
         html=fetch_page(row['asin'])
+        with catalog.connect() as db:
+            target(db,row['job_id'],row['actor_id'],row['root_asin'],row['asin'],row['token'])
         data=verified_page(catalog,row['root_asin'],row['asin'],html,f'https://www.amazon.com/dp/{row["asin"]}', 'wraith_background')
         save_page(catalog,row['job_id'],row['actor_id'],row['root_asin'],row['asin'],row['token'],data)
     except Exception as exc:
@@ -357,6 +359,18 @@ def routes(catalog):
                 db.execute("UPDATE amazon_import_items SET state='pending',token='',lease_until=0,message='已暂停，等待继续' WHERE job_id=? AND state IN ('running','fallback_queued','fallback_running')",(jid,))
             return public_job(db,jid,actor(request))
 
+    @router.post('/jobs/{jid}/cancel')
+    def cancel(jid:str,request:Request):
+        uid=actor(request)
+        with catalog.connect() as db:
+            write_lock(db);active_actor(db,uid);job=owned(db,jid,uid)
+            if job['state']=='complete':
+                raise HTTPException(409,'该任务已结束并保存，不能取消；已入库商品请在商品库管理')
+            if job['state']!='cancelled':
+                db.execute("UPDATE amazon_import_jobs SET state='cancelled' WHERE id=?",(jid,))
+                db.execute("UPDATE amazon_import_items SET state='cancelled',token='',lease_until=0,data_json='{}',message='已取消采集，本批结果未入库' WHERE job_id=?",(jid,))
+            return public_job(db,jid,uid)
+
     @router.post('/jobs/{jid}/finish')
     def finish(jid:str,request:Request):
         return finalize(catalog,jid,actor(request))
@@ -368,6 +382,7 @@ def finalize(catalog,jid,uid):
     with catalog.connect() as db:
         write_lock(db);active_actor(db,uid);job=owned(db,jid,uid)
         if job['state']=='complete':return public_job(db,jid,uid)
+        if job['state']=='cancelled':raise HTTPException(409,'该任务已取消，不能将本批结果入库')
         rows=[dict(r) for r in db.execute('SELECT * FROM amazon_import_items WHERE job_id=?',(jid,))]
         if any(r['state'] in ('running','fallback_queued','fallback_running') for r in rows):
             raise HTTPException(409,'请先暂停正在采集的任务，再保存已采集商品')

@@ -24,7 +24,14 @@ with tempfile.TemporaryDirectory(prefix='jiwu-collector-') as folder:
     temp=Path(folder)
     os.environ.update(CATALOG_AUTH_ENABLED='0',CATALOG_LISTING_AI_ENABLED='0',CATALOG_LISTING_RESULT_WORKER='0',CATALOG_AMAZON_BROWSER_PYTHON='')
     app=create_app(temp/'test.db')
-    catalog.source_images.collect_amazon_images=lambda *a:dict(state='complete',images=[],saved=[],message='fixture')
+    # Run real gallery download/cache code, but return generated fixture bytes.
+    from PIL import Image
+    import catalog.listing_vision
+    def fixture_image(url):
+        out=io.BytesIO()
+        Image.new('RGB',(160,160),'#779ac3' if 'main' in url else '#c39a77').save(out,format='PNG')
+        return out.getvalue()
+    catalog.listing_vision.fetch_image=fixture_image
     with socket.socket() as sock:sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
     origin=f'http://127.0.0.1:{port}'
     server=uvicorn.Server(uvicorn.Config(app,host='127.0.0.1',port=port,log_level='error'))
@@ -46,6 +53,7 @@ with tempfile.TemporaryDirectory(prefix='jiwu-collector-') as folder:
             def fixture(route):
                 asin=B if B in route.request.url else A
                 body=html(asin,price='37.99' if asin==A else '41.99')
+                body+=f'<div id="imageBlock"><img id="landingImage" src="https://m.media-amazon.com/images/I/{asin}-main.jpg"><img src="https://m.media-amazon.com/images/I/{asin}-detail.jpg"></div>'
                 body+=f'<div id="variation_color_name"><span class="selection">{"Brown" if asin==A else "White"}</span><span data-asin="{B}"></span></div>'
                 body+='<script type="application/json">'+json.dumps({'asinVariationValues':{A:{'color_name':0},B:{'color_name':1}}})+'</script>'
                 route.fulfill(body=body,content_type='text/html')
@@ -72,10 +80,36 @@ with tempfile.TemporaryDirectory(prefix='jiwu-collector-') as folder:
             assert set(variants)=={A,B}
             assert variants[A]['price']=='37.99' and variants[B]['price']=='41.99'
             assert variants[B]['attributes']['color_name']=='White'
+            for value in variants.values():
+                assert len(value['images'])==2, value
+                assert all(url.startswith('/api/products/images/assets/') for url in value['images'])
+                for url in value['images']:assert page.request.get(origin+url).status==200
             assert not errors,errors
             page.set_viewport_size(dict(width=390,height=844))
             assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
             page.screenshot(path=str(ROOT/'validation/amazon-collector-mobile.png'),full_page=True)
+            page.set_viewport_size(dict(width=1440,height=1000))
+            before=app.state.catalog.export()
+            with context.expect_page() as waiting:
+                page.get_by_role('button',name='开始采集并入库',exact=True).click()
+            # Leave the fixture tab waiting, then cancel the actual running capture.
+            page.locator('.collector-actions').get_by_role('button',name='取消采集',exact=True).click()
+            expect(page.locator('.collector-progress')).to_contain_text('已取消',timeout=10000)
+            expect(page.locator('.collector-actions').get_by_role('button',name='开始采集并入库')).to_be_enabled()
+            assert app.state.catalog.export()==before
+            # A paused historical job can be cancelled without starting collection.
+            response=page.request.post(origin+'/api/integrations/amazon-collector/jobs',data=dict(text=B,include_variants=True,request_id=__import__('uuid').uuid4().hex))
+            jid=response.json()['id']
+            page.request.post(origin+'/api/integrations/amazon-collector/jobs/'+jid+'/pause')
+            page.reload()
+            history=page.locator('.details').filter(has=page.get_by_text('我的采集任务（最近 20 批）',exact=True))
+            history.locator('summary').click()
+            paused=page.locator('.collector-history').filter(has_text='已暂停')
+            paused.get_by_role('button',name='取消采集',exact=True).click()
+            expect(page.locator('.collector-history').filter(has_text='已取消')).to_have_count(2)
+            assert page.locator('.collector-history').filter(has_text='已取消').get_by_role('button',name='继续采集',exact=True).count()==0
+            assert app.state.catalog.export()==before
+            page.screenshot(path=str(ROOT/'validation/amazon-collector-cancel.png'))
             context.close()
             # Shared extractor: real maps only, dropdown-only child, no recommendation map.
             browser=pw.chromium.launch(channel='chrome',headless=True)

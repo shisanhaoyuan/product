@@ -163,3 +163,40 @@ def test_parent_image_import_capture_and_edit_isolation(local, monkeypatch):
     assert edit(client, {'field': 'images'}, []).status_code == 200
     assert detail(client)['images'] == []
     assert detail(client)['variants'] == before['variants']
+
+
+def test_current_gallery_src_alternate_main_and_dynamic_resolution():
+    asin='B012345678'
+    first='https://m.media-amazon.com/images/I/main.jpg'
+    high='https://m.media-amazon.com/images/I/large.jpg'
+    low='https://m.media-amazon.com/images/I/small.jpg'
+    identity=f'<input id="ASIN" value="{asin}">'
+    assert amazon_images(identity+f'<img id="landingImage" src="{first}">',asin)==[first]
+    assert amazon_images(identity+f'<img id="imgBlkFront" src="{first}">',asin)==[first]
+    dynamic=json.dumps({low:[40,40],high:[1500,1500]})
+    assert amazon_images(identity+f"<img id='landingImage' data-a-dynamic-image='{dynamic}'>",asin)==[high]
+    body=identity+f'<section id="jiwu-image-gallery" data-asin="{asin}"><img src="{first}"><img src="{high}"></section><div id="recommend"><img src="{low}"></div>'
+    assert amazon_images(body,asin)==[first,high]
+    with pytest.raises(ValueError,match='图库 ASIN'):
+        amazon_images(body.replace('data-asin="B012345678"','data-asin="B999999999"'),asin)
+    invalid=identity+f'<div id="recommend"><img src="{first}"></div><div id="twister"><img src="{high}"></div>'
+    with pytest.raises(ValueError,match='图片'):
+        amazon_images(invalid,asin)
+
+
+def test_empty_invalid_gallery_falls_back_to_visible_current_image():
+    identity='<input id="ASIN" value="B012345678">'
+    body=identity+'''<script>'colorImages':{'initial':[{'hiRes':'https://evil.test/wrong.jpg'}]}</script>'''
+    image='https://m.media-amazon.com/images/I/main.jpg'
+    assert amazon_images(body+f'<img id="landingImage" data-old-hires="https://evil.test/a.jpg" src="{image}">','B012345678')==[image]
+
+
+def test_static_missing_gallery_requests_browser_instead_of_stopping(local,monkeypatch):
+    from catalog.images import ImageGalleryUnavailable
+    client,_=local;p=detail(client)
+    monkeypatch.setattr('catalog.images.fetch_amazon_page',lambda asin:f'<input id="ASIN" value="{asin}">')
+    response=client.post(f"/api/products/{p['id']}/images/capture",json={'variant_sku':'child-0'})
+    assert response.status_code==200,response.text
+    assert response.json()['status']=='browser_required'
+    assert response.json()['asin']==p['variants'][0]['asin']
+    assert detail(client)==p

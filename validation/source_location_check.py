@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path[:0] = [str(ROOT), str(ROOT / 'tests')]
 
 with tempfile.TemporaryDirectory(prefix='jiwu-location-test-') as folder:
-    os.environ['CATALOG_AUTH_ENABLED'] = '0'
+    os.environ.update(CATALOG_AUTH_ENABLED='0', CATALOG_AMAZON_BROWSER_PYTHON='', CATALOG_LISTING_AI_ENABLED='0', CATALOG_LISTING_RESULT_WORKER='0')
     from catalog.app import create_app
     from catalog.models import ImportBundle
     from test_prelisting import product
@@ -74,7 +74,7 @@ with tempfile.TemporaryDirectory(prefix='jiwu-location-test-') as folder:
                 if(data.action==='task') return {asin:location.pathname.split('/').pop(),mode:'source'};
                 if(data.action==='page') {window.submissions.push(data);return {accepted:true};}
               }}};''')
-            fixture = '''<input id="ASIN"><span id="glow-ingress-line2"></span>
+            fixture = '''<input id="ASIN"><img id="landingImage" src="https://m.media-amazon.com/images/I/fixture.jpg"><span id="glow-ingress-line2"></span>
               <div id="desktop_buybox"><span class="a-offscreen">$39.00</span></div>
               <button id="set">Set 10001</button><script>
                 document.querySelector('#ASIN').value=location.pathname.split('/').pop();
@@ -83,17 +83,20 @@ with tempfile.TemporaryDirectory(prefix='jiwu-location-test-') as folder:
               </script>'''
             context.route('https://www.amazon.com/**', lambda r:r.fulfill(body=fixture, content_type='text/html'))
             amazon.goto('https://www.amazon.com/dp/B000000009')
-            amazon.add_script_tag(path=str(ROOT / 'browser-helper/amazon.js'))
-            expect(amazon.locator('#jiwu-location-help')).to_contain_text('10001', timeout=5000)
+            for script in ('location-state.js', 'offers.js', 'product.js', 'gallery.js', 'amazon.js'):
+                amazon.add_script_tag(path=str(ROOT / 'browser-helper' / script))
+            expect(amazon.locator('#jiwu-location-help')).to_contain_text('10001', timeout=15000)
             assert amazon.evaluate('submissions.length') == 0
             amazon.get_by_role('button', name='Set 10001').click()
             amazon.wait_for_load_state()
-            amazon.add_script_tag(path=str(ROOT / 'browser-helper/amazon.js'))
+            for script in ('location-state.js', 'offers.js', 'product.js', 'gallery.js', 'amazon.js'):
+                amazon.add_script_tag(path=str(ROOT / 'browser-helper' / script))
             amazon.wait_for_function('submissions.length===1', timeout=12000)
             assert '10001' in amazon.evaluate('submissions[0].html')
             # Next product in the same profile reuses the address without another prompt.
             amazon.goto('https://www.amazon.com/dp/B000000010')
-            amazon.add_script_tag(path=str(ROOT / 'browser-helper/amazon.js'))
+            for script in ('location-state.js', 'offers.js', 'product.js', 'gallery.js', 'amazon.js'):
+                amazon.add_script_tag(path=str(ROOT / 'browser-helper' / script))
             amazon.wait_for_function('submissions.length===1', timeout=12000)
             assert amazon.evaluate('submissions[0].asin') == 'B000000010'
             assert amazon.locator('#jiwu-location-help').count() == 0

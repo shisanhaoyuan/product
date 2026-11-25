@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import CollectorPluginLinks from './CollectorPluginLinks.vue';
 import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from 'vue';
 import { useProductEditing } from '../composables/useProductEditing';
 import { errorMessage, safeUrl } from '../utils/display';
@@ -71,10 +72,13 @@ async function capture() {
   try {
     let result = await catalogApi.captureImages(editing.listingId.value, props.sku);
     if (controller.signal.aborted) return;
-    if (result.status === 'verification_required') {
+    if (result.status === 'verification_required' || result.status === 'browser_required') {
       verification.value = true;
       needsHelper.value = true;
-      notice.value = '等待人工验证，完成后继续抓取。';
+      notice.value =
+        result.status === 'browser_required'
+          ? '静态页面未返回图库，正在通过浏览器读取当前商品图片。'
+          : '等待人工验证，完成后继续抓取。';
       const page = await captureInBrowser(result.asin, controller.signal);
       if (controller.signal.aborted) return;
       result = await catalogApi.browserCaptureImages(editing.listingId.value, props.sku, page);
@@ -340,12 +344,7 @@ onBeforeUnmount(() => {
           </form>
           <p v-if="notice" role="status" class="muted">{{ notice }}</p>
           <div v-if="needsHelper" class="image-import-actions">
-            <a class="btn small" href="/api/products/images/helper.zip" download
-              ><AppIcon name="Download" />下载验证助手</a
-            >
-            <a class="btn small" href="/assets/capture-helper.html" target="_blank" rel="noopener"
-              >安装说明</a
-            >
+            <CollectorPluginLinks />
             <button
               v-if="verification"
               type="button"

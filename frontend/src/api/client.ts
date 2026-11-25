@@ -123,7 +123,8 @@ export const catalogApi = {
     ),
   captureImages: (id: string, sku?: string) =>
     request<{
-      status?: 'verification_required';
+      status?: 'verification_required' | 'browser_required';
+      reason?: string;
       asin: string;
       source_url: string;
       fetched_at?: string;

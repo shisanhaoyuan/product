@@ -26,6 +26,11 @@ class HumanVerificationRequired(ValueError):
     pass
 
 
+class ImageGalleryUnavailable(ValueError):
+    """Identity matched, but the static response has no usable current gallery."""
+    pass
+
+
 def needs_verification(html):
     return any(marker in html for marker in (
         'validateCaptcha', 'Type the characters you see',
@@ -108,27 +113,77 @@ def amazon_images(html, asin):
                         candidates.append(row.get('hiRes') or row.get('large') or '')
         except (ValueError, TypeError, SyntaxError):
             pass
-    if not candidates:
-        if page.landing.get('data-old-hires'):
-            candidates.append(page.landing['data-old-hires'])
-        else:
-            try:
-                dynamic = json.loads(page.landing.get('data-a-dynamic-image', '{}'))
-                if isinstance(dynamic, dict):
-                    candidates.extend(list(dynamic)[:1])
-            except ValueError:
-                pass
-    result = []
-    for url in candidates:
+    def accepted(url):
         if not isinstance(url, str):
-            continue
-        parsed = urlparse(url)
-        if (parsed.scheme == 'https' and parsed.hostname in {'m.media-amazon.com', 'images-na.ssl-images-amazon.com'}
-                and parsed.path.startswith('/images/I/') and not parsed.username and not parsed.password):
-            if url not in result:
+            return False
+        try:
+            parsed = urlparse(url)
+            return (
+                parsed.scheme == 'https'
+                and parsed.hostname in {'m.media-amazon.com', 'images-na.ssl-images-amazon.com'}
+                and parsed.path.startswith('/images/I/')
+                and not parsed.username
+                and not parsed.password
+            )
+        except ValueError:
+            return False
+
+    result = list(dict.fromkeys(url for url in candidates if accepted(url)))
+    if not result:
+        from .source_capture import Document
+
+        doc = Document(html).root
+        # A plugin-produced current gallery explicitly carries the verified ASIN.
+        galleries = doc.ids('jiwu-image-gallery')
+        if any(node.attrs.get('data-asin') != asin for node in galleries):
+            raise ValueError('图片图库 ASIN 与当前子商品不一致，原图片未改变')
+        nodes = [child for section in galleries for child in section.nodes() if child.tag == 'img']
+        if not nodes:
+            # Raw HTML/manual HTTP capture: only the current product image block,
+            # never a page-wide img scan (recommendations/variant swatches).
+            for node in doc.nodes():
+                if node.tag != 'img':
+                    continue
+                parent = node
+                within = False
+                excluded = False
+                while parent.parent:
+                    ident = parent.attrs.get('id', '')
+                    if re.search(r'recommend|sponsored|twister|^variation_', ident, re.I):
+                        excluded = True
+                    if 'videoThumbnail' in parent.attrs.get('class', '').split():
+                        excluded = True
+                    if ident in ('landingImage', 'imgBlkFront', 'ebooksImgBlkFront', 'imgTagWrapperId', 'imageBlock'):
+                        within = True
+                    parent = parent.parent
+                if within and not excluded:
+                    nodes.append(node)
+        for node in nodes:
+            attrs = node.attrs
+            dynamic = []
+            try:
+                values = json.loads(attrs.get('data-a-dynamic-image', '{}'))
+                if isinstance(values, dict):
+
+                    def area(pair):
+                        dimensions = pair[1]
+                        if (
+                            isinstance(dimensions, list)
+                            and len(dimensions) == 2
+                            and all(isinstance(value, (int, float)) for value in dimensions)
+                        ):
+                            return dimensions[0] * dimensions[1]
+                        return 0
+
+                    dynamic = [url for url, _ in sorted(values.items(), key=area, reverse=True)]
+            except (ValueError, TypeError):
+                pass
+            urls = [attrs.get('data-old-hires'), *dynamic, attrs.get('src'), attrs.get('data-src')]
+            url = next((candidate for candidate in urls if accepted(candidate)), None)
+            if url and url not in result:
                 result.append(url)
     if not result:
-        raise ValueError('页面未返回可核验的当前商品图片，原图片未改变')
+        raise ImageGalleryUnavailable('页面未返回可核验的当前商品图片，原图片未改变')
     return result[:100]
 
 
@@ -171,18 +226,30 @@ class BrowserCaptureInput(CaptureInput):
 def image_routes(catalog, storage):
     router = APIRouter(prefix='/api/products')
 
+    @router.get('/images/helper-info')
+    def helper_info():
+        root = Path(__file__).resolve().parent.parent / 'browser-helper'
+        try:
+            manifest = json.loads((root / 'manifest.json').read_text())
+            result = {'name': manifest['name'], 'version': manifest['version']}
+        except (OSError, ValueError, KeyError):
+            raise HTTPException(503, '采集插件信息缺失，请检查部署') from None
+        return Response(json.dumps(result, ensure_ascii=False), media_type='application/json',
+                        headers={'Cache-Control': 'no-store'})
+
     @router.get('/images/helper.zip')
     def helper_download():
         root = Path(__file__).resolve().parent.parent / 'browser-helper'
-        files = ('manifest.json', 'popup.html', 'popup.js', 'bridge.js', 'worker.js', 'location-state.js', 'product.js', 'offers.js', 'amazon.js')
+        files = ('manifest.json', 'popup.html', 'popup.js', 'bridge.js', 'worker.js', 'location-state.js', 'product.js', 'offers.js', 'gallery.js', 'amazon.js')
         if not all((root / name).is_file() for name in files):
-            raise HTTPException(503, '验证助手文件缺失，请检查部署')
+            raise HTTPException(503, '采集插件文件缺失，请检查部署')
         output = io.BytesIO()
         with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
             for name in files:
                 archive.write(root / name, name)
         return Response(output.getvalue(), media_type='application/zip',
-                        headers={'Content-Disposition': 'attachment; filename="capture-helper.zip"'})
+                        headers={'Content-Disposition': 'attachment; filename="capture-helper.zip"',
+                                 'Cache-Control': 'no-store'})
 
     def target(lid, sku):
         p = catalog.get(lid)
@@ -274,6 +341,13 @@ def image_routes(catalog, storage):
             if not result['images']:
                 raise ValueError(collection['message'])
             return result
+        except ImageGalleryUnavailable as exc:
+            return {
+                'status': 'browser_required',
+                'reason': str(exc),
+                'asin': v['asin'],
+                'source_url': f"https://www.amazon.com/dp/{v['asin']}?th=1&psc=1",
+            }
         except HumanVerificationRequired:
             return {'status': 'verification_required', 'asin': v['asin'],
                     'source_url': f"https://www.amazon.com/dp/{v['asin']}?th=1&psc=1"}

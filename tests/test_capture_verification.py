@@ -2,6 +2,7 @@ import httpx
 import pytest
 import io
 import zipfile
+import json
 
 from catalog.images import HumanVerificationRequired, fetch_amazon_images
 from test_editing import local, detail
@@ -12,7 +13,14 @@ def test_helper_download_contains_current_extension_source(local):
     response = client.get('/api/products/images/helper.zip')
     assert response.status_code == 200
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
-        assert set(archive.namelist()) == {'manifest.json', 'popup.html', 'popup.js', 'bridge.js', 'worker.js', 'location-state.js', 'offers.js', 'product.js', 'amazon.js'}
+        assert set(archive.namelist()) == {'manifest.json', 'popup.html', 'popup.js', 'bridge.js', 'worker.js', 'location-state.js', 'offers.js', 'product.js', 'gallery.js', 'amazon.js'}
+        manifest = json.loads(archive.read('manifest.json'))
+        info = client.get('/api/products/images/helper-info')
+        assert info.status_code == 200
+        assert info.json() == {'name': manifest['name'], 'version': manifest['version']}
+        assert response.headers['cache-control'] == info.headers['cache-control'] == 'no-store'
+        scripts = manifest['content_scripts'][0]['js']
+        assert scripts.index('gallery.js') < scripts.index('amazon.js')
 
 
 def test_challenge_returns_explicit_handoff_without_changing_product(local, monkeypatch):

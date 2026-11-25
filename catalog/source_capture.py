@@ -406,7 +406,7 @@ def source_routes(catalog):
                     or not re.fullmatch(r'/(?:[^/]+/)?dp/' + re.escape(v['asin']) + r'/?', url.path)):
                 raise ValueError('浏览器页面与当前商品 ASIN 不匹配')
             if not Document(data.html).root.ids('catalog-main-offer', 'ppd', 'desktop_buybox', 'buybox', 'aod-offer-list'):
-                raise ValueError('浏览器未返回报价区域；请更新验证助手后重新采集')
+                raise ValueError('浏览器未返回报价区域；请更新集物采集插件后重新采集')
             result = amazon_source(data.html, v['asin'])
             from .listing_source_evidence import amazon_details
             result['listing_facts'] = amazon_details(data.html, v['asin'])

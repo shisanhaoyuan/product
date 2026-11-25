@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import CollectorPluginLinks from './CollectorPluginLinks.vue';
+import { collectorPluginVersion } from '../utils/collectorPlugin';
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import {
@@ -26,6 +28,8 @@ const sheet = ref<SheetPreview>(),
   fileInput = ref<HTMLInputElement>(),
   wraith = ref(false);
 const openPage = ref<() => void>();
+const cancelling = ref(false);
+let cancelRequested = false;
 let controller: AbortController | undefined;
 let createId = crypto.randomUUID();
 function resetCreateId() {
@@ -46,8 +50,14 @@ const labels: Record<string, string> = {
   collecting: '待继续／采集中',
   paused: '已暂停',
   complete: '已结束',
+  cancelled: '已取消',
 };
 function update(job: CollectorJob) {
+  if (
+    jobs.value.some((existing) => existing.id === job.id && existing.state === 'cancelled') &&
+    job.state !== 'cancelled'
+  )
+    return;
   selected.value = job;
   jobs.value = [job, ...jobs.value.filter((j) => j.id !== job.id)].slice(0, 20);
 }
@@ -91,8 +101,9 @@ async function selectFile(e: Event) {
   input.value = '';
 }
 async function run(job?: CollectorJob) {
-  if (busy.value) return;
+  if (busy.value || cancelling.value) return;
   busy.value = true;
+  cancelRequested = false;
   if (!job) selected.value = undefined;
   error.value = '';
   notice.value = '';
@@ -107,7 +118,9 @@ async function run(job?: CollectorJob) {
         id,
         'claim',
       );
+      if (controller.signal.aborted) break;
       update(next.job);
+      if (['cancelled', 'complete'].includes(next.job.state)) break;
       if (!next.task) {
         update(await collectorApi.action(id, 'finish'));
         notice.value = '采集任务已结束，成功取得的商品已入库；缺项和失败项保留在下方。';
@@ -130,7 +143,12 @@ async function run(job?: CollectorJob) {
     }
   } catch (e) {
     error.value = controller.signal.aborted ? '' : errorMessage(e);
-    if (selected.value?.state !== 'complete' && selected.value) {
+    if (
+      !controller.signal.aborted &&
+      !cancelRequested &&
+      selected.value &&
+      !['complete', 'cancelled'].includes(selected.value.state)
+    ) {
       try {
         update(await collectorApi.action(selected.value.id, 'pause'));
       } catch {
@@ -138,6 +156,18 @@ async function run(job?: CollectorJob) {
       }
     }
   } finally {
+    if (
+      controller.signal.aborted &&
+      !cancelRequested &&
+      selected.value &&
+      !['complete', 'cancelled'].includes(selected.value.state)
+    ) {
+      try {
+        update(await collectorApi.action(selected.value.id, 'pause'));
+      } catch {
+        notice.value = '请刷新任务查看实际状态；已采集结果保留。';
+      }
+    }
     busy.value = false;
     openPage.value = undefined;
   }
@@ -145,8 +175,28 @@ async function run(job?: CollectorJob) {
 async function pause() {
   controller?.abort();
 }
+async function cancel(job: CollectorJob) {
+  if (cancelling.value || (busy.value && selected.value?.id !== job.id)) return;
+  const active = busy.value && selected.value?.id === job.id;
+  cancelling.value = true;
+  error.value = '';
+  if (active) {
+    cancelRequested = true;
+    controller?.abort();
+  }
+  try {
+    update(await collectorApi.action(job.id, 'cancel'));
+    notice.value = '已取消采集，本批结果未入库。';
+  } catch (e) {
+    error.value = errorMessage(e);
+    notice.value = '请刷新任务查看实际状态，核对是否取消成功。';
+  } finally {
+    cancelling.value = false;
+    openPage.value = undefined;
+  }
+}
 async function finish(job: CollectorJob) {
-  if (busy.value) return;
+  if (busy.value || cancelling.value) return;
   busy.value = true;
   error.value = '';
   try {
@@ -173,7 +223,7 @@ onBeforeUnmount(() => {
         <h2>亚马逊 · 集物自有采集</h2>
         <p>输入 ASIN 或网址，采集助手自动读取并入库</p>
       </div>
-      <span class="collector-tag">自有插件 2.0</span>
+      <span class="collector-tag">自有插件 {{ collectorPluginVersion }}</span>
     </div>
     <div class="section-body">
       <p class="subtitle">
@@ -181,8 +231,9 @@ onBeforeUnmount(() => {
         入库。首次或地区失效时打开网页设置 10001，其余后台运行。
       </p>
       <div class="collector-tools">
-        <a class="btn" href="/api/products/images/helper.zip" download>下载集物采集插件</a
-        ><span>{{ wraith ? '服务器 Wraith 已配置' : '服务器 Wraith 未配置，可人工处理验证' }}</span>
+        <CollectorPluginLinks /><span>{{
+          wraith ? '服务器 Wraith 已配置' : '服务器 Wraith 未配置，可人工处理验证'
+        }}</span>
       </div>
       <details class="details">
         <summary>首次安装及使用说明</summary>
@@ -193,7 +244,8 @@ onBeforeUnmount(() => {
             输入链接或拖入表格，点击开始采集。保留本页面和浏览器；离开页面将暂停，可从任务记录继续。
           </li>
           <li>
-            Chrome 与服务器 Wraith 的会话独立。服务器失败时可主动打开员工网页处理，不自动反复弹窗。
+            数据接入、来源采集、图片补采和预上架共用同一个集物采集插件；插件会检查版本，过旧时先按安装／更新说明重新加载。Chrome
+            与服务器 Wraith 的会话独立。
           </li>
         </ol>
       </details>
@@ -237,9 +289,20 @@ onBeforeUnmount(() => {
           同时采集该商品页面发现的子变体（每批总计最多 500 个 ASIN）</label
         >
         <div class="actions collector-actions">
-          <button class="btn primary" :disabled="busy || uploading || !text.trim()" @click="run()">
+          <button
+            class="btn primary"
+            :disabled="busy || cancelling || uploading || !text.trim()"
+            @click="run()"
+          >
             开始采集并入库</button
-          ><button v-if="busy" class="btn" @click="pause">暂停采集</button
+          ><button v-if="busy" class="btn" :disabled="cancelling" @click="pause">暂停采集</button
+          ><button
+            v-if="busy && selected && !['complete', 'cancelled'].includes(selected.state)"
+            class="btn collector-cancel"
+            :disabled="cancelling"
+            @click="cancel(selected)"
+          >
+            {{ cancelling ? '取消中…' : '取消采集' }}</button
           ><button v-if="openPage" class="btn" @click="openPage()">打开网页处理</button>
         </div>
       </template>
@@ -281,11 +344,19 @@ onBeforeUnmount(() => {
           <span
             >{{ new Date(job.created_at).toLocaleString('zh-CN') }} · {{ job.items.length }} 个 ASIN
             · {{ labels[job.state] }}</span
-          ><button class="btn small" :disabled="busy" @click="update(job)">查看</button
-          ><template v-if="writable && job.state !== 'complete'"
-            ><button class="btn small" :disabled="busy" @click="run(job)">继续采集</button
-            ><button class="btn small" :disabled="busy" @click="finish(job)">
-              结束并保存已采集商品
+          ><button class="btn small" :disabled="busy || cancelling" @click="update(job)">
+            查看</button
+          ><template v-if="writable && !['complete', 'cancelled'].includes(job.state)"
+            ><button class="btn small" :disabled="busy || cancelling" @click="run(job)">
+              继续采集</button
+            ><button class="btn small" :disabled="busy || cancelling" @click="finish(job)">
+              结束并保存已采集商品</button
+            ><button
+              class="btn small collector-cancel"
+              :disabled="cancelling || (busy && selected?.id !== job.id)"
+              @click="cancel(job)"
+            >
+              取消采集
             </button></template
           >
         </div>
@@ -296,6 +367,11 @@ onBeforeUnmount(() => {
 <style scoped>
 .amazon-collector {
   grid-column: 1 / -1;
+}
+.collector-cancel {
+  color: #9c4148;
+  background: #fbedee;
+  border-color: #e5bcc0;
 }
 .amazon-collector .section-head {
   background: #edf4fc;

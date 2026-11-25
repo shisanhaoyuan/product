@@ -1,3 +1,6 @@
+const manifest = chrome.runtime.getManifest();
+document.querySelector('h3').textContent = manifest.name;
+document.querySelector('#version').textContent = `当前插件版本 ${manifest.version}，四个采集入口共用此插件。`;
 document.querySelector('#enable').addEventListener('click', async () => {
   const status = document.querySelector('#status');
   try {

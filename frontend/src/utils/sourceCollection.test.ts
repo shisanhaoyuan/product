@@ -257,7 +257,7 @@ it('does not treat the old helper returning another delivery ZIP as a successful
     delivery_location: '90001',
   });
   await expect(collectSource('one', 'child', new AbortController().signal)).rejects.toThrow(
-    '更新验证助手',
+    '配送地区仍未设为 10001',
   );
 });
 

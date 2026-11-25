@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import CollectorPluginLinks from './CollectorPluginLinks.vue';
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import type { SourceCapture } from '../api/types';
 import { catalogApi } from '../api/client';
@@ -178,12 +179,12 @@ onBeforeUnmount(() => controller?.abort());
           :disabled="disabled"
         />后续使用同一浏览器后台采集（保留地区）</label
       >
-      <a href="/api/products/images/helper.zip" download>下载验证助手</a>
-      <a href="/assets/capture-helper.html" target="_blank" rel="noopener">安装说明</a>
+      <CollectorPluginLinks />
     </div>
     <p v-if="editing?.enabled.value" class="muted">
-      需安装新版验证助手。地区不是 10001 时会暂停等待设置；请使用同一 Chrome / Edge 普通窗口。
-      默认在当前员工电脑的浏览器中采集，地区与 Cookie 保存在本机；清除 Cookie 后可能需要重新设置。
+      商品库、图片补采、数据接入和预上架共用同一个集物采集插件。地区不是 10001
+      时会暂停等待设置；请使用同一 Chrome / Edge 普通窗口。 默认在当前员工电脑的浏览器中采集，地区与
+      Cookie 保存在本机；清除 Cookie 后可能需要重新设置。
     </p>
     <p v-if="record?.original_price" class="muted">
       预上架售价 = 计价原价 × 倍率；没有划线原价时采用已核验的普通售价。

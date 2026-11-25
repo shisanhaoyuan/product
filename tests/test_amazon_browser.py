@@ -311,4 +311,4 @@ def test_location_failure_still_returns_verified_product_html(monkeypatch):
     result = worker.collect_in_profile(ASIN, 'camoufox', report, None)
     assert result == dict(status='ok', html=html)
     assert report['location_verified'] is False
-    assert len(verified) == 2 and closed == [True]
+    assert len(verified) == 3 and closed == [True]

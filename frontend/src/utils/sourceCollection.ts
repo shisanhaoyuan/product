@@ -32,7 +32,7 @@ export async function collectSourceInBrowser(
   signal.throwIfAborted();
   if (result.asin !== asin) throw new Error('采集期间 ASIN 已变化，请刷新商品');
   if (!/\b10001\b/.test(result.delivery_location || ''))
-    throw new Error('配送地区仍未设为 10001，请更新验证助手后重新采集。');
+    throw new Error('配送地区仍未设为 10001，请按安装／更新说明重新加载集物采集插件，再重新采集。');
   preferLocalSourceBrowser(true);
   return result;
 }

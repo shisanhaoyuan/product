@@ -220,3 +220,71 @@ def test_partial_image_cache_preserves_remaining_gallery(local_import,monkeypatc
     data=verified_page(catalog,A,A,html(),'https://www.amazon.com/dp/'+A,'browser')
     assert data['images']==[cached,second]
     assert '一张图片下载失败' in data['warnings']
+
+
+@pytest.mark.parametrize('state',['pending','running','fallback_queued','paused','done'])
+def test_cancel_discards_results_and_revokes_task(local_import,monkeypatch,state):
+    client,catalog=local_import;jid=new(client);task=None
+    if state!='pending':
+        task=action(client,jid,'claim')['task']
+        if state=='done':save(client,jid,task)
+        elif state=='paused':action(client,jid,'pause')
+        elif state=='fallback_queued':
+            monkeypatch.setattr('catalog.amazon_browser.configured',lambda:True)
+            action(client,jid,'fallback',task)
+    cancelled=action(client,jid,'cancel')
+    assert cancelled['state']=='cancelled'
+    assert all(item['state']=='cancelled' for item in cancelled['items'])
+    assert action(client,jid,'cancel')==cancelled
+    assert action(client,jid,'claim')['task'] is None
+    assert client.post(f'{BASE}/jobs/{jid}/finish').status_code==409
+    action(client,jid,'pause')
+    if task:
+        late=dict(**task,source_url='https://www.amazon.com/dp/'+A,html=html())
+        assert client.post(f'{BASE}/jobs/{jid}/page',json=late).status_code==409
+    with catalog.connect() as db:
+        row=db.execute('SELECT * FROM amazon_import_items WHERE job_id=?',(jid,)).fetchone()
+        assert not row['token'] and row['lease_until']==0 and row['data_json']=='{}'
+        assert db.execute('SELECT COUNT(*) FROM listings').fetchone()[0]==0
+    new_id=new(client)
+    assert action(client,new_id,'claim')['task']
+
+
+def test_cancel_during_wraith_skips_parsing_and_late_save(local_import,monkeypatch):
+    client,catalog=local_import
+    monkeypatch.setattr('catalog.amazon_browser.configured',lambda:True)
+    jid=new(client);task=action(client,jid,'claim')['task'];action(client,jid,'fallback',task)
+    def fetching(asin):
+        action(client,jid,'cancel')
+        return html(asin)
+    monkeypatch.setattr('catalog.amazon_browser.fetch_page',fetching)
+    monkeypatch.setattr('catalog.amazon_import.verified_page',lambda *a:pytest.fail('Cancelled fallback must not parse/download'))
+    assert run_fallback(catalog)
+    job=client.get(f'{BASE}/jobs/{jid}').json()
+    assert job['state']=='cancelled' and job['items'][0]['state']=='cancelled'
+
+
+def test_cancel_completed_job_does_not_change_saved_product(local_import):
+    client,catalog=local_import;jid=new(client);save(client,jid,action(client,jid,'claim')['task'])
+    completed=action(client,jid,'finish');before=catalog.export()
+    assert client.post(f'{BASE}/jobs/{jid}/cancel').status_code==409
+    assert client.get(f'{BASE}/jobs/{jid}').json()==completed
+    assert catalog.export()==before
+
+
+def test_cancel_requires_owner_and_write_permission(team):
+    editor,_=login(team,'editor');admin,_=login(team);viewer,_=login(team,'viewer')
+    jid=new(editor)
+    assert admin.post(f'{BASE}/jobs/{jid}/cancel').status_code==404
+    assert viewer.post(f'{BASE}/jobs/{jid}/cancel').status_code==403
+    assert editor.post(f'{BASE}/jobs/{jid}/cancel',headers={'X-CSRF-Token':''}).status_code==403
+    assert action(editor,jid,'cancel')['state']=='cancelled'
+
+
+def test_cancel_frees_unfinished_job_quota(local_import):
+    client,_=local_import
+    ids=[new(client) for _ in range(5)]
+    body=dict(text=A,include_variants=True,request_id=str(uuid.uuid4()))
+    assert client.post(BASE+'/jobs',json=body).status_code==429
+    action(client,ids[0],'cancel')
+    assert client.post(BASE+'/jobs',json=body).status_code==200

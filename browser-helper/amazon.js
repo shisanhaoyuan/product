@@ -1,26 +1,6 @@
 (() => {
   // Observe the page only. All CAPTCHA interaction remains with the user.
-  function initialGallery(script) {
-    const match = /["']colorImages["']\s*:\s*\{\s*["']initial["']\s*:\s*/.exec(script);
-    if (!match) return '';
-    const payload = script.slice(match.index + match[0].length);
-    const wrapped = /^A\.\$\.parseJSON\(\s*('(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")\s*\)/.exec(payload);
-    if (wrapped) return wrapped[0];
-    if (payload[0] !== '[') return '';
-    let depth = 0, quoted = false, escaped = false;
-    for (let i = 0; i < payload.length; i++) {
-      const char = payload[i];
-      if (quoted) {
-        if (escaped) escaped = false;
-        else if (char === '\\') escaped = true;
-        else if (char === '"') quoted = false;
-      } else if (char === '"') quoted = true;
-      else if (char === '[') depth++;
-      else if (char === ']' && --depth === 0) return payload.slice(0, i + 1);
-    }
-    return '';
-  }
-  let running = false, misses = 0;
+  let running = false, misses = 0, imageWait = 0;
   let lastSource = '', sourceStable = 0;
   const locationState = globalThis.jiwuLocationState();
   const visible = node => node && node.getClientRects().length && getComputedStyle(node).visibility !== 'hidden';
@@ -69,27 +49,17 @@
         sourceStable = snippet && snippet === lastSource ? sourceStable + 1 : 0;
         lastSource = snippet;
         if (!snippet || sourceStable < 2) return;
-        const gallery = [...document.scripts].map(script => initialGallery(script.textContent)).find(Boolean);
-        const landing = document.querySelector('img#landingImage');
-        const image = document.createElement('img'); image.id = 'landingImage';
-        for (const name of ['data-old-hires', 'data-a-dynamic-image']) {
-          if (landing?.hasAttribute(name)) image.setAttribute(name, landing.getAttribute(name));
-        }
-        const html = asinInput.outerHTML + snippet + (globalThis.jiwuProductDetails?.() || '') + image.outerHTML + (gallery ? `'colorImages': {'initial': ${gallery}}` : '');
+        const gallery = globalThis.jiwuImageGallery();
+        if (!gallery.available && ++imageWait < 8) return;
+        const html = asinInput.outerHTML + snippet + globalThis.jiwuProductDetails() + gallery.html;
         if (html.length > 6 * 1024 * 1024) return;
         const result = await chrome.runtime.sendMessage({ channel: 'catalog-capture-v1', action: 'page', asin, html });
         if (result?.accepted) stop();
         return;
       }
-      const gallery = [...document.scripts].map(script => initialGallery(script.textContent)).find(Boolean);
-      const landing = document.querySelector('img#landingImage');
-      if (!gallery && !landing) return;
-      const image = document.createElement('img');
-      image.id = 'landingImage';
-      for (const name of ['data-old-hires', 'data-a-dynamic-image']) {
-        if (landing?.hasAttribute(name)) image.setAttribute(name, landing.getAttribute(name));
-      }
-      const html = asinInput.outerHTML + image.outerHTML + (gallery ? `'colorImages': {'initial': ${gallery}}` : '');
+      const gallery = globalThis.jiwuImageGallery();
+      if (!gallery.available && ++imageWait < 8) return;
+      const html = asinInput.outerHTML + gallery.html;
       if (html.length > 6 * 1024 * 1024) return;
       const result = await chrome.runtime.sendMessage({ channel: 'catalog-capture-v1', action: 'page', asin, html });
       if (result?.accepted) stop();

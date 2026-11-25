@@ -1,5 +1,12 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { captureInBrowser } from './browserCapture';
+import { collectorPluginVersion } from './collectorPlugin';
+const capabilities = {
+  version: collectorPluginVersion,
+  modes: ['images', 'source', 'import'],
+  backgroundSource: true,
+  currentProductImages: true,
+};
 
 afterEach(() => {
   vi.useRealTimers();
@@ -25,7 +32,12 @@ function browser() {
       listener({
         source: window,
         origin: eventOrigin,
-        data: { channel: 'catalog-capture-v1', requestId: request.requestId, ...data },
+        data: {
+          channel: 'catalog-capture-v1',
+          requestId: request.requestId,
+          ...capabilities,
+          ...data,
+        },
       });
   }
   return { window, listeners, deliver };
@@ -34,9 +46,9 @@ function browser() {
 it('waits for manual-page result, ignores other origins, and cleans up', async () => {
   const b = browser();
   const promise = captureInBrowser('B012345678', new AbortController().signal);
-  b.deliver({ action: 'reply', ready: true }, 'https://evil.test');
+  b.deliver({ action: 'reply', ready: true, ...capabilities }, 'https://evil.test');
   expect(b.window.postMessage).toHaveBeenCalledTimes(1);
-  b.deliver({ action: 'reply', ready: true });
+  b.deliver({ action: 'reply', ready: true, ...capabilities });
   expect(b.window.postMessage.mock.calls[1][0].action).toBe('start');
   b.deliver({ action: 'result', asin: 'B999999999', html: 'wrong', source_url: 'wrong' });
   expect(b.listeners.size).toBe(1);
@@ -64,8 +76,8 @@ it('requires source support and passes the requested capture mode', async () => 
   const b = browser();
   const old = expect(
     captureInBrowser('B012345678', new AbortController().signal, 'source'),
-  ).rejects.toThrow('1.2.3');
-  b.deliver({ action: 'reply', ready: true });
+  ).rejects.toThrow(collectorPluginVersion);
+  b.deliver({ action: 'reply', ready: true, modes: ['images'] });
   await old;
   const promise = captureInBrowser('B012345678', new AbortController().signal, 'source');
   const probe = b.window.postMessage.mock.calls.at(-1)![0];
@@ -74,6 +86,7 @@ it('requires source support and passes the requested capture mode', async () => 
       source: b.window,
       origin: 'https://catalog.test',
       data: {
+        ...capabilities,
         ...probe,
         action: 'reply',
         ready: true,
@@ -90,6 +103,7 @@ it('requires source support and passes the requested capture mode', async () => 
       source: b.window,
       origin: 'https://catalog.test',
       data: {
+        ...capabilities,
         ...probe,
         action: 'result',
         html: 'source facts',
@@ -103,7 +117,7 @@ it('cancels pending verification and releases listeners', async () => {
   const b = browser(),
     controller = new AbortController();
   const check = expect(captureInBrowser('B012345678', controller.signal)).rejects.toThrow('取消');
-  b.deliver({ action: 'reply', ready: true });
+  b.deliver({ action: 'reply', ready: true, ...capabilities });
   controller.abort();
   await check;
   expect(b.listeners.size).toBe(0);
@@ -115,7 +129,7 @@ it('does not treat closing a verification page or a timeout as success', async (
   const check = expect(
     captureInBrowser('B012345678', new AbortController().signal),
   ).rejects.toThrow('关闭');
-  b.deliver({ action: 'reply', ready: true });
+  b.deliver({ action: 'reply', ready: true, ...capabilities });
   b.deliver({ action: 'result', error: '验证页面已关闭' });
   await check;
   const timeout = expect(
@@ -126,7 +140,7 @@ it('does not treat closing a verification page or a timeout as success', async (
     listener({
       source: b.window,
       origin: 'https://catalog.test',
-      data: { ...lastProbe, action: 'reply', ready: true },
+      data: { ...capabilities, ...lastProbe, action: 'reply', ready: true },
     });
   await vi.advanceTimersByTimeAsync(600000);
   await timeout;
@@ -136,8 +150,29 @@ it('rejects source-capable old helpers that cannot guarantee background collecti
   const b = browser();
   const failure = expect(
     captureInBrowser('B012345678', new AbortController().signal, 'source'),
-  ).rejects.toThrow('1.2.3');
-  b.deliver({ action: 'reply', ready: true, modes: ['source'] });
+  ).rejects.toThrow(collectorPluginVersion);
+  b.deliver({ action: 'reply', ready: true, modes: ['source'], backgroundSource: false });
   await failure;
   expect(b.window.postMessage.mock.calls.some(([data]) => data.action === 'start')).toBe(false);
 });
+
+it.each(['images', 'source', 'import'] as const)(
+  'blocks an old plugin and a plugin missing gallery support in %s mode',
+  async (mode) => {
+    for (const incompatible of [
+      { version: '2.0.0' },
+      { version: undefined },
+      { version: 'invalid' },
+      { currentProductImages: undefined },
+    ]) {
+      const b = browser();
+      const failure = expect(
+        captureInBrowser('B012345678', new AbortController().signal, mode),
+      ).rejects.toThrow(collectorPluginVersion);
+      b.deliver({ action: 'reply', ready: true, ...incompatible });
+      await failure;
+      expect(b.window.postMessage.mock.calls.some(([data]) => data.action === 'start')).toBe(false);
+      expect(b.listeners.size).toBe(0);
+    }
+  },
+);

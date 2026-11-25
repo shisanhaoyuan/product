@@ -6,8 +6,9 @@ import assert from 'node:assert/strict';
 async function setup() {
   const store = {}, sent = [], opened = [], focused = [], closed = [];
   let receive, removed;
+  const manifest = JSON.parse(await readFile(new URL('./manifest.json', import.meta.url), 'utf8'));
   const chrome = {
-    runtime: { onMessage: { addListener: fn => receive = fn } },
+    runtime: { getManifest: () => manifest, onMessage: { addListener: fn => receive = fn } },
     permissions: { contains: async () => true },
     storage: { session: {
       get: async key => key === null ? { ...store } : { [key]: store[key] },
@@ -62,6 +63,8 @@ test('source mode is announced and remains bound to its requesting tab', async (
   const b = await setup();
   const probe = await b.send({ action: 'probe' });
   assert.equal(probe.modes.includes('source'), true);
+  assert.equal(probe.version, JSON.parse(await readFile(new URL('./manifest.json', import.meta.url))).version);
+  assert.equal(probe.currentProductImages, true);
   await b.send({ action: 'start', asin: 'B012345678', mode: 'source', requestId: 'source' });
   const url = 'https://www.amazon.com/dp/B012345678';
   assert.equal((await b.send({ action: 'task' }, 22, url)).mode, 'source');

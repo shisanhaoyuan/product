@@ -20,7 +20,7 @@ sys.path[:0] = [str(ROOT), str(ROOT / 'tests')]
 with tempfile.TemporaryDirectory(prefix='capture-helper-test-') as tmp:
     temp = Path(tmp)
     os.environ['CATALOG_DB'] = str(temp / 'test.db')
-    os.environ['CATALOG_AUTH_ENABLED'] = '0'
+    os.environ.update(CATALOG_AUTH_ENABLED='0', CATALOG_AMAZON_BROWSER_PYTHON='', CATALOG_LISTING_AI_ENABLED='0', CATALOG_LISTING_RESULT_WORKER='0')
     from catalog.app import create_app
     from catalog.models import ImportBundle
     from catalog.images import HumanVerificationRequired
@@ -65,13 +65,16 @@ with tempfile.TemporaryDirectory(prefix='capture-helper-test-') as tmp:
             html = '''<!doctype html><meta charset="utf-8"><title>Simulated verification</title>
               <button id="manual">模拟人工验证完成</button><div id="gallery"></div>
               <script>document.querySelector('#manual').onclick=()=>{
-                document.querySelector('#gallery').innerHTML='<input id="ASIN" value="B000000000"><img id="landingImage" data-old-hires="https://m.media-amazon.com/images/I/verified.jpg">';
+                document.querySelector('#gallery').innerHTML='<input id="ASIN" value="B000000000"><img id="landingImage" src="https://m.media-amazon.com/images/I/verified.jpg">';
                 document.querySelector('#manual').remove();
               }</script>'''
             context.route('https://www.amazon.com/**', lambda route: route.fulfill(body=html, content_type='text/html'))
             image = io.BytesIO()
             Image.new('RGB', (160, 160), '#7997ba').save(image, format='PNG')
+            import catalog.listing_vision
+            catalog.listing_vision.fetch_image = lambda _: image.getvalue()
             context.route('https://m.media-amazon.com/**', lambda route: route.fulfill(body=image.getvalue(), content_type='image/png'))
+            context.add_init_script("localStorage.setItem('jiwu-source-browser-v2','no')")
             page = context.pages[0]
             errors = []
             page.on('pageerror', lambda error: errors.append(str(error)))
@@ -97,14 +100,17 @@ with tempfile.TemporaryDirectory(prefix='capture-helper-test-') as tmp:
             page.screenshot(path=str(ROOT / 'validation/capture-helper-mobile.png'))
             assert page.locator('.image-manager-dialog').evaluate('(el) => el.getBoundingClientRect().width <= innerWidth')
             page.set_viewport_size({'width': 1400, 'height': 1000})
+            def no_gallery(asin):
+                raise catalog.images.ImageGalleryUnavailable('fixture: static gallery unavailable')
+            catalog.images.fetch_amazon_images = no_gallery
             with context.expect_page() as opened:
                 button.click()
             opened.value.close()
-            expect(page.get_by_role('alert')).to_contain_text('关闭', timeout=10000)
+            expect(page.locator('.image-manager-dialog').get_by_role('alert')).to_contain_text('关闭', timeout=10000)
             with context.expect_page() as opened:
                 button.click()
             page.get_by_role('button', name='取消等待').click()
-            expect(page.get_by_role('alert')).to_contain_text('取消')
+            expect(page.locator('.image-manager-dialog').get_by_role('alert')).to_contain_text('取消')
             assert not errors, errors
             assert app.state.catalog.export() == before
             page.once('dialog', lambda dialog: dialog.accept())
@@ -133,16 +139,17 @@ with tempfile.TemporaryDirectory(prefix='capture-helper-test-') as tmp:
             context.route('https://www.amazon.com/**', lambda route: route.fulfill(body=source_html, content_type='text/html'))
             parent_panel = page.locator('.source-capture').first
             with context.expect_page() as opened:
-                parent_panel.get_by_role('button', name='采集卖家与报价').click()
+                parent_panel.get_by_role('button', name='打开浏览器设置地区并采集').click()
             amazon = opened.value
             amazon.goto('https://www.amazon.com/dp/B000000000?th=1&psc=1')
-            expect(parent_panel.get_by_role('status')).to_contain_text('等待来源页面')
+            expect(parent_panel.get_by_role('status')).to_contain_text('设置配送邮编 10001')
             amazon.get_by_role('button', name='模拟人工验证完成').click()
-            expect(parent_panel.locator('dd').first).to_have_text('Actual Seller', timeout=15000)
+            expect(parent_panel.locator('dd').first).to_have_text('Actual Seller', timeout=25000)
             expect(parent_panel.locator('dd').nth(1)).to_have_text('$54.00')
             expect(parent_panel.locator('dd').nth(2)).to_have_text('$7.99')
             expect(parent_panel.locator('dd').nth(3)).to_contain_text('November 9')
             expect(parent_panel.locator('dd').nth(4)).to_have_text('$60.00')
+            page.evaluate("localStorage.setItem('jiwu-source-browser-v2','no')")
             page.reload()
             expect(parent_panel.locator('dd').first).to_have_text('Actual Seller')
             parent_panel.scroll_into_view_if_needed()
@@ -155,11 +162,11 @@ with tempfile.TemporaryDirectory(prefix='capture-helper-test-') as tmp:
             child_panel = page.locator('#variant-detail .source-capture')
             expect(child_panel).to_contain_text('暂无来源采集记录')
             with context.expect_page() as opened:
-                child_panel.get_by_role('button', name='采集卖家与报价').click()
+                child_panel.get_by_role('button', name='打开浏览器设置地区并采集').click()
             amazon = opened.value
             amazon.goto('https://www.amazon.com/dp/B000000000?th=1&psc=1')
             amazon.get_by_role('button', name='模拟人工验证完成').click()
-            expect(child_panel.locator('dd').first).to_have_text('Actual Seller', timeout=15000)
+            expect(child_panel.locator('dd').first).to_have_text('Actual Seller', timeout=25000)
             assert app.state.catalog.export() == before
             with app.state.catalog.connect() as db:
                 rows = db.execute('SELECT variant_sku,asin FROM source_captures').fetchall()
@@ -167,14 +174,15 @@ with tempfile.TemporaryDirectory(prefix='capture-helper-test-') as tmp:
             assert not errors, errors
             context.close()
             # Missing helper must offer installation, without pretending the challenge was solved.
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(channel='chrome', headless=True)
             page = browser.new_page()
+            page.add_init_script("localStorage.setItem('jiwu-source-browser-v2','no')")
             page.goto(origin)
             page.locator('.product-card').first.click()
             page.get_by_role('button', name='管理图片', exact=True).first.click()
             page.get_by_role('button', name='按 ASIN 重新抓取').click()
-            expect(page.get_by_role('alert')).to_contain_text('安装', timeout=10000)
-            expect(page.get_by_role('link', name='下载验证助手')).to_be_visible()
+            expect(page.locator('.image-manager-dialog').get_by_role('alert')).to_contain_text('安装', timeout=10000)
+            expect(page.locator('.image-manager-dialog').get_by_role('link', name='下载集物采集插件')).to_be_visible()
             assert page.request.get(origin + '/api/products/images/helper.zip').status == 200
             browser.close()
             print('Browser flow passed: image/source handoff, simulated manual completion, lower Sellers list, persisted readback, parent/child isolation, desktop/mobile, close, cancel, missing helper; product data unchanged.')

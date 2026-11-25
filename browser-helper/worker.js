@@ -12,7 +12,8 @@ chrome.runtime.onMessage.addListener((data, sender, reply) => {
     if (origin !== 'https://www.amazon.com') {
       const permitted = await chrome.permissions.contains({ origins: [origin + '/*'] });
       if (!permitted) throw new Error('请先通过助手连接商品库网站。');
-      if (data.action === 'probe') return { ready: true, modes: ['images', 'source', 'import'], backgroundSource: true };
+      if (data.action === 'probe') return { ready: true, version: chrome.runtime.getManifest().version,
+        modes: ['images', 'source', 'import'], backgroundSource: true, currentProductImages: true };
       const key = jobKey(sender.tab.id);
       const old = (await chrome.storage.session.get(key))[key];
       if (data.action === 'reveal' && old?.requestId === data.requestId) {

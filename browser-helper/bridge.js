@@ -11,7 +11,7 @@
       window.postMessage({ ...result, channel, action: 'reply', requestId: data.requestId }, location.origin);
     } catch {
       window.postMessage({ channel, action: 'reply', requestId: data.requestId,
-        error: '助手连接已失效，请刷新商品库页面。' }, location.origin);
+        error: '采集插件连接已失效，请刷新商品库页面；若刚更新插件，请先在扩展管理中重新加载。' }, location.origin);
     }
   });
   chrome.runtime.onMessage.addListener((data) => {

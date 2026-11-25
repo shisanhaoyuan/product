@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import CollectorPluginLinks from './CollectorPluginLinks.vue';
 import { sourceInfo } from '../utils/productSources';
 import { computed, nextTick, onMounted, ref, watch, onBeforeUnmount } from 'vue';
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute } from 'vue-router';
@@ -1066,7 +1067,7 @@ onBeforeUnmount(() => {
           <p>正在沿用商品库的采集方式。若邮编失效，可打开同一浏览器设置；浏览器会保留 Cookie，后续子商品继续使用。</p>
           <button class="btn" :disabled="busy || collectingSources" @click="setSourceLocation">打开网页设置 10001 并继续</button>
           <button class="btn" @click="cancelSourceCollection">停止本轮采集</button>
-          <a class="btn" href="/api/products/images/helper.zip" download>下载浏览器验证助手</a>
+          <CollectorPluginLinks />
         </div>
         <div class="preparation-summary">
           <span

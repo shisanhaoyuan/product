@@ -13,7 +13,7 @@ def amount(value):
 
 def markup():
     return f'''<style>.hidden-price {{display:none}}</style><input id="ASIN" value="{ASIN}">
-    <span id="glow-ingress-line2">New York 10001</span><h1 id="productTitle">Nightstand</h1>
+    <span id="glow-ingress-line2">New York 10001</span><img id="landingImage" src="https://m.media-amazon.com/images/I/fixture.jpg"><h1 id="productTitle">Nightstand</h1>
     <div id="buyBoxAccordion">
       <div id="primeSavingsUpsellAccordionRow">Prime Member Price
         <div id="corePrice_feature_div">{amount('76.49')}</div>
@@ -38,15 +38,16 @@ def markup():
     </div>'''
 
 tree = ast.parse((ROOT / 'catalog/amazon_browser_worker.py').read_text())
+# The worker appends this returned markup after injecting the shared helpers.
 extractor = next(n.value for n in ast.walk(tree) if isinstance(n, ast.Constant)
-                 and isinstance(n.value, str) and 'function initialGallery' in n.value)
+                 and isinstance(n.value, str) and "return identity.outerHTML + offer" in n.value)
 with sync_playwright() as p:
     browser = p.chromium.launch(channel='chrome', headless=True)
     context = browser.new_context()
     context.route('https://www.amazon.com/**', lambda r:r.fulfill(body=markup(),content_type='text/html'))
     page = context.new_page()
     page.goto(f'https://www.amazon.com/dp/{ASIN}')
-    for name in ('offers.js','product.js','location-state.js'):
+    for name in ('offers.js','product.js','gallery.js','location-state.js'):
         page.add_script_tag(path=str(ROOT/'browser-helper'/name))
     page.evaluate('globalThis.jiwuReadOffer = jiwuOfferReader(); globalThis.jiwuOfferHTML = jiwuReadOffer();')
     backend = page.evaluate('() => {' + extractor)

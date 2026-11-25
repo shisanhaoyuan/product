@@ -190,41 +190,20 @@ def collect_in_profile(asin, engine, report, profile):
                     break
                 page.wait_for_timeout(600)
             verify_or_try(session, asin, report, clear_challenge)
+        page.evaluate('() => {' + (helper / 'gallery.js').read_text() + '}')
+        # Product media may arrive after the offer; wait briefly before snapshotting.
+        for _ in range(10):
+            if page.evaluate('() => globalThis.jiwuImageGallery().available'):
+                break
+            page.wait_for_timeout(600)
+        verify_or_try(session, asin, report, clear_challenge)
         # Send only product/offer markup, not scripts, account menus, tokens or cookies.
-        html = page.evaluate('() => {' + (helper / 'product.js').read_text() + r'''
-
-  function initialGallery(script) {
-    const match = /["']colorImages["']\s*:\s*\{\s*["']initial["']\s*:\s*/.exec(script);
-    if (!match) return '';
-    const payload = script.slice(match.index + match[0].length);
-    const wrapped = /^A\.\$\.parseJSON\(\s*('(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")\s*\)/.exec(payload);
-    if (wrapped) return wrapped[0];
-    if (payload[0] !== '[') return '';
-    let depth = 0, quoted = false, escaped = false;
-    for (let i = 0; i < payload.length; i++) {
-      const char = payload[i];
-      if (quoted) {
-        if (escaped) escaped = false;
-        else if (char === '\\') escaped = true;
-        else if (char === '"') quoted = false;
-      } else if (char === '"') quoted = true;
-      else if (char === '[') depth++;
-      else if (char === ']' && --depth === 0) return payload.slice(0, i + 1);
-    }
-    return '';
-  }
-
-
+        html = page.evaluate('() => {' + (helper / 'product.js').read_text() +
+                             (helper / 'gallery.js').read_text() + r'''
           const identity = document.createElement('input'); identity.id = 'ASIN';
           identity.setAttribute('value', document.querySelector('input#ASIN')?.value || '');
           const offer = globalThis.jiwuOfferHTML || globalThis.jiwuReadOffer();
-          const gallery = [...document.scripts].map(script => initialGallery(script.textContent)).find(Boolean);
-          const landing = document.querySelector('img#landingImage');
-          const image = document.createElement('img'); image.id = 'landingImage';
-          for (const name of ['data-old-hires', 'data-a-dynamic-image']) {
-            if (landing?.hasAttribute(name)) image.setAttribute(name, landing.getAttribute(name));
-          }
-          return identity.outerHTML + offer + globalThis.jiwuProductDetails() + image.outerHTML + (gallery ? `'colorImages': {'initial': ${gallery}}` : '');
+          return identity.outerHTML + offer + globalThis.jiwuProductDetails() + globalThis.jiwuImageGallery().html;
         }''')
         if len(html.encode()) > 6 * 1024 * 1024:
             raise CaptureStopped('failed')
