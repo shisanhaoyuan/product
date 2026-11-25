@@ -6,6 +6,7 @@ import { errorMessage, safeUrl } from '../utils/display';
 import ProductImage from './ProductImage.vue';
 import AppIcon from './AppIcon.vue';
 import { catalogApi } from '../api/client';
+import type { ImageCollection } from '../api/types';
 import { captureInBrowser } from '../utils/browserCapture';
 
 const props = defineProps<{ images: string[]; sku?: string; asin?: string; hero?: boolean }>();
@@ -26,6 +27,7 @@ const working = ref(false),
 const busy = computed(() => !!editing?.busy.value || working.value);
 const verification = ref(false);
 const needsHelper = ref(false);
+const collection = ref<ImageCollection>();
 let captureController: AbortController | undefined;
 async function upload(event: Event) {
   const files = Array.from((event.target as HTMLInputElement).files || []);
@@ -64,6 +66,7 @@ async function capture() {
   working.value = true;
   error.value = '';
   notice.value = '';
+  collection.value = undefined;
   candidates.value = [];
   chosen.value = [];
   needsHelper.value = false;
@@ -86,6 +89,7 @@ async function capture() {
       needsHelper.value = false;
     }
     candidates.value = result.images || [];
+    collection.value = result.image_collection;
     notice.value = `已核验 ASIN ${result.asin}，抓取到 ${candidates.value.length} 张图片；请选择需要添加的图片。`;
   } catch (e) {
     notice.value = '';
@@ -124,6 +128,7 @@ async function open(index = 0) {
   candidates.value = [];
   chosen.value = [];
   notice.value = '';
+  collection.value = undefined;
   opened.value = true;
   if (editing && editable.value) editing.active.value = identity;
   await nextTick();
@@ -343,6 +348,17 @@ onBeforeUnmount(() => {
             </div>
           </form>
           <p v-if="notice" role="status" class="muted">{{ notice }}</p>
+          <div v-if="collection" :class="collection.state === 'partial' ? 'warning' : 'muted'">
+            <p>{{ collection.message }}</p>
+            <ul v-if="collection.failures.length">
+              <li v-for="failure in collection.failures" :key="failure.index">
+                第 {{ failure.index }} 张：{{ failure.reason }}
+              </li>
+            </ul>
+            <p v-if="collection.state === 'partial'">
+              图片尚未全部保存，请重新抓取补齐或本地上传。
+            </p>
+          </div>
           <div v-if="needsHelper" class="image-import-actions">
             <CollectorPluginLinks />
             <button

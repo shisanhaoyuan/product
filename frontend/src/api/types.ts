@@ -10,6 +10,7 @@ export interface StoreHistory {
 export type EvidenceKind = 'persisted_readback' | 'editor_snapshot' | 'source_only';
 export type Fields = Record<string, unknown>;
 export interface ImageCollection {
+  discovered_count?: number;
   state: string;
   message: string;
   images: string[];

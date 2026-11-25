@@ -1,5 +1,6 @@
 """Isolated browser acceptance; simulated CAPTCHA, no real Amazon interaction."""
 import json
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -62,26 +63,24 @@ with tempfile.TemporaryDirectory(prefix='capture-helper-test-') as tmp:
             context = p.chromium.launch_persistent_context(str(temp / 'profile'), channel='chromium', headless=True,
                 args=[f'--disable-extensions-except={helper}', f'--load-extension={helper}'],
                 viewport={'width': 1400, 'height': 1000})
-            html = '''<!doctype html><meta charset="utf-8"><title>Simulated verification</title>
-              <button id="manual">模拟人工验证完成</button><div id="gallery"></div>
-              <script>document.querySelector('#manual').onclick=()=>{
-                const urls=Array.from({length:8},(_,i)=>`https://m.media-amazon.com/images/I/verified-${i}.jpg`);
-                const initial=JSON.stringify(urls.slice(0,3).map(hiRes=>({hiRes})));
-                document.querySelector('#gallery').innerHTML=`<input id="ASIN" value="B000000000">
-                  <div id="imageBlock"><img id="landingImage" src="${urls[0]}">
-                    <div id="altImages">${urls.slice(1).map(url=>`<li class="imageThumbnail"><img src="${url}"></li>`).join('')}</div></div>`;
-                const script=document.createElement('script');
-                script.textContent='"colorImages": {"initial": '+initial+'}';
-                document.querySelector('#gallery').append(script);
-                document.querySelector('#manual').remove();
-              }</script>'''
+            fixture = (ROOT / 'tests/fixtures/amazon_experiment_gallery.html').read_text().replace('B0H9K5TQF9', 'B000000000')
+            # Keep the live page's W-prefix URLs, quoted JSON, six visible slots,
+            # 3+ overlay, eight script images, and differing thumbnail IDs.
+            encoded_fixture = json.dumps(fixture).replace('<', '\\u003c')
+            html = ('<meta charset="utf-8"><button id="manual">模拟人工验证完成</button><div id="gallery"></div>'
+                    + "<script>document.querySelector('#manual').onclick=()=>{"
+                    + "document.querySelector('#gallery').innerHTML=" + encoded_fixture + ";"
+                    + "document.querySelector('#manual').remove();}</script>")
             context.route('https://www.amazon.com/**', lambda route: route.fulfill(body=html, content_type='text/html'))
             image = io.BytesIO()
             Image.new('RGB', (160, 160), '#7997ba').save(image, format='PNG')
             import catalog.listing_vision
+            fail_main = [True]
             def unique_image(url):
+                if fail_main[0] and '71d5dMpCQNL' in url:
+                    raise catalog.listing_vision.ListingAIError('图片服务器返回 HTTP 403')
                 out = io.BytesIO()
-                color = tuple((sum(url.encode()) + index * 31) % 256 for index in range(3))
+                color = tuple(hashlib.sha256(url.encode()).digest()[:3])
                 Image.new('RGB', (160, 160), color).save(out, format='PNG')
                 return out.getvalue()
             catalog.listing_vision.fetch_image = unique_image
@@ -104,7 +103,17 @@ with tempfile.TemporaryDirectory(prefix='capture-helper-test-') as tmp:
             # This is a fixture button, never a real CAPTCHA.
             amazon.get_by_role('button', name='模拟人工验证完成').click()
             expect(page.locator('.image-capture-grid')).to_be_visible(timeout=15000)
-            expect(page.get_by_text('已核验 ASIN B000000000，抓取到 8 张图片；请选择需要添加的图片。')).to_be_visible()
+            expect(page.get_by_text('图片尚未全部保存，请重新抓取补齐或本地上传。')).to_be_visible()
+            expect(page.get_by_text('第 1 张：图片服务器返回 HTTP 403')).to_be_visible()
+            expect(page.locator('.image-capture-grid img')).to_have_count(7)
+            assert app.state.catalog.export() == before
+            fail_main[0] = False
+            with context.expect_page() as opened:
+                button.click()
+            amazon = opened.value
+            amazon.goto('https://www.amazon.com/dp/B000000000?th=1&psc=1')
+            amazon.get_by_role('button', name='模拟人工验证完成').click()
+            expect(page.get_by_text('已核验 ASIN B000000000，抓取到 8 张图片；请选择需要添加的图片。')).to_be_visible(timeout=15000)
             expect(page.locator('.image-capture-grid img')).to_have_count(8)
             expect(page.locator('.image-capture-grid img').first).to_have_js_property('naturalWidth', 160)
             assert app.state.catalog.export() == before

@@ -82,12 +82,13 @@ def collect_images(catalog, lid, sku, urls):
     failures = [dict(index=i+1, reason=r['reason']) for i, r in enumerate(results) if not r.get('url')]
     images = list(dict.fromkeys(r['url'] for r in saved))
     state = 'complete' if saved and not failures and len(candidates) <= 32 else 'partial' if saved else 'failed' if selected else 'missing'
-    message = f'已保存 {len(images)} 张图片到服务器' if images else '未取得可用图片'
+    message = f'发现 {len(candidates)} 张图片，已保存 {len(images)} 张到服务器' if images else f'发现 {len(candidates)} 张图片，未取得可用图片'
     if failures:
         message += f'，{len(failures)} 张失败：' + failures[0]['reason']
     if len(candidates) > 32:
         message += '；本次最多采集前 32 张，其余原图保留'
     return dict(state=state, message=message, images=images, saved=saved, failures=failures,
+                discovered_count=len(candidates),
                 failed_urls=[r['source_url'] for r in results if not r.get('url')])
 
 

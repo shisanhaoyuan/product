@@ -87,6 +87,29 @@ class ProductHTML(HTMLParser):
             self.landing = a
 
 
+def amazon_image_url(value):
+    """Normalize Amazon's experiment CDN prefix without changing image identity."""
+    if not isinstance(value, str):
+        return ''
+    try:
+        url = urlparse(value)
+        if (url.scheme != 'https' or url.hostname not in
+                {'m.media-amazon.com', 'images-na.ssl-images-amazon.com'}
+                or url.username or url.password or url.port not in (None, 443)):
+            return ''
+        path = re.sub(r'^/images/W/[A-Za-z0-9_-]+/images/I/', '/images/I/', url.path)
+        if not re.fullmatch(r'/images/I/[^/]+', path):
+            return ''
+        return url._replace(path=path, query='', fragment='').geturl()
+    except ValueError:
+        return ''
+
+
+def amazon_image_identity(url):
+    # Size/quality transformations of the same asset are not extra photos.
+    return urlparse(url).path.rsplit('/', 1)[-1].split('._', 1)[0]
+
+
 def amazon_images(html, asin):
     if needs_verification(html):
         raise HumanVerificationRequired('Amazon 要求人机验证，请在打开的浏览器页面完成验证')
@@ -95,6 +118,7 @@ def amazon_images(html, asin):
     if page.asins != {asin}:
         raise ValueError('无法核验网页当前子 ASIN，未采用页面图片')
     candidates = []
+    aliases = {}
     # Only the current gallery's initial images; never scan recommendations or all variants.
     match = re.search(r'''["']colorImages["']\s*:\s*\{\s*["']initial["']\s*:\s*''', html)
     if match:
@@ -110,25 +134,30 @@ def amazon_images(html, asin):
             if isinstance(gallery, list):
                 for row in gallery:
                     if isinstance(row, dict):
-                        candidates.append(row.get('hiRes') or row.get('large') or '')
+                        urls = [amazon_image_url(row.get(key)) for key in ('hiRes', 'large')]
+                        preferred = next((url for url in urls if url), '')
+                        if preferred:
+                            candidates.append(preferred)
+                            # Amazon uses different physical IDs for some thumbnails.
+                            # Map only aliases explicitly linked by this current gallery.
+                            for value in [row.get('hiRes'), row.get('large'), row.get('thumb')]:
+                                normalized = amazon_image_url(value)
+                                if normalized:
+                                    aliases[amazon_image_identity(normalized)] = preferred
         except (ValueError, TypeError, SyntaxError):
             pass
-    def accepted(url):
-        if not isinstance(url, str):
-            return False
-        try:
-            parsed = urlparse(url)
-            return (
-                parsed.scheme == 'https'
-                and parsed.hostname in {'m.media-amazon.com', 'images-na.ssl-images-amazon.com'}
-                and parsed.path.startswith('/images/I/')
-                and not parsed.username
-                and not parsed.password
-            )
-        except ValueError:
-            return False
+    result = []
+    seen = set()
 
-    result = list(dict.fromkeys(url for url in candidates if accepted(url)))
+    def add(url):
+        url = aliases.get(amazon_image_identity(url), url)
+        identity = amazon_image_identity(url)
+        if identity not in seen:
+            seen.add(identity)
+            result.append(url)
+
+    for url in candidates:
+        add(url)
     from .source_capture import Document
 
     doc = Document(html).root
@@ -183,9 +212,9 @@ def amazon_images(html, asin):
         except (ValueError, TypeError):
             pass
         urls = [attrs.get('data-old-hires'), *dynamic, attrs.get('src'), attrs.get('data-src')]
-        url = next((candidate for candidate in urls if accepted(candidate)), None)
-        if url and url not in result:
-            result.append(url)
+        url = next((value for candidate in urls if (value := amazon_image_url(candidate))), '')
+        if url:
+            add(url)
     if not result:
         raise ImageGalleryUnavailable('页面未返回可核验的当前商品图片，原图片未改变')
     return result[:100]

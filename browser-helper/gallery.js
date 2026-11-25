@@ -20,13 +20,16 @@ globalThis.jiwuImageGallery = function () {
     }
     return '';
   }
-  const valid = value => {
+  const normalize = value => {
     try {
       const url = new URL(value);
-      return url.protocol === 'https:' && !url.username && !url.password &&
-        ['m.media-amazon.com', 'images-na.ssl-images-amazon.com'].includes(url.hostname) &&
-        url.pathname.startsWith('/images/I/');
-    } catch { return false; }
+      if (url.protocol !== 'https:' || url.username || url.password || url.port ||
+          !['m.media-amazon.com', 'images-na.ssl-images-amazon.com'].includes(url.hostname)) return '';
+      url.pathname = url.pathname.replace(/^\/images\/W\/[A-Za-z0-9_-]+\/images\/I\//, '/images/I/');
+      if (!/^\/images\/I\/[^/]+$/.test(url.pathname)) return '';
+      url.search = ''; url.hash = '';
+      return url.href;
+    } catch { return ''; }
   };
   const gallery = [...document.scripts].map(script => initialGallery(script.textContent || '')).find(Boolean);
   const section = document.createElement('section'); section.id = 'jiwu-image-gallery';
@@ -38,12 +41,12 @@ globalThis.jiwuImageGallery = function () {
     let dynamic = [];
     try {
       dynamic = Object.entries(JSON.parse(node.getAttribute('data-a-dynamic-image') || '{}'))
-        .filter(([url]) => valid(url)).sort((a,b) => {
+        .filter(([url]) => normalize(url)).sort((a,b) => {
           const area = entry => Array.isArray(entry[1]) ? Number(entry[1][0]) * Number(entry[1][1]) || 0 : 0;
           return area(b) - area(a);
         }).map(([url]) => url);
     } catch { /* A malformed old attribute must not hide the displayed image. */ }
-    const value = [node.getAttribute('data-old-hires'), ...dynamic, node.currentSrc, node.getAttribute('src'), node.getAttribute('data-src')].find(valid);
+    const value = [node.getAttribute('data-old-hires'), ...dynamic, node.currentSrc, node.getAttribute('src'), node.getAttribute('data-src')].map(normalize).find(Boolean);
     if (value && urls.size < 100) urls.add(value);
   }
   for (const url of urls) { const image = document.createElement('img'); image.setAttribute('src', url); section.append(image); }

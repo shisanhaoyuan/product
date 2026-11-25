@@ -1,4 +1,5 @@
 import type {
+  ImageCollection,
   SourceCapture,
   ImportRecord,
   ImportContext,
@@ -104,14 +105,17 @@ export const catalogApi = {
     sku: string | undefined,
     page: { source_url: string; html: string },
   ) =>
-    request<{ asin: string; source_url: string; fetched_at: string; images: string[] }>(
-      `/api/products/${encodeURIComponent(id)}/images/capture/browser`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ variant_sku: sku, source_url: page.source_url, html: page.html }),
-      },
-    ),
+    request<{
+      asin: string;
+      source_url: string;
+      fetched_at: string;
+      images: string[];
+      image_collection?: ImageCollection;
+    }>(`/api/products/${encodeURIComponent(id)}/images/capture/browser`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ variant_sku: sku, source_url: page.source_url, html: page.html }),
+    }),
   uploadImage: (id: string, sku: string | undefined, file: File) =>
     request<{ url: string }>(
       `/api/products/${encodeURIComponent(id)}/images/upload${sku === undefined ? '' : '?variant_sku=' + encodeURIComponent(sku)}`,
@@ -129,6 +133,7 @@ export const catalogApi = {
       source_url: string;
       fetched_at?: string;
       images?: string[];
+      image_collection?: ImageCollection;
     }>(`/api/products/${encodeURIComponent(id)}/images/capture`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

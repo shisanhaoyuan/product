@@ -1,6 +1,8 @@
 import io
+import hashlib
 import json
 import sqlite3
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -12,6 +14,61 @@ from catalog.models import ImportBundle
 from test_editing import local, detail, edit
 from test_auth import team, login, ORIGIN
 from test_prelisting import product
+
+
+def test_experiment_gallery_includes_hidden_images_and_main_without_thumbnail_duplicates():
+    body = (Path(__file__).parent / 'fixtures/amazon_experiment_gallery.html').read_text()
+    result = amazon_images(body, 'B0H9K5TQF9')
+    ids = ['71d5dMpCQNL', '71ZAHHFmWJL', '61ZltEV70DL', '61ZBGpBtb3L',
+           '61FQMw+nU1L', '71IZkvtwVwL', '71LgucZSOhL', '81r7Et88JsL']
+    assert result == [f'https://m.media-amazon.com/images/I/{ident}._AC_SL{1500 if n in (0, 7) else 1250}_.jpg'
+                      for n, ident in enumerate(ids)]
+
+
+@pytest.mark.parametrize('url', [
+    'https://evil.test/images/W/test/images/I/photo.jpg',
+    'https://m.media-amazon.com.evil.test/images/I/photo.jpg',
+    'https://user:pass@m.media-amazon.com/images/I/photo.jpg',
+    'https://m.media-amazon.com:444/images/I/photo.jpg',
+    'https://m.media-amazon.com/images/W/test/other/photo.jpg',
+])
+def test_experiment_path_does_not_relax_image_host_and_scope(url):
+    from catalog.images import amazon_image_url
+    assert amazon_image_url(url) == ''
+
+
+def test_experiment_dom_only_main_is_normalized():
+    body = '<input id="ASIN" value="B012345678"><img id="landingImage" data-old-hires="https://m.media-amazon.com/images/W/BW_TEST-T4/images/I/main._AC_SL1500_.jpg">'
+    assert amazon_images(body, 'B012345678') == ['https://m.media-amazon.com/images/I/main._AC_SL1500_.jpg']
+
+
+def test_browser_capture_reports_partial_download_without_overwriting_library(local, monkeypatch):
+    from catalog.listing_ai_client import ListingAIError
+    client, _ = local
+    before = detail(client)
+    asin = before['variants'][0]['asin']
+    body = (Path(__file__).parent / 'fixtures/amazon_experiment_gallery.html').read_text().replace('B0H9K5TQF9', asin)
+    calls = []
+
+    def fetch(url):
+        calls.append(url)
+        if '71d5dMpCQNL' in url:
+            raise ListingAIError('图片服务器返回 HTTP 403')
+        out = io.BytesIO()
+        Image.new('RGB', (48, 48), tuple(hashlib.sha256(url.encode()).digest()[:3])).save(out, format='PNG')
+        return out.getvalue()
+
+    monkeypatch.setattr('catalog.listing_vision.fetch_image', fetch)
+    response = client.post(f"/api/products/{before['id']}/images/capture/browser", json={
+        'variant_sku': 'child-0', 'source_url': f'https://www.amazon.com/dp/{asin}', 'html': body,
+    })
+    assert response.status_code == 200, response.text
+    result = response.json()['image_collection']
+    assert result['state'] == 'partial' and result['discovered_count'] == 8
+    assert len(result['saved']) == 7 and len(calls) == 8
+    assert result['failures'] == [{'index': 1, 'reason': '图片服务器返回 HTTP 403'}]
+    assert all('/images/W/' not in url for url in calls)
+    assert detail(client) == before
 
 
 def picture():
