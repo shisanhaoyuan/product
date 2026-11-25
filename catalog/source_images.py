@@ -18,6 +18,46 @@ IMAGE_POOL = BoundedExecutor(
     thread_name_prefix='source-images')
 
 
+def image_source_keys(url):
+    from .images import amazon_image_url, amazon_image_identity
+    keys = [url]
+    normalized = amazon_image_url(url)
+    if normalized:
+        keys.extend([normalized, 'amazon-asset:' + amazon_image_identity(normalized)])
+    return list(dict.fromkeys(keys))
+
+
+def deduplicate_gallery(db, lid, sku, urls):
+    """Use exact assets and same-SKU download evidence, never visual similarity."""
+    evidence = {}
+    for row in db.execute('''SELECT url_hash,digest FROM listing_image_evidence
+            WHERE listing_id=? AND source_sku=?''', (lid, sku)):
+        evidence.setdefault(row[0], set()).add(PREFIX + row[1])
+    groups = []
+    for url in urls:
+        keys = set(image_source_keys(url))
+        for key in list(keys):
+            matches = evidence.get(hashlib.sha256(key.encode()).hexdigest(), set())
+            # A changing source URL must not merge different historical contents.
+            if len(matches) == 1:
+                keys.update(matches)
+        overlaps = [i for i, (known, _) in enumerate(groups) if known & keys]
+        if not overlaps:
+            groups.append((keys, url))
+            continue
+        first = overlaps[0]
+        preferred = groups[first][1]
+        for index in reversed(overlaps):
+            known, existing = groups.pop(index)
+            keys.update(known)
+            if existing.startswith(PREFIX):
+                preferred = existing
+        if url.startswith(PREFIX):
+            preferred = url
+        groups.insert(first, (keys, preferred))
+    return [url for _, url in groups]
+
+
 def cached_image(catalog, lid, sku, url):
     from .listing_vision import image_data
     with catalog.connect() as db:
@@ -43,14 +83,26 @@ def collect_images(catalog, lid, sku, urls):
         try:
             cached = cached_image(catalog, lid, sku, url)
             if cached:
+                # Backfill aliases for images downloaded before this rule existed.
+                with catalog.connect() as db:
+                    write_lock(db)
+                    for key in image_source_keys(url)[1:]:
+                        db.execute('''INSERT INTO listing_image_evidence
+                            SELECT listing_id,source_sku,?,digest,width,height,created_at
+                            FROM listing_image_evidence
+                            WHERE listing_id=? AND source_sku=? AND url_hash=? AND digest=?
+                            ON CONFLICT DO NOTHING''',
+                            (hashlib.sha256(key.encode()).hexdigest(), lid, sku,
+                             hashlib.sha256(url.encode()).hexdigest(), cached.removeprefix(PREFIX)))
                 return dict(source_url=url, url=cached, cached=True)
             dimensions = {}
             digest, _ = image_data(catalog, url, dimensions)
             with catalog.connect() as db:
                 write_lock(db)
-                db.execute('INSERT INTO listing_image_evidence VALUES(?,?,?,?,?,?,?) ON CONFLICT DO NOTHING',
-                           (lid, sku, hashlib.sha256(url.encode()).hexdigest(), digest,
-                            dimensions['width'], dimensions['height'], int(time.time())))
+                for key in image_source_keys(url):
+                    db.execute('INSERT INTO listing_image_evidence VALUES(?,?,?,?,?,?,?) ON CONFLICT DO NOTHING',
+                               (lid, sku, hashlib.sha256(key.encode()).hexdigest(), digest,
+                                dimensions['width'], dimensions['height'], int(time.time())))
             return dict(source_url=url, url=PREFIX + digest, cached=url.startswith(PREFIX))
         except (ListingAIError, HTTPException, StorageError, ValueError, OSError, httpx.HTTPError) as exc:
             if isinstance(exc, HTTPException):

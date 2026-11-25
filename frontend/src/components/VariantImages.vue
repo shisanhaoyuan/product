@@ -25,6 +25,13 @@ const working = ref(false),
   chosen = ref<string[]>([]),
   notice = ref('');
 const busy = computed(() => !!editing?.busy.value || working.value);
+const allImagesChosen = computed(
+  () => candidates.value.length > 0 && candidates.value.every((url) => chosen.value.includes(url)),
+);
+function toggleAllImages() {
+  if (busy.value) return;
+  chosen.value = allImagesChosen.value ? [] : [...candidates.value];
+}
 const verification = ref(false);
 const needsHelper = ref(false);
 const collection = ref<ImageCollection>();
@@ -158,6 +165,15 @@ async function persist(images: string[]) {
 }
 async function remove(index: number) {
   await persist(props.images.filter((_, i) => i !== index));
+}
+async function deduplicate() {
+  const count = props.images.length;
+  if (await persist([...props.images])) {
+    notice.value =
+      count > props.images.length
+        ? `已去除 ${count - props.images.length} 张重复图片`
+        : '未发现可确认的重复图片';
+  }
 }
 async function add() {
   const urls = links.value
@@ -328,6 +344,14 @@ onBeforeUnmount(() => {
               <button type="button" class="btn small" :disabled="busy || !asin" @click="capture">
                 <AppIcon name="RotateCcw" />按 ASIN 重新抓取
               </button>
+              <button
+                type="button"
+                class="btn small"
+                :disabled="busy || images.length < 2"
+                @click="deduplicate"
+              >
+                图片去重
+              </button>
               <span class="muted"
                 >{{ asin || '缺少 ASIN' }} · JPG / PNG / WebP · 每张最多 8 MB</span
               >
@@ -371,6 +395,18 @@ onBeforeUnmount(() => {
             </button>
           </div>
           <div v-if="candidates.length" class="image-capture-results">
+            <div class="image-import-actions">
+              <button
+                type="button"
+                class="btn small"
+                :disabled="busy"
+                :aria-pressed="allImagesChosen"
+                @click="toggleAllImages"
+              >
+                {{ allImagesChosen ? '取消全选' : '全选图片' }}
+              </button>
+              <span class="muted">已选 {{ chosen.length }} / {{ candidates.length }} 张</span>
+            </div>
             <div class="image-capture-grid">
               <label v-for="(url, i) in candidates" :key="url"
                 ><input

@@ -285,3 +285,40 @@ def test_static_missing_gallery_requests_browser_instead_of_stopping(local,monke
     assert response.json()['status']=='browser_required'
     assert response.json()['asin']==p['variants'][0]['asin']
     assert detail(client)==p
+
+
+def test_gallery_edit_deduplicates_amazon_sizes_and_local_capture(local, monkeypatch):
+    from catalog.source_images import collect_images
+    client, catalog = local
+    before = detail(client)
+    remote = 'https://m.media-amazon.com/images/I/chair._AC_SL1500_.jpg'
+    old = 'https://m.media-amazon.com/images/W/BW_TEST-T4/images/I/chair._AC_SX400_.jpg'
+    separate = 'https://m.media-amazon.com/images/I/chair-back.jpg'
+    monkeypatch.setattr('catalog.listing_vision.fetch_image', lambda url: picture())
+    local_url = collect_images(catalog, before['id'], 'child-0', [remote])['images'][0]
+    # An upgrade reuses cached bytes but still establishes the new asset alias.
+    with catalog.connect() as db:
+        db.execute('DELETE FROM listing_image_evidence WHERE url_hash<>?',
+                   (hashlib.sha256(remote.encode()).hexdigest(),))
+    monkeypatch.setattr('catalog.listing_vision.fetch_image', lambda url: pytest.fail('cached image downloaded again'))
+    assert collect_images(catalog, before['id'], 'child-0', [remote])['images'] == [local_url]
+    response = edit(client, {'field': 'images', 'variant_sku': 'child-0'}, [old, separate, local_url, remote])
+    assert response.status_code == 200, response.text
+    assert response.json()['variants'][0]['images'] == [local_url, separate]
+    assert response.json()['variants'][1] == before['variants'][1]
+    # Another SKU cannot inherit this source-to-local association.
+    response = edit(client, {'field': 'images', 'variant_sku': 'second-child'}, [old, local_url])
+    assert response.json()['variants'][1]['images'] == [old, local_url]
+    # Repeated additions do not grow the gallery and do not change its ordering.
+    response = edit(client, {'field': 'images', 'variant_sku': 'child-0'}, [local_url, separate, old, local_url])
+    assert response.json()['variants'][0]['images'] == [local_url, separate]
+
+
+def test_gallery_dedup_does_not_merge_similar_or_unknown_images(local):
+    client, _ = local
+    images = ['https://example.com/chair.jpg?v=1', 'https://example.com/chair.jpg?v=2',
+              'https://m.media-amazon.com/images/I/black-chair.jpg',
+              'https://m.media-amazon.com/images/I/brown-chair.jpg']
+    result = edit(client, {'field': 'images'}, images)
+    assert result.status_code == 200
+    assert result.json()['images'] == images

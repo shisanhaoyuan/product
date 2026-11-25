@@ -185,3 +185,5 @@ python validation/frontend_state_check.py
 采集表支持150MB的XLSX/CSV/TSV及拖放；上传流写临时文件，CSV流式读取，两个表格解析槽，保留解压、共享文本、10000扫描行及100输入/500子ASIN的批次上限。其他导入接口保留原上限。已有Nginx站点需要将`client_max_body_size`同步为150m并检查重载，Git更新不直接修改线上站点。
 
 新增测试使用隔离库和模拟页面；`validation/amazon_collector_check.py`加载实际扩展，覆盖Excel拖入、子变体识别、报价展开和入库。不得用生产库或真实沃尔玛提交作为验收。
+
+商品图片管理支持采集候选全选／取消全选与已有图片去重。保存图片时按 Amazon 同一素材 ID（尺寸和实验路径归一）及同 listing_id、同 SKU 的下载摘要关联去重，优先保留已选本地图片，保留原分组顺序。不同未知地址不做相似度误删，不跨 SKU 借用下载关联。

@@ -256,6 +256,9 @@ def editing_routes(catalog):
                 try:
                     change = validate_change(raw, data.model_dump(exclude={'expected_revision'}))
                     target, key = value_at(raw, change)
+                    if change['field'] == 'images':
+                        from .source_images import deduplicate_gallery
+                        change['value'] = deduplicate_gallery(db, listing_id, change['variant_sku'], change['value'])
                 except ValueError as exc:
                     raise HTTPException(409, str(exc))
                 identity = lambda c: (c['variant_sku'], c['field'], c['key'])
