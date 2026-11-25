@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "集物 · 商品采集助手",
-  "version": "2.0.3",
+  "version": "2.1.0",
   "description": "集物自有商品库采集插件：ASIN／网址采集、子变体、价格和图片，后台运行并按需设置邮编。",
   "permissions": [
     "storage",
@@ -10,7 +10,8 @@
     "alarms"
   ],
   "host_permissions": [
-    "https://www.amazon.com/*"
+    "https://www.amazon.com/*",
+    "https://www.amazon.ca/*"
   ],
   "optional_host_permissions": [
     "https://*/*",
@@ -26,7 +27,8 @@
   "content_scripts": [
     {
       "matches": [
-        "https://www.amazon.com/*"
+        "https://www.amazon.com/*",
+        "https://www.amazon.ca/*"
       ],
       "js": [
         "location-state.js",

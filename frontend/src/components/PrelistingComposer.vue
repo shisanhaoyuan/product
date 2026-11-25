@@ -32,7 +32,8 @@ const storeOptions = computed(() =>
     .filter(
       (store) =>
         store.active &&
-        (store.marketplace || 'US') === (props.source === 'GigaB2B_CA' ? 'CA' : 'US'),
+        (store.marketplace || 'US') ===
+          (['GigaB2B_CA', 'Amazon_CA'].includes(props.source || '') ? 'CA' : 'US'),
     )
     .map((store) => ({
       value: String(store.id),

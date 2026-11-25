@@ -9,7 +9,7 @@ chrome.runtime.onMessage.addListener((data, sender, reply) => {
   (async () => {
     if (data?.channel !== channel || !sender.tab || sender.frameId !== 0) return {};
     const origin = new URL(sender.url).origin;
-    if (origin !== 'https://www.amazon.com') {
+    if (!['https://www.amazon.com', 'https://www.amazon.ca'].includes(origin)) {
       const permitted = await chrome.permissions.contains({ origins: [origin + '/*'] });
       if (!permitted) throw new Error('请先通过助手连接商品库网站。');
       if (data.action === 'probe') return { ready: true, version: chrome.runtime.getManifest().version,
@@ -31,9 +31,12 @@ chrome.runtime.onMessage.addListener((data, sender, reply) => {
       if (data.action !== 'start' || !/^[A-Z0-9]{10}$/.test(data.asin) ||
           typeof data.requestId !== 'string' || data.requestId.length > 100) throw new Error('无效抓取请求');
       if (old) await finish(key, old, { error: '上一次抓取已被新的请求取消。' });
-      const tab = await chrome.tabs.create({ url: `https://www.amazon.com/dp/${data.asin}?th=1&psc=1`, active: !['source', 'import'].includes(data.mode) || data.foreground === true });
+      if (data.marketplace && !['US','CA'].includes(data.marketplace)) throw new Error('无效采集站点');
+      const marketplace = data.marketplace || 'US';
+      const host = marketplace === 'CA' ? 'www.amazon.ca' : 'www.amazon.com';
+      const tab = await chrome.tabs.create({ url: `https://${host}/dp/${data.asin}?th=1&psc=1`, active: !['source', 'import'].includes(data.mode) || data.foreground === true });
       await chrome.storage.session.set({ [key]: { owner: sender.tab.id, amazon: tab.id,
-        asin: data.asin, revealed: data.foreground === true, mode: ['source', 'import'].includes(data.mode) ? data.mode : 'images',
+        asin: data.asin, marketplace, revealed: data.foreground === true, mode: ['source', 'import'].includes(data.mode) ? data.mode : 'images',
         requestId: data.requestId, expires: Date.now() + 600000 } });
       return { started: true };
     }
@@ -41,8 +44,9 @@ chrome.runtime.onMessage.addListener((data, sender, reply) => {
     const jobs = await chrome.storage.session.get(null);
     for (const [key, job] of Object.entries(jobs)) {
       if (!key.startsWith('capture:') || job.amazon !== sender.tab.id) continue;
+      if (origin !== (job.marketplace === 'CA' ? 'https://www.amazon.ca' : 'https://www.amazon.com')) return {};
       if (job.expires < Date.now()) { await finish(key, job, { error: '验证等待已超时，请重新抓取。' }); break; }
-      if (data.action === 'task') return { asin: job.asin, mode: job.mode };
+      if (data.action === 'task') return { asin: job.asin, mode: job.mode, marketplace: job.marketplace || 'US' };
       if (data.action === 'attention') {
         if (job.mode === 'import') {
           await chrome.tabs.sendMessage(job.owner, { channel, requestId: job.requestId, attention: data.reason || 'verification' }).catch(() => {});

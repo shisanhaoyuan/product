@@ -1,4 +1,5 @@
 """ASIN-bound source observations, stored separately from ERP prices and evidence."""
+from .amazon_markets import market_config, source_market, location_matches, product_url
 import json
 import re
 import uuid
@@ -90,8 +91,10 @@ def unique(values):
     return list(dict.fromkeys(v for v in values if v))
 
 
-def amounts(text):
+def amounts(text, marketplace="US"):
     # Dollar symbols bind the amount; never interpret dates, quantities, or percentages.
+    if marketplace == 'CA':
+        text = re.sub(r'\b(?:CAD|CDN|CA|C)\s*\$', '$', text, flags=re.I)
     return unique(f'{Decimal(m.replace(",", "")):.2f}' for m in
                   re.findall(r'(?<![A-Z])(?:US\s*)?\$\s*([0-9]+(?:,[0-9]{3})*(?:\.[0-9]{2})?)(?![\d.])', text))
 
@@ -106,7 +109,7 @@ def crossed(node, root):
     return False
 
 
-def parse_offer(root, scope):
+def parse_offer(root, scope, marketplace="US"):
     prices, originals = [], []
     for node in list(root.nodes()):
         classes = node.attrs.get('class', '').split()
@@ -118,7 +121,7 @@ def parse_offer(root, scope):
         for n in price_root.nodes():
             if 'a-offscreen' not in n.attrs.get('class', '').split():
                 continue
-            values = amounts(n.text())
+            values = amounts(n.text(), marketplace)
             (originals if crossed(n, root) else prices).extend(values)
         # Some Amazon offers omit the accessible text; use complete, same-node
         # symbol/whole/fraction parts only, never guess a missing decimal part.
@@ -126,7 +129,7 @@ def parse_offer(root, scope):
             if 'a-price' not in n.attrs.get('class', '').split():
                 continue
             children = list(n.nodes())
-            if any(amounts(c.text()) for c in children if 'a-offscreen' in c.attrs.get('class', '').split()):
+            if any(amounts(c.text(), marketplace) for c in children if 'a-offscreen' in c.attrs.get('class', '').split()):
                 continue
             parts = {key: unique(c.text() for c in children if key in c.attrs.get('class', '').split())
                      for key in ('a-price-symbol', 'a-price-whole', 'a-price-fraction')}
@@ -134,12 +137,12 @@ def parse_offer(root, scope):
                 continue
             symbol, whole, fraction = (parts[key][0] for key in parts)
             whole = re.sub(r'\s', '', whole).rstrip('.')
-            if symbol not in {'$', 'US$'} or not re.fullmatch(r'[0-9]+(?:,[0-9]{3})*', whole) or not re.fullmatch(r'[0-9]{2}', fraction):
+            if symbol not in ({'$', 'C$', 'CA$', 'CDN$', 'CAD$'} if marketplace=='CA' else {'$', 'US$'}) or not re.fullmatch(r'[0-9]+(?:,[0-9]{3})*', whole) or not re.fullmatch(r'[0-9]{2}', fraction):
                 continue
-            (originals if crossed(n, root) else prices).extend(amounts(f'{symbol}{whole}.{fraction}'))
+            (originals if crossed(n, root) else prices).extend(amounts(f'{symbol}{whole}.{fraction}', marketplace))
     # Legacy buyboxes expose visible dollar amounts without a-offscreen markup.
     for node in root.ids('price_inside_buybox', 'newBuyBoxPrice', 'priceblock_ourprice', 'priceblock_dealprice'):
-        (originals if crossed(node, root) else prices).extend(amounts(node.text()))
+        (originals if crossed(node, root) else prices).extend(amounts(node.text(), marketplace))
     prices = unique(prices)
     originals = unique(originals)
     price = prices[0] if len(prices) == 1 else None
@@ -181,26 +184,27 @@ def parse_offer(root, scope):
             if re.fullmatch(r'(?:FREE|\$0(?:\.00)?)', fee, re.I):
                 fees.append('0.00')
             else:
-                fees.extend(amounts(fee))
+                fees.extend(amounts(fee, marketplace))
         t = n.text()
         if re.search(r'FREE\s+(?:delivery|shipping)\b', t, re.I) and not re.search(
                 r'orders?\s+(?:over|of|above|\$)|on\s+\$|with Prime|Prime members?|eligible|qualifying|first order|minimum (?:order|purchase)', t, re.I):
             fees.append('0.00')
         for match in re.finditer(r'\$\s*[0-9]+(?:,[0-9]{3})*(?:\.[0-9]{2})?\s+(?:delivery|shipping)\b|(?:delivery|shipping)(?:\s+(?:fee|charge))?\s*:?\s*\$\s*[0-9]+(?:,[0-9]{3})*(?:\.[0-9]{2})?(?![\d.])', t, re.I):
-            fees.extend(amounts(match.group()))
+            fees.extend(amounts(match.group(), marketplace))
     fees = unique(fees)
     conditional = re.search(r'orders?\s+(?:over|of|above|\$)|on\s+\$|with Prime|Prime members?|eligible|qualifying|first order|minimum (?:order|purchase)', delivery, re.I)
     shipping = fees[0] if len(fees) == 1 and not conditional else None
-    if re.search(r'\b(?:CAD|AUD|EUR|GBP|JPY)\b|(?:CA|AU|C|A)\$|[€£¥]', root.text(), re.I):
+    foreign = r'\b(?:USD|AUD|EUR|GBP|JPY)\b|\b(?:US|AU|A)\$|[€£¥]' if marketplace == 'CA' else r'\b(?:CAD|AUD|EUR|GBP|JPY)\b|(?:CA|AU|C|A)\$|[€£¥]'
+    if re.search(foreign, root.text(), re.I):
         price = original = shipping = None
     return dict(seller=sellers[0] if len(sellers) == 1 else None, price=price,
                 original_price=original, basis_price=original or price, shipping=shipping,
                 original_price_state=('verified' if original else 'ambiguous' if originals else 'not_displayed'),
-                delivery=delivery or None, currency='USD' if price or original else None,
+                delivery=delivery or None, currency=market_config(marketplace)['currency'] if price or original else None,
                 offer_scope=scope, price_text=' | '.join(prices), shipping_text=delivery)
 
 
-def amazon_source(html, asin):
+def amazon_source(html, asin, marketplace="US"):
     if needs_verification(html):
         raise HumanVerificationRequired('Amazon 要求人机验证')
     identity = ProductHTML()
@@ -235,7 +239,7 @@ def amazon_source(html, asin):
                        if n.attrs.get('name', '').lower() in ('asin', 'items[0.base][asin]') or n.attrs.get('data-asin')}
                 if ids and ids != {asin}:
                     raise ValueError('报价行 ASIN 不匹配，未保存采集结果')
-                offer = parse_offer(node, f'sellers_on_amazon_list:{i + 1}')
+                offer = parse_offer(node, f'sellers_on_amazon_list:{i + 1}', marketplace)
                 offers.append(offer)
         if len(offers) > 1:
             issues.append('Sellers on Amazon 存在多条普通新品报价，未擅自选择')
@@ -259,7 +263,7 @@ def amazon_source(html, asin):
                    if n.attrs.get('name', '').lower() in ('asin', 'items[0.base][asin]')}
             if ids and ids != {asin}:
                 raise ValueError('主报价 ASIN 不匹配，未保存采集结果')
-        result = parse_offer(roots[0], 'main_offer') if roots else {}
+        result = parse_offer(roots[0], 'main_offer', marketplace) if roots else {}
         if roots and re.search(r'(?:prime|members?)[ -]*(?:exclusive|only|price)|join prime to buy|prime members', roots[0].text(), re.I):
             result = {}
             issues.append('尚未切换到可核验的普通报价')
@@ -269,21 +273,21 @@ def amazon_source(html, asin):
                           if key == 'price' and ' | ' in result.get('price_text', '')
                           else f'{label}未能明确核验')
     location = ' '.join(unique(n.text() for n in doc.ids('glow-ingress-line2', 'contextualIngressPtLabel_deliveryShortLine')))
-    if not re.search(r'\b10001\b', location):
-        issues.append('配送地区未核验为 10001；价格及配送信息仅作为当前网页记录')
+    if not location_matches(location, marketplace):
+        issues.append(f'配送地区未核验为 {market_config(marketplace)["postal_code"]}；价格及配送信息仅作为当前网页记录')
     return dict(status='partial' if issues else 'captured', asin=asin, **result,
                 delivery_location=location or None, issues=issues)
 
 
 
-def collect_quote_page(asin, fetch):
+def collect_quote_page(asin, fetch, marketplace="US"):
     """One HTTP attempt, then at most one configured background browser attempt."""
     from .amazon_browser import configured, fetch_page
     from .amazon_pricing import regular_price_basis
     trigger = 'dynamic_offer'
     try:
-        html=fetch(asin)
-        quote=amazon_source(html,asin)
+        html=fetch(asin) if marketplace == "US" else fetch(asin, marketplace)
+        quote=amazon_source(html,asin,marketplace)
     except HumanVerificationRequired:
         if not configured():
             raise
@@ -291,10 +295,10 @@ def collect_quote_page(asin, fetch):
     else:
         if not configured() or (quote.get('status') != 'browser_required'
                                 and (quote.get('original_price') or (quote.get('price') and regular_price_basis(quote)))
-                                and re.search(r'\b10001\b',quote.get('delivery_location') or '')):
+                                and location_matches(quote.get('delivery_location'),marketplace)):
             return html,quote,'server'
-    html=fetch_page(asin)
-    quote=amazon_source(html,asin)
+    html=fetch_page(asin) if marketplace == "US" else fetch_page(asin,marketplace)
+    quote=amazon_source(html,asin,marketplace)
     if report := getattr(html, 'wraith_test', None):
         quote['wraith_test'] = report | {'trigger': trigger}
     return html,quote,'wraith_background'
@@ -308,7 +312,7 @@ def save_capture(catalog, db, lid, sku, asin, result, actor_id, url, method, *, 
     row = db.execute('SELECT data_json FROM listings WHERE id=?', (lid,)).fetchone()
     product = json.loads(row[0]) if row else {}
     target = product if not sku else next((v for v in product.get('variants', []) if v['sku'] == sku), {})
-    if target.get('asin') != asin or product.get('source', '').casefold() != 'amazon':
+    if target.get('asin') != asin or product.get('source', '').casefold() not in ('amazon','amazon_ca'):
         raise HTTPException(409, '抓取期间商品身份发生变化，结果未保存')
     result['source_digest_before'] = db.execute('SELECT digest FROM current_listings WHERE id=?',(lid,)).fetchone()[0]
     db.execute('INSERT INTO source_captures VALUES(?,?,?,?,?,?,?)',
@@ -331,9 +335,9 @@ def source_routes(catalog):
         v = p if not sku else next((v for v in p['variants'] if v['sku'] == sku), None)
         if v is None:
             raise HTTPException(409, '子 SKU 不属于当前商品')
-        if p['source'].casefold() != 'amazon' or not re.fullmatch('[A-Z0-9]{10}', v['asin']):
+        if p['source'].casefold() not in ('amazon','amazon_ca') or not re.fullmatch('[A-Z0-9]{10}', v['asin']):
             raise HTTPException(422, '当前商品没有明确的 Amazon ASIN')
-        return v
+        return dict(v, _marketplace=source_market(p['source']))
 
     def save(lid, sku, asin, result, request, url, method):
         if result['status'] == 'browser_required' and not (result.get('image_collection') or {}).get('images'):
@@ -342,6 +346,13 @@ def source_routes(catalog):
             write_lock(db)
             user = getattr(request.state, 'user', None)
             return save_capture(catalog, db, lid, sku, asin, result, user['id'] if user else None, url, method)
+
+    @router.get('/{lid}/source-capture/context')
+    def context(lid: str):
+        product=catalog.get(lid)
+        if not product or product['source'] not in ('Amazon','Amazon_CA'):
+            raise HTTPException(404,'亚马逊商品不存在')
+        return market_config(source_market(product['source']))
 
     @router.get('/{lid}/source-capture')
     def current(lid: str, variant_sku: str = ''):
@@ -356,9 +367,10 @@ def source_routes(catalog):
     def capture(lid: str, data: SourceCaptureInput, request: Request):
         v = target(lid, data.variant_sku)
         asin = v['asin']
-        url = f'https://www.amazon.com/dp/{asin}?th=1&psc=1'
+        marketplace=v['_marketplace']
+        url = product_url(asin,marketplace)
         try:
-            html, result, method = collect_quote_page(asin, fetch_amazon_page)
+            html, result, method = collect_quote_page(asin, fetch_amazon_page) if marketplace=="US" else collect_quote_page(asin, fetch_amazon_page, marketplace)
             from .listing_source_evidence import amazon_details
             result['listing_facts'] = amazon_details(html, asin)
         except HumanVerificationRequired as exc:
@@ -383,7 +395,7 @@ def source_routes(catalog):
             p = json.loads(row[0]) if row else {}
             current = p if not data.variant_sku else next(
                 (child for child in p.get('variants', []) if child['sku'] == data.variant_sku), {})
-            if current.get('asin') != v['asin'] or p.get('source', '').casefold() != 'amazon':
+            if current.get('asin') != v['asin'] or p.get('source', '').casefold() not in ('amazon','amazon_ca'):
                 raise HTTPException(409, '商品身份已变化，请刷新后重新采集')
             row = db.execute('''SELECT data_json FROM source_captures
                 WHERE listing_id=? AND variant_sku=? AND asin=? ORDER BY captured_at DESC,id DESC LIMIT 1''',
@@ -402,12 +414,12 @@ def source_routes(catalog):
         v = target(lid, data.variant_sku)
         try:
             url = urlparse(data.source_url)
-            if (url.scheme != 'https' or url.netloc not in {'www.amazon.com', 'www.amazon.com:443'}
+            if (url.scheme != 'https' or url.netloc not in {market_config(v['_marketplace'])['host'], market_config(v['_marketplace'])['host']+':443'}
                     or not re.fullmatch(r'/(?:[^/]+/)?dp/' + re.escape(v['asin']) + r'/?', url.path)):
                 raise ValueError('浏览器页面与当前商品 ASIN 不匹配')
             if not Document(data.html).root.ids('catalog-main-offer', 'ppd', 'desktop_buybox', 'buybox', 'aod-offer-list'):
                 raise ValueError('浏览器未返回报价区域；请更新集物采集插件后重新采集')
-            result = amazon_source(data.html, v['asin'])
+            result = amazon_source(data.html, v['asin'],v['_marketplace'])
             from .listing_source_evidence import amazon_details
             result['listing_facts'] = amazon_details(data.html, v['asin'])
         except ValueError as exc:

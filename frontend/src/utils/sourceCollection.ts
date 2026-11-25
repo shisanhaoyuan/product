@@ -26,13 +26,26 @@ export async function collectSourceInBrowser(
   signal: AbortSignal,
   foreground = false,
 ) {
-  const page = await captureInBrowser(asin, signal, 'source', foreground);
+  const context = await catalogApi.sourceContext(listingId, signal);
+  signal.throwIfAborted();
+  const page = await captureInBrowser(
+    asin,
+    signal,
+    'source',
+    foreground,
+    undefined,
+    context.marketplace,
+  );
   signal.throwIfAborted();
   const result = await catalogApi.browserCaptureSource(listingId, sku, page, signal);
   signal.throwIfAborted();
   if (result.asin !== asin) throw new Error('采集期间 ASIN 已变化，请刷新商品');
-  if (!/\b10001\b/.test(result.delivery_location || ''))
-    throw new Error('配送地区仍未设为 10001，请按安装／更新说明重新加载集物采集插件，再重新采集。');
+  if (
+    !(context.marketplace === 'CA' ? /\bM5V\s*3L9\b/i : /\b10001\b/).test(
+      result.delivery_location || '',
+    )
+  )
+    throw new Error(`配送地区仍未设为 ${context.postal_code}，请重新设置地区后采集。`);
   preferLocalSourceBrowser(true);
   return result;
 }
@@ -63,7 +76,7 @@ export async function collectSource(
     result.asin &&
     (result.wraith_test?.status === 'location_unverified' ||
       result.wraith_test?.location_verified === false ||
-      result.issues?.some((issue) => issue.includes('配送地区') && issue.includes('10001')))
+      result.issues?.some((issue) => issue.includes('配送地区')))
   ) {
     onVerification();
     return collectSourceInBrowser(listingId, sku, result.asin, signal);
@@ -87,7 +100,7 @@ export async function collectMissingPrices(
   const errors: string[] = [];
   const seen = new Set<string>();
   targets: for (const item of preview.items) {
-    if (item.source !== 'Amazon') continue;
+    if (!['Amazon', 'Amazon_CA'].includes(item.source || '')) continue;
     for (const variant of item.variants) {
       if (!variant.capture_required) continue;
       const key = JSON.stringify([item.listing_id, variant.capture_sku, variant.asin]);
@@ -100,7 +113,7 @@ export async function collectMissingPrices(
           item.listing_id,
           variant.capture_sku || undefined,
           signal,
-          () => progress(`${variant.sku} 需要浏览器协助；如已打开 Amazon，请设置配送邮编 10001…`),
+          () => progress(`${variant.sku} 需要浏览器协助；如已打开 Amazon，请设置当前站点配送邮编…`),
           variant.asin,
         );
       } catch (e) {
@@ -129,8 +142,10 @@ export function hasCapturedPrice(
         /^(main_offer|sellers_on_amazon_list:)/.test(record.offer_scope || '') &&
         (record.original_price_state === 'not_displayed' ||
           (!record.original_price_state && record.status === 'captured')))) &&
-    record.currency === 'USD' &&
-    /\b10001\b/.test(record.delivery_location || '')
+    ['USD', 'CAD'].includes(record.currency || '') &&
+    (record.currency === 'CAD' ? /\bM5V\s*3L9\b/i : /\b10001\b/).test(
+      record.delivery_location || '',
+    )
   );
 }
 
@@ -179,7 +194,8 @@ export async function collectProductSources(
         listingId,
         target.sku,
         signal,
-        () => progress(`${label} 等待浏览器协助：请在 Amazon 设置配送邮编 10001，完成后自动继续…`),
+        () =>
+          progress(`${label} 等待浏览器协助：请在 Amazon 设置当前站点配送邮编，完成后自动继续…`),
         target.asin,
       );
       if (result.asin !== target.asin) throw new Error('采集期间 ASIN 已变化，请刷新商品');
@@ -228,14 +244,18 @@ export async function collectListingSources(
             signal,
             () =>
               progress(
-                '等待浏览器设置：请在打开的 Amazon 网页将配送邮编设为 10001，完成后自动继续',
+                '等待浏览器设置：请在打开的 Amazon 网页设置当前站点配送邮编，完成后自动继续',
               ),
             target.asin,
           );
     if (record.asin !== target.asin || !record.capture_id)
       throw new Error('未取得本轮商品采集记录，请刷新后重试');
-    if (!/\b10001\b/.test(record.delivery_location || ''))
-      throw new Error('配送邮编尚未设为 10001，请点击“打开网页设置 10001 并继续”');
+    if (
+      !(record.currency === 'CAD' ? /\bM5V\s*3L9\b/i : /\b10001\b/).test(
+        record.delivery_location || '',
+      )
+    )
+      throw new Error('配送地区尚未核验，请打开网页设置当前站点配送邮编后继续');
     receipts[target.platform_sku] = record.capture_id;
   }
   return receipts;

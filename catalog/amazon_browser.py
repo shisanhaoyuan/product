@@ -37,7 +37,9 @@ def configured():
     return bool(os.environ.get('CATALOG_AMAZON_BROWSER_PYTHON', '').strip())
 
 
-def fetch_page(asin):
+def fetch_page(asin, marketplace="US"):
+    from .amazon_markets import market_config
+    config=market_config(marketplace)
     if not re.fullmatch(r'[A-Z0-9]{10}', asin):
         raise ValueError('缺少有效 ASIN')
     executable = os.environ.get('CATALOG_AMAZON_BROWSER_PYTHON', '').strip()
@@ -62,6 +64,10 @@ def fetch_page(asin):
                 env['CATALOG_AMAZON_BROWSER_PROFILE'] = str(Path(cache).parent / 'profile')
             if profile := os.environ.get('CATALOG_AMAZON_BROWSER_PROFILE'):
                 env['CATALOG_AMAZON_BROWSER_PROFILE'] = profile
+            if marketplace=='CA':
+                env['CATALOG_AMAZON_MARKET']='CA'
+                if env.get('CATALOG_AMAZON_BROWSER_PROFILE'):
+                    env['CATALOG_AMAZON_BROWSER_PROFILE'] += '-ca'
             process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                        env=env, start_new_session=(os.name == 'posix'))
             try:
@@ -88,7 +94,7 @@ def fetch_page(asin):
                 'verification_required': 'Wraith 后台尝试后仍有人机验证，需要人工完成验证或核对原价',
                 'rate_limited': '来源网站限制了服务器访问，后台浏览器未能恢复报价',
                 'identity_mismatch': '后台浏览器返回了其他商品页面，未采用报价',
-                'location_unverified': '后台浏览器未能确认配送地区 10001，未采用报价',
+                'location_unverified': f'后台浏览器未能确认配送地区 {config["postal_code"]}，未采用报价',
                 'failed': '后台浏览器采集失败，未取得可核验的报价',
             }
             raw = result.get('wraith_test') or {}

@@ -98,7 +98,7 @@ def price_clause(direction, postgres):
             COALESCE({field('c.data_json','basis_price')},{field('c.data_json','price')}),
             {field('c.data_json','currency')}
         FROM source_captures c JOIN listings l ON l.id=c.listing_id JOIN products p ON p.id=l.product_id
-        WHERE p.source='Amazon' AND (c.variant_sku='' AND c.asin=p.asin
+        WHERE p.source IN ('Amazon','Amazon_CA') AND (c.variant_sku='' AND c.asin=p.asin
             AND NOT EXISTS (SELECT 1 FROM variants v WHERE v.listing_id=c.listing_id) OR EXISTS (
             SELECT 1 FROM variants v WHERE v.listing_id=c.listing_id AND v.sku=c.variant_sku AND v.asin=c.asin))
     ), paired AS (
@@ -125,7 +125,7 @@ def price_clause(direction, postgres):
         WHERE p.source IN ('GigaB2B','GigaB2B_CA','Saleyee') OR NOT EXISTS (SELECT 1 FROM variants v WHERE v.listing_id=l.id)
         UNION ALL
         SELECT v.listing_id,v.sku || ':' || v.asin FROM variants v
-        JOIN listings l ON l.id=v.listing_id JOIN products p ON p.id=l.product_id WHERE p.source='Amazon'
+        JOIN listings l ON l.id=v.listing_id JOIN products p ON p.id=l.product_id WHERE p.source IN ('Amazon','Amazon_CA')
     ), complete_deltas AS (
         SELECT e.listing_id,d.delta FROM expected e LEFT JOIN deltas d
             ON d.listing_id=e.listing_id AND d.target=e.target

@@ -1,4 +1,5 @@
 """Amazon prelisting uses the captured reference price or verified ordinary offer."""
+from .amazon_markets import source_market, market_config, location_matches
 import json
 import re
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -6,7 +7,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 def regular_price_basis(facts):
     """No reference price shown: use the verified ordinary offer, never a guess."""
-    return (facts.get('original_price') in (None, '') and facts.get('currency') == 'USD'
+    return (facts.get('original_price') in (None, '') and facts.get('currency') in ('USD','CAD')
             and not facts.get('offer_ambiguous')
             and (facts.get('original_price_state') == 'not_displayed'
                  or (not facts.get('original_price_state') and facts.get('status') == 'captured'))
@@ -15,6 +16,8 @@ def regular_price_basis(facts):
 
 def price_plan(db, listing_id, product, variant, multiplier):
     from .prelisting import money
+    market=source_market(product['source'])
+    config=market_config(market)
     asin = variant.get('asin')
     child = bool(product.get('variants'))
     sku = variant['sku'] if child else ''
@@ -35,9 +38,9 @@ def price_plan(db, listing_id, product, variant, multiplier):
         facts = json.loads(capture[0]) if capture else variant.get('source_facts') or {}
         if facts.get('asin') and facts['asin'] != asin:
             raise ValueError('来源 ASIN 与当前商品不一致，请重新采集')
-        if capture and not re.search(r'\b10001\b', facts.get('delivery_location') or ''):
-            raise ValueError('来源配送地区尚未核验为 10001，请重新采集')
-        if facts.get('currency') not in (None, '', 'USD') or facts.get('offer_ambiguous'):
+        if capture and not location_matches(facts.get('delivery_location'),market):
+            raise ValueError(f'来源配送地区尚未核验为 {config["postal_code"]}，请重新采集')
+        if facts.get('currency') not in (None, '', config['currency']) or facts.get('offer_ambiguous'):
             raise ValueError('来源报价币种或报价归属异常，请重新采集')
         try:
             result['source_price'] = f"{money(facts.get('price')):.2f}"

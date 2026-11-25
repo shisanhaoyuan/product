@@ -18,6 +18,7 @@ import { claimAutomaticCollection } from '../utils/automaticCollection';
 const props = withDefaults(
   defineProps<{
     listingId: string;
+    source?: string;
     asin: string;
     sku?: string;
     variants?: { sku: string; asin: string }[];
@@ -38,16 +39,28 @@ let controller: AbortController | undefined;
 const disabled = computed(
   () => busy.value || loading.value || !!editing?.busy.value || !!editing?.active.value,
 );
+const currency = computed(
+  () => record.value?.currency || (props.source === 'Amazon_CA' ? 'CAD' : 'USD'),
+);
+const postal = computed(() => (props.source === 'Amazon_CA' ? 'M5V 3L9' : '10001'));
 const facts = computed(() => [
   ...(record.value?.wraith_test ? [['验证测试', record.value.wraith_test.message]] : []),
   ...(record.value?.method === 'wraith_background' ? [['采集方式', 'Wraith 后台浏览器']] : []),
   ['来源卖家', record.value?.seller || '未核验'],
-  ['来源售价 · USD', record.value?.price ? money(record.value.price) : '未核验'],
-  ['运费 · USD', record.value?.shipping != null ? money(record.value.shipping) : '未核验'],
+  [
+    `来源售价 · ${currency.value}`,
+    record.value?.price ? money(record.value.price, currency.value) : '未核验',
+  ],
+  [
+    `运费 · ${currency.value}`,
+    record.value?.shipping != null ? money(record.value.shipping, currency.value) : '未核验',
+  ],
   ['配送时间', record.value?.delivery || '未核验'],
-  ...(record.value?.original_price ? [['计价原价 · USD', money(record.value.original_price)]] : []),
+  ...(record.value?.original_price
+    ? [[`计价原价 · ${currency.value}`, money(record.value.original_price, currency.value)]]
+    : []),
   ...(!record.value?.original_price && hasCapturedPrice(record.value, props.asin)
-    ? [['计价基数 · 无划线原价', money(record.value!.price)]]
+    ? [['计价基数 · 无划线原价', money(record.value!.price, currency.value)]]
     : []),
   ...(record.value?.delivery_location ? [['配送地区', record.value.delivery_location]] : []),
 ]);
@@ -98,7 +111,7 @@ async function capture(reuse = false, missingOnly = false, manual = false) {
   progress.value = '';
   try {
     if (manual) {
-      progress.value = '请在打开的 Amazon 页面设置配送邮编 10001，完成后自动采集报价与图片…';
+      progress.value = `请在打开的 Amazon 页面设置配送邮编 ${postal.value}，完成后自动采集报价与图片…`;
       record.value = await collectSourceInBrowser(
         props.listingId,
         props.sku,
@@ -182,7 +195,7 @@ onBeforeUnmount(() => controller?.abort());
       <CollectorPluginLinks />
     </div>
     <p v-if="editing?.enabled.value" class="muted">
-      商品库、图片补采、数据接入和预上架共用同一个集物采集插件。地区不是 10001
+      商品库、图片补采、数据接入和预上架共用同一个集物采集插件。地区不是 {{ postal }}
       时会暂停等待设置；请使用同一 Chrome / Edge 普通窗口。 默认在当前员工电脑的浏览器中采集，地区与
       Cookie 保存在本机；清除 Cookie 后可能需要重新设置。
     </p>

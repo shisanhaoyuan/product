@@ -89,7 +89,15 @@ async function capture() {
         result.status === 'browser_required'
           ? '静态页面未返回图库，正在通过浏览器读取当前商品图片。'
           : '等待人工验证，完成后继续抓取。';
-      const page = await captureInBrowser(result.asin, controller.signal);
+      const context = await catalogApi.sourceContext(editing.listingId.value, controller.signal);
+      const page = await captureInBrowser(
+        result.asin,
+        controller.signal,
+        'images',
+        false,
+        undefined,
+        context.marketplace,
+      );
       if (controller.signal.aborted) return;
       result = await catalogApi.browserCaptureImages(editing.listingId.value, props.sku, page);
       if (controller.signal.aborted) return;

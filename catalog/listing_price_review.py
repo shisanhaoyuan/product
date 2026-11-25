@@ -9,7 +9,7 @@ MISSING = '缺少来源采集原价，请采集卖家与报价后重新计算'
 
 
 def eligible(item, variant):
-    return item.get('source') == 'Amazon' and variant.get('price') is None and variant.get('error') == MISSING
+    return item.get('source') in ('Amazon', 'Amazon_CA') and variant.get('price') is None and variant.get('error') == MISSING
 
 
 def review_key(basis, item, variant, row):

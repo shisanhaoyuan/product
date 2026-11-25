@@ -9,7 +9,7 @@ import AttributeValue from './AttributeValue.vue';
 import VariantImages from './VariantImages.vue';
 import SourceCapturePanel from './SourceCapturePanel.vue';
 import { useProductEditing } from '../composables/useProductEditing';
-const props = defineProps<{ variants: Variant[] }>();
+const props = defineProps<{ variants: Variant[]; source?: string }>();
 const emit = defineEmits<{ prelist: [skus: string[]] }>();
 const selectedSku = ref('');
 const editing = useProductEditing();
@@ -80,7 +80,7 @@ defineExpose({ selectVariant });
           <th>图片</th>
           <th>平台 SKU / ASIN</th>
           <th>属性</th>
-          <th>售价 USD</th>
+          <th>售价 {{ source === 'Amazon_CA' ? 'CAD' : 'USD' }}</th>
           <th>库存</th>
           <th>商品编码类型 / 编码</th>
           <th>Swatch Variant Attribute</th>
@@ -137,7 +137,9 @@ defineExpose({ selectVariant });
               :target="{ field: 'price', variant_sku: variant.sku }"
               :label="variant.sku + '售价'"
               kind="money"
-              ><span class="price">{{ money(variant.price) }}</span></InlineEdit
+              ><span class="price">{{
+                money(variant.price, source === 'Amazon_CA' ? 'CAD' : 'USD')
+              }}</span></InlineEdit
             ><span
               v-if="variant.price_check.status"
               class="check-state"
@@ -312,6 +314,7 @@ defineExpose({ selectVariant });
       </div>
       <CopyContent :copy="selected.copy" :variant-sku="selected.sku" />
       <SourceCapturePanel
+        :source="source"
         v-if="editing?.listingId.value"
         :listing-id="editing.listingId.value"
         :asin="selected.asin"

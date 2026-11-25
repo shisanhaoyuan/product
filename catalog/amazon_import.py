@@ -12,6 +12,8 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
+from typing import Literal
+from .amazon_markets import market_config, product_url, location_matches
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -39,7 +41,8 @@ def initialize(db):
     db.execute('INSERT INTO migrations VALUES(26) ON CONFLICT DO NOTHING')
 
 
-def parse_inputs(text):
+def parse_inputs(text, marketplace="US"):
+    config=market_config(marketplace)
     result=[]
     for word in re.split(r'[\s,，;；]+',text.strip()):
         if not word:continue
@@ -47,13 +50,13 @@ def parse_inputs(text):
         if not re.fullmatch('[A-Z0-9]{10}',asin):
             try:
                 u=urlsplit(word)
-                if u.scheme!='https' or u.netloc not in ('www.amazon.com','amazon.com') or u.username or u.password:
+                if u.scheme!='https' or u.netloc not in (config['host'],config['host'].removeprefix('www.')) or u.username or u.password:
                     raise ValueError()
                 match=re.fullmatch(r'/(?:[^/]+/)?dp/([A-Za-z0-9]{10})(?:/ref=[^/]*)?/?|/gp/product/([A-Za-z0-9]{10})(?:/ref=[^/]*)?/?',u.path)
                 if not match:raise ValueError()
                 asin=(match[1] or match[2]).upper()
             except ValueError:
-                raise HTTPException(422,'请输入 10 位 ASIN 或完整的 amazon.com 商品链接；当前采集美国站') from None
+                raise HTTPException(422,f'请输入 10 位 ASIN 或完整的 {config["host"]} 商品链接；当前采集 {marketplace} 站') from None
         if asin not in result:result.append(asin)
     if not 1<=len(result)<=100:
         raise HTTPException(422,'每批请输入 1–100 个不同的 ASIN 或商品网址')
@@ -74,7 +77,7 @@ def public_job(db,jid,uid):
     job=owned(db,jid,uid)
     rows=[{k:r[k] for k in ('root_asin','asin','state','message')} for r in db.execute(
         'SELECT * FROM amazon_import_items WHERE job_id=? ORDER BY root_asin,asin',(jid,))]
-    return {**{k:job[k] for k in ('id','created_at','state')},'items':rows,'result':{k:v for k,v in json.loads(job['result_json']).items() if not k.startswith('_')}}
+    return {**{k:job[k] for k in ('id','created_at','state')},'marketplace':json.loads(job['result_json']).get('_marketplace','US'),'items':rows,'result':{k:v for k,v in json.loads(job['result_json']).items() if not k.startswith('_')}}
 
 
 def active_actor(db,uid):
@@ -96,16 +99,17 @@ def target(db,jid,uid,root,asin,token):
     return job,dict(row)
 
 
-def verified_page(catalog,root,asin,html,url,method):
-    if urlsplit(url).scheme!='https' or urlsplit(url).netloc!='www.amazon.com' or not re.fullmatch(
+def verified_page(catalog,root,asin,html,url,method,marketplace="US"):
+    config=market_config(marketplace)
+    if urlsplit(url).scheme!='https' or urlsplit(url).netloc!=config['host'] or not re.fullmatch(
             r'/(?:[^/]+/)?dp/'+asin+r'/?',urlsplit(url).path):
         raise HTTPException(422,'返回页面与任务 ASIN 不一致')
     try:
         facts=amazon_details(html,asin)
         if not facts['content.copy']['title'].strip():raise ValueError('未取得当前商品标题，不能入库')
-        quote=amazon_source(html,asin)
-        if not re.search(r'\b10001\b',quote.get('delivery_location') or ''):
-            raise ValueError('请在浏览器设置配送邮编 10001 后重新采集')
+        quote=amazon_source(html,asin,marketplace)
+        if not location_matches(quote.get('delivery_location'), marketplace):
+            raise ValueError(f'请在浏览器设置配送邮编 {config["postal_code"]} 后重新采集')
         if quote['status']=='browser_required':raise ValueError('请等待普通新品报价列表加载后重新采集')
     except ValueError as exc:raise HTTPException(422,str(exc)) from None
     doc=Document(html).root
@@ -129,7 +133,7 @@ def verified_page(catalog,root,asin,html,url,method):
     availability=' '.join(n.text() for n in doc.ids('availability'))
     stock='0' if re.search(r'currently unavailable|out of stock',availability,re.I) else None
     from .source_images import collect_amazon_images
-    lid=hashlib.sha256(f'{NAMESPACE}:{root}'.encode()).hexdigest()[:24]
+    lid=hashlib.sha256(f'{config["namespace"]}:{root}'.encode()).hexdigest()[:24]
     collection=collect_amazon_images(catalog,lid,asin,asin,html)
     try:urls=amazon_images(html,asin)
     except ValueError:urls=[]
@@ -193,7 +197,7 @@ def run_fallback(catalog):
     with catalog.connect() as db:
         write_lock(db)
         if db.execute("SELECT 1 FROM amazon_import_items WHERE state='fallback_running' AND lease_until>? LIMIT 1",(int(time.time()),)).fetchone():return False
-        row=db.execute('''SELECT i.*,j.actor_id FROM amazon_import_items i JOIN amazon_import_jobs j ON j.id=i.job_id
+        row=db.execute('''SELECT i.*,j.actor_id,j.result_json FROM amazon_import_items i JOIN amazon_import_jobs j ON j.id=i.job_id
             WHERE i.state='fallback_queued' AND j.state='collecting' AND i.lease_until>? ORDER BY j.created_at,i.asin LIMIT 1''',(int(time.time()),)).fetchone()
         if not row:return False
         row=dict(row)
@@ -204,10 +208,11 @@ def run_fallback(catalog):
         db.execute("UPDATE amazon_import_items SET state='fallback_running',lease_until=?,message=? WHERE job_id=? AND root_asin=? AND asin=?",
             (int(time.time())+900,'服务器 Wraith 处理中（最多 3 次验证尝试）',row['job_id'],row['root_asin'],row['asin']))
     try:
-        html=fetch_page(row['asin'])
+        marketplace=json.loads(row['result_json']).get('_marketplace','US')
+        html=fetch_page(row['asin']) if marketplace=='US' else fetch_page(row['asin'],marketplace)
         with catalog.connect() as db:
             target(db,row['job_id'],row['actor_id'],row['root_asin'],row['asin'],row['token'])
-        data=verified_page(catalog,row['root_asin'],row['asin'],html,f'https://www.amazon.com/dp/{row["asin"]}', 'wraith_background')
+        data=verified_page(catalog,row['root_asin'],row['asin'],html,product_url(row['asin'],marketplace), 'wraith_background',marketplace)
         save_page(catalog,row['job_id'],row['actor_id'],row['root_asin'],row['asin'],row['token'],data)
     except Exception as exc:
         message=exc.detail if isinstance(exc,HTTPException) else str(exc) if isinstance(exc,ValueError) else '服务器 Wraith 采集失败'
@@ -228,12 +233,14 @@ async def fallback_worker(catalog):
 
 
 class NewJob(BaseModel):
+    marketplace: Literal["US", "CA"]="US"
     text: str=Field(min_length=1,max_length=24000)
     include_variants: bool=True
     request_id: str=Field(pattern=r'^[a-f0-9-]{32,36}$')
 
 
 class Task(BaseModel):
+    marketplace: Literal["US", "CA"]="US"
     model_config=ConfigDict(extra='forbid')
     root_asin: str=Field(pattern=r'^[A-Z0-9]{10}$')
     asin: str=Field(pattern=r'^[A-Z0-9]{10}$')
@@ -261,7 +268,7 @@ def routes(catalog):
         return dict(jobs=jobs,wraith_configured=configured())
 
     @router.post('/spreadsheet')
-    async def spreadsheet(request:Request, filename:str='links.xlsx'):
+    async def spreadsheet(request:Request, filename:str='links.xlsx', marketplace:Literal['US','CA']='US'):
         from .amazon_import_sheet import parse_sheet, MAX_FILE
         from .concurrency import background_call
         # Stream to disk: a 150 MB workbook must not become two full body copies.
@@ -272,27 +279,32 @@ def routes(catalog):
                 if size>MAX_FILE:raise HTTPException(413,'采集表最大 150 MB')
                 await background_call(upload.write,chunk)
             upload.seek(0)
-            return await background_call(parse_sheet,upload,filename)
+            return await background_call(parse_sheet,upload,filename,marketplace)
 
     @router.post('/jobs')
     def create(data:NewJob,request:Request):
-        asins=parse_inputs(data.text);uid=actor(request);jid=data.request_id
-        signature=hashlib.sha256(json.dumps([asins,data.include_variants]).encode()).hexdigest()
+        config=market_config(data.marketplace)
+        asins=parse_inputs(data.text,data.marketplace);uid=actor(request);jid=data.request_id
+        signature=hashlib.sha256(json.dumps([asins,data.include_variants,data.marketplace]).encode()).hexdigest()
         with catalog.connect() as db:
             write_lock(db)
             if db.execute('SELECT 1 FROM amazon_import_jobs WHERE id=?',(jid,)).fetchone():
                 job=owned(db,jid,uid)
-                if json.loads(job['result_json']).get('_request_digest')!=signature:
+                previous=json.loads(job['result_json'])
+                legacy=hashlib.sha256(json.dumps([asins,data.include_variants]).encode()).hexdigest()
+                legacy_match=(data.marketplace=='US' and '_marketplace' not in previous
+                              and previous.get('_request_digest')==legacy)
+                if previous.get('_request_digest')!=signature and not legacy_match:
                     raise HTTPException(409,'该请求已创建任务且输入不同，请刷新任务列表核对')
                 return public_job(db,jid,uid)
             if db.execute("SELECT COUNT(*) FROM amazon_import_jobs WHERE actor_id=? AND state IN ('collecting','paused')",(uid,)).fetchone()[0]>=5:
                 raise HTTPException(429,'每人最多保留 5 个未完成采集任务，请先完成或结束旧任务')
             db.execute('INSERT INTO amazon_import_jobs VALUES(?,?,?,?,?,?)',
-                (jid,uid,datetime.now(timezone.utc).isoformat(),int(data.include_variants),'collecting',json.dumps({'_request_digest':signature})))
+                (jid,uid,datetime.now(timezone.utc).isoformat(),int(data.include_variants),'collecting',json.dumps({'_request_digest':signature,'_marketplace':data.marketplace})))
             # Re-entering a known child refreshes the same product family.
             roots=[]
             for asin in asins:
-                matches=db.execute('SELECT DISTINCT l.external_id FROM listings l JOIN variants v ON v.listing_id=l.id WHERE l.namespace=? AND v.asin=?',(NAMESPACE,asin)).fetchall()
+                matches=db.execute('SELECT DISTINCT l.external_id FROM listings l JOIN variants v ON v.listing_id=l.id WHERE l.namespace=? AND v.asin=?',(config['namespace'],asin)).fetchall()
                 if len(matches)>1:raise HTTPException(409,'该 ASIN 已关联多个采集商品，请先核对商品档案：'+asin)
                 root=matches[0][0] if matches else asin
                 if root not in roots:roots.append(root)
@@ -319,16 +331,16 @@ def routes(catalog):
             if row:
                 token=uuid.uuid4().hex
                 db.execute("UPDATE amazon_import_items SET state='running',token=?,lease_until=?,message='员工浏览器采集中' WHERE job_id=? AND root_asin=? AND asin=?",(token,now+900,jid,row['root_asin'],row['asin']))
-                task=dict(root_asin=row['root_asin'],asin=row['asin'],token=token)
+                task=dict(root_asin=row['root_asin'],asin=row['asin'],token=token,marketplace=json.loads(job['result_json']).get('_marketplace','US'))
             return dict(task=task,job=public_job(db,jid,uid))
 
     @router.post('/jobs/{jid}/page')
     def page(jid:str,data:Page,request:Request):
         uid=actor(request)
         with catalog.connect() as db:
-            _,row=target(db,jid,uid,data.root_asin,data.asin,data.token)
+            job,row=target(db,jid,uid,data.root_asin,data.asin,data.token)
             if row['state']=='done':return public_job(db,jid,uid)
-        parsed=verified_page(catalog,data.root_asin,data.asin,data.html,data.source_url,'browser')
+        parsed=verified_page(catalog,data.root_asin,data.asin,data.html,data.source_url,'browser',json.loads(job['result_json']).get('_marketplace','US'))
         return save_page(catalog,jid,uid,data.root_asin,data.asin,data.token,parsed)
 
     @router.post('/jobs/{jid}/fallback')
@@ -381,6 +393,8 @@ def routes(catalog):
 def finalize(catalog,jid,uid):
     with catalog.connect() as db:
         write_lock(db);active_actor(db,uid);job=owned(db,jid,uid)
+        marketplace=json.loads(job['result_json']).get('_marketplace','US')
+        config=market_config(marketplace)
         if job['state']=='complete':return public_job(db,jid,uid)
         if job['state']=='cancelled':raise HTTPException(409,'该任务已取消，不能将本批结果入库')
         rows=[dict(r) for r in db.execute('SELECT * FROM amazon_import_items WHERE job_id=?',(jid,))]
@@ -391,7 +405,7 @@ def finalize(catalog,jid,uid):
             group=[r for r in rows if r['root_asin']==root]
             main=next(r for r in group if r['asin']==root)
             if main['state']!='done':failures.append(root);continue
-            main_data=json.loads(main['data_json']);lid=hashlib.sha256(f'{NAMESPACE}:{root}'.encode()).hexdigest()[:24]
+            main_data=json.loads(main['data_json']);lid=hashlib.sha256(f'{config["namespace"]}:{root}'.encode()).hexdigest()[:24]
             old=db.execute('SELECT data_json FROM listings WHERE id=?',(lid,)).fetchone()
             old_data=json.loads(old[0]) if old else {}
             variants={v['sku']:v for v in old_data.get('variants',[])}
@@ -414,8 +428,8 @@ def finalize(catalog,jid,uid):
                 variants[variant.sku]=variant.model_dump()
                 captures.append((lid,variant.sku,value))
             incomplete=[r['asin'] for r in group if r['state']!='done']
-            listing=Listing(external_id=root,asin=root,sku=root,source='Amazon',source_url=main_data['source_url'],
-                store='Amazon US 直接采集',template='自有插件采集',observed_at=max(v['observed_at'] for v in completed),
+            listing=Listing(external_id=root,asin=root,sku=root,source=config['source'],source_url=main_data['source_url'],
+                store=f'Amazon {marketplace} 直接采集',template='自有插件采集',observed_at=max(v['observed_at'] for v in completed),
                 evidence_kind='source_only',copy=main_data['copy'],fields=main_data['attributes'],images=main_data['images'],
                 price=main_data['price'],stock=main_data['stock'],seller=main_data['seller'],
                 variants=list(variants.values()),source_facts={**{k:main_data['quote'].get(k) for k in ('price','original_price','basis_price','shipping','currency')},'collector':{'job_id':jid,'root_asin':root,'incomplete_asins':incomplete,'variant_evidence':main_data.get('variant_evidence',{})}},
@@ -423,12 +437,13 @@ def finalize(catalog,jid,uid):
             listings.append(listing)
         result={'created':0,'updated':0,'unchanged':0}
         if listings:
-            result=catalog.ingest(ImportBundle(namespace=NAMESPACE,label='Amazon 自有插件采集',listings=listings),uid or None,connection=db)
+            result=catalog.ingest(ImportBundle(namespace=config['namespace'],label=f'Amazon {marketplace} 自有插件采集',listings=listings),uid or None,connection=db)
             for lid,sku,value in captures:
                 save_capture(catalog,db,lid,sku,value['asin'],value['quote']|{'listing_facts':{'content.copy':value['copy'],'content.attributes':value['attributes']},
                     'image_collection':value['image_collection'],'wraith_test':value['wraith_test']},uid or None,value['source_url'],value['method'],observed_at=value['observed_at'],sync_to_catalog=False)
+        result['_marketplace']=marketplace
         result['_request_digest']=json.loads(job['result_json']).get('_request_digest')
-        result.update(listing_ids=[hashlib.sha256(f'{NAMESPACE}:{l.external_id}'.encode()).hexdigest()[:24] for l in listings],failed_roots=failures,stale_roots=stale,
+        result.update(listing_ids=[hashlib.sha256(f'{config["namespace"]}:{l.external_id}'.encode()).hexdigest()[:24] for l in listings],failed_roots=failures,stale_roots=stale,
                       incomplete=sum(r['state']!='done' for r in rows))
         db.execute("UPDATE amazon_import_jobs SET state='complete',result_json=? WHERE id=?",(json.dumps(result),jid))
         return public_job(db,jid,uid)

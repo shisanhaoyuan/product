@@ -45,7 +45,9 @@ function money(value: string | number | null | undefined) {
       <StatusBadge :type="item.status === 'ready' ? 'good' : 'warn'">{{
         item.status === 'ready' ? '预检查通过' : '待复核'
       }}</StatusBadge
-      ><strong>{{ item.source === 'Amazon' ? item.asin || '缺少 ASIN' : item.sku }}</strong
+      ><strong>{{
+        ['Amazon', 'Amazon_CA'].includes(item.source || '') ? item.asin || '缺少 ASIN' : item.sku
+      }}</strong
       ><span
         >{{ isSupplier(item.source) ? sourceInfo(item.source).label + ' · ' : ''
         }}{{ item.title }}</span
@@ -84,7 +86,7 @@ function money(value: string | number | null | undefined) {
                 {{
                   isSupplier(item.source)
                     ? '来源商品单价'
-                    : item.source === 'Amazon'
+                    : ['Amazon', 'Amazon_CA'].includes(item.source || '')
                       ? '本次来源售价'
                       : '当前售价'
                 }}
@@ -107,7 +109,11 @@ function money(value: string | number | null | undefined) {
           <tbody>
             <tr v-for="v in item.variants" :key="v.sku">
               <td>
-                {{ item.source === 'Amazon' ? v.asin || '缺少 ASIN' : v.sku }}
+                {{
+                  ['Amazon', 'Amazon_CA'].includes(item.source || '')
+                    ? v.asin || '缺少 ASIN'
+                    : v.sku
+                }}
               </td>
               <td class="platform-sku">
                 <strong v-if="v.platform_sku">{{ v.platform_sku }}</strong>
@@ -133,7 +139,7 @@ function money(value: string | number | null | undefined) {
                   money(
                     isSupplier(item.source)
                       ? v.unit_price
-                      : item.source === 'Amazon'
+                      : ['Amazon', 'Amazon_CA'].includes(item.source || '')
                         ? v.source_price
                         : v.current_price,
                   )

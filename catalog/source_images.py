@@ -1,4 +1,5 @@
 """Download verified SKU galleries before generation; reuse content-addressed assets."""
+from .amazon_markets import source_market
 import hashlib
 import re
 import time
@@ -158,7 +159,7 @@ def recover_imported_images(catalog, item, variant, urls, collection):
     from .listing_vision import IMPORTED_IMAGE_HOSTS
     from .images import HumanVerificationRequired, fetch_amazon_page
     from .source_capture import collect_quote_page
-    if item.get('source') != 'Amazon' or collection.get('recovery') or not collection.get('failures'):
+    if item.get('source') not in ('Amazon', 'Amazon_CA') or collection.get('recovery') or not collection.get('failures'):
         return collection
     asin = variant.get('asin', '')
     if not re.fullmatch(r'[A-Z0-9]{10}', asin):
@@ -176,7 +177,8 @@ def recover_imported_images(catalog, item, variant, urls, collection):
     if not any(imported(u) for u in failed_urls):
         return collection
     try:
-        html, _, _ = collect_quote_page(asin, fetch_amazon_page)
+        market=source_market(item['source'])
+        html, _, _ = collect_quote_page(asin, fetch_amazon_page) if market=='US' else collect_quote_page(asin, fetch_amazon_page,market)
         recovered = collect_amazon_images(catalog, item['listing_id'], variant['sku'], asin, html)
         images = list(dict.fromkeys(collection['images'] + recovered['images']))
         return collection | dict(

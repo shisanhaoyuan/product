@@ -1,4 +1,5 @@
 """Ordered source collection and deterministic pricing before AI touches listing text."""
+from .amazon_markets import source_market, product_url
 import copy
 import json
 import time
@@ -21,7 +22,7 @@ def positive(value):
 def refresh_amazon(catalog, db, doc, actor_id=None, job_id=None, refreshed_sku=None):
     from .walmart_publishing import batch, document, fresh_basis, latest_results, EDITABLE
     old=json.loads(doc['basis_json'])
-    if not any(i.get('source')=='Amazon' for i in old['items']):
+    if not any(i.get('source') in ('Amazon', 'Amazon_CA') for i in old['items']):
         return doc
     current=fresh_basis(catalog,db,batch(db,doc['batch_id']))
     fresh={i['listing_id']:i for i in current['items']}
@@ -29,7 +30,7 @@ def refresh_amazon(catalog, db, doc, actor_id=None, job_id=None, refreshed_sku=N
     rows=json.loads(doc['rows_json']);statuses=latest_results(db,doc['batch_id'])
     changes=[]
     for n,item in enumerate(old['items']):
-        if item.get('source')!='Amazon':
+        if item.get('source') not in ('Amazon', 'Amazon_CA'):
             continue
         revised=fresh[item['listing_id']]
         old_variants={v['platform_sku']:v for v in item['variants']}
@@ -71,14 +72,15 @@ def collect_before_generation(catalog, job, report, progress, checked_context):
     with catalog.connect() as db:
         stored,_=checked_context(db,job)
         basis=json.loads(stored['basis_json']);statuses=latest_results(db,job['batch_id'])
-    targets=[(i,v) for i in basis['items'] if i.get('source')=='Amazon' for v in i['variants']
+    targets=[(i,v) for i in basis['items'] if i.get('source') in ('Amazon', 'Amazon_CA') for v in i['variants']
              if statuses.get(v['platform_sku'],{}).get('status','unsubmitted') in EDITABLE]
     for index,(item,variant) in enumerate(targets):
         sku=variant['platform_sku'];asin=variant['asin']
         progress(sku,'collecting',f'后台采集报价 {index+1}/{len(targets)}：{variant["sku"]}')
         captured=None;method='generation_background'
         try:
-            html,quote,method=collect_quote_page(asin,fetch_amazon_page)
+            market=source_market(item['source'])
+            html,quote,method=collect_quote_page(asin,fetch_amazon_page) if market=='US' else collect_quote_page(asin,fetch_amazon_page,market)
             from .listing_source_evidence import amazon_details
             facts=amazon_details(html,asin)
             progress(sku,'collecting',f'正在采集 {variant["sku"]} 的商品图片')
@@ -104,7 +106,7 @@ def collect_before_generation(catalog, job, report, progress, checked_context):
             write_lock(db);stored,_=checked_context(db,job)
             if captured is not None and (captured.get('status') in ('captured','partial','verification_required','browser_required') or (captured.get('image_collection') or {}).get('images')):
                 save_capture(catalog,db,item['listing_id'],variant.get('capture_sku') or None,asin,captured,
-                             job.get('actor_id'),f'https://www.amazon.com/dp/{asin}?th=1&psc=1','wraith_background' if method=='wraith_background' else 'generation_background')
+                             job.get('actor_id'),product_url(asin,market),'wraith_background' if method=='wraith_background' else 'generation_background')
                 stored=refresh_amazon(catalog,db,stored,job.get('actor_id'),job['id'],sku)
                 job['revision']=stored['revision']
             if outcome.get('image_collection'):

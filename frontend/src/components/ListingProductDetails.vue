@@ -148,9 +148,17 @@ onBeforeUnmount(() => {
           </div>
           <template v-else-if="product && sourceRecord">
             <dl class="product-info-facts">
-              <dt>{{ product.source === 'Amazon' ? 'ASIN' : '供应商商品编号' }}</dt>
+              <dt>
+                {{
+                  ['Amazon', 'Amazon_CA'].includes(product.source || '') ? 'ASIN' : '供应商商品编号'
+                }}
+              </dt>
               <dd>
-                {{ product.source === 'Amazon' ? sourceRecord.asin || '—' : sourceRecord.sku }}
+                {{
+                  ['Amazon', 'Amazon_CA'].includes(product.source || '')
+                    ? sourceRecord.asin || '—'
+                    : sourceRecord.sku
+                }}
               </dd>
               <dt>来源 / 卖家</dt>
               <dd>{{ product.source }} / {{ sourceRecord.seller || '未采集' }}</dd>

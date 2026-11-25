@@ -9,6 +9,11 @@ from pathlib import Path
 from urllib.parse import urlparse, urljoin
 
 
+MARKET = os.environ.get('CATALOG_AMAZON_MARKET', 'US')
+HOST = 'www.amazon.ca' if MARKET == 'CA' else 'www.amazon.com'
+POSTAL = 'M5V 3L9' if MARKET == 'CA' else '10001'
+
+
 class CaptureStopped(Exception):
     pass
 
@@ -16,7 +21,7 @@ class CaptureStopped(Exception):
 def continue_gate(page):
     """Only a visible Amazon interstitial, never login/cart/product-page controls."""
     url = urlparse(page.url)
-    if (url.scheme != 'https' or url.hostname != 'www.amazon.com'
+    if (url.scheme != 'https' or url.hostname != HOST
             or re.search(r'^/(?:ap/|gp/(?:cart|buy)/|checkout)', url.path)
             or not hasattr(page, 'locator')):
         return None
@@ -31,7 +36,7 @@ def continue_gate(page):
         destination = node.get_attribute('href') or node.get_attribute('formaction')
         if destination:
             target = urlparse(urljoin(page.url, destination))
-            if target.scheme != 'https' or target.hostname != 'www.amazon.com':
+            if target.scheme != 'https' or target.hostname != HOST:
                 continue
             if re.search(r'^/(?:ap/|gp/(?:cart|buy)/|checkout)', target.path):
                 continue
@@ -41,7 +46,7 @@ def continue_gate(page):
 
 def verify_page(page, asin):
     url = urlparse(page.url)
-    if url.hostname != 'www.amazon.com' or not re.fullmatch(r'/(?:[^/]+/)?dp/' + asin + '/?', url.path):
+    if url.hostname != HOST or not re.fullmatch(r'/(?:[^/]+/)?dp/' + asin + '/?', url.path):
         if re.search(r'captcha|challenge|checkpoint', page.url, re.I):
             raise CaptureStopped('verification_required')
         raise CaptureStopped('identity_mismatch')
@@ -73,7 +78,7 @@ def verify_or_try(session, asin, report, clear, detect=challenge_visible):
         gate = continue_gate(page)
         if gate is None and not detect(page):
             break
-        if urlparse(page.url).hostname != 'www.amazon.com':
+        if urlparse(page.url).hostname != HOST:
             raise CaptureStopped('identity_mismatch')
         report['challenge_seen'] = True
         report['challenge_cleared'] = False
@@ -87,7 +92,7 @@ def verify_or_try(session, asin, report, clear, detect=challenge_visible):
                 page.wait_for_timeout(1000)
                 page.wait_for_load_state('domcontentloaded', timeout=15000)
             else:
-                clear(f'https://www.amazon.com/dp/{asin}?th=1&psc=1', session=session,
+                clear(f'https://{HOST}/dp/{asin}?th=1&psc=1', session=session,
                       timeout=20, settle=1, press_hold=True)
         except Exception as exc:
             if type(exc).__name__ not in ('WaapChallengeTimeout', 'TimeoutError'):
@@ -104,12 +109,16 @@ def verify_or_try(session, asin, report, clear, detect=challenge_visible):
 def ensure_location(page):
     def verified():
         nodes = page.locator('#glow-ingress-line2, #contextualIngressPtLabel_deliveryShortLine')
-        return any(re.search(r'\b10001\b', text) for text in nodes.all_text_contents())
+        return any(re.search(r'\bM5V\s*3L9\b' if MARKET=='CA' else r'\b10001\b', text, re.I) for text in nodes.all_text_contents())
     if verified():
         return
     try:
         page.locator('#nav-global-location-popover-link').click(timeout=5000)
-        page.locator('#GLUXZipUpdateInput').fill('10001', timeout=5000)
+        if MARKET == 'CA' and page.locator('#GLUXZipUpdateInput_0').count():
+            page.locator('#GLUXZipUpdateInput_0').fill('M5V', timeout=5000)
+            page.locator('#GLUXZipUpdateInput_1').fill('3L9', timeout=5000)
+        else:
+            page.locator('#GLUXZipUpdateInput').fill(POSTAL, timeout=5000)
         page.locator('#GLUXZipUpdate').click(timeout=5000)
         page.wait_for_timeout(1200)
         done = page.locator('button[name="glowDoneButton"], #GLUXConfirmClose').first
@@ -158,7 +167,7 @@ def collect_in_profile(asin, engine, report, profile):
         page = session.page
         page.set_default_timeout(5000)
         page.set_default_navigation_timeout(25000)
-        url = f'https://www.amazon.com/dp/{asin}?th=1&psc=1'
+        url = f'https://{HOST}/dp/{asin}?th=1&psc=1'
         response = page.goto(url, wait_until='domcontentloaded')
         if (response is None or not response.ok) and not challenge_visible(page):
             raise CaptureStopped('rate_limited' if response and response.status in (403,429) else 'failed')

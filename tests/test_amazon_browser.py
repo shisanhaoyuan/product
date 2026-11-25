@@ -319,3 +319,15 @@ def test_location_failure_still_returns_verified_product_html(monkeypatch):
     assert result == dict(status='ok', html=html)
     assert report['location_verified'] is False
     assert len(verified) == 3 and closed == [True]
+
+
+def test_canada_runner_keeps_delivery_profile_separate(runner):
+    result,commands,_=runner
+    result['html']=page(ASIN).replace('10001','M5V 3L9')
+    amazon_browser.fetch_page(ASIN,'CA')
+    ca=commands[-1][1]['env']
+    amazon_browser.fetch_page(ASIN,'US')
+    us=commands[-1][1]['env']
+    assert ca['CATALOG_AMAZON_MARKET']=='CA'
+    assert ca['CATALOG_AMAZON_BROWSER_PROFILE']==us['CATALOG_AMAZON_BROWSER_PROFILE']+'-ca'
+    assert us.get('CATALOG_AMAZON_MARKET','US')=='US'

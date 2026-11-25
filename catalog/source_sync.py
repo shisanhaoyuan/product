@@ -1,4 +1,5 @@
 """Fill verified source facts into the local overlay, never rewrite ERP evidence."""
+from .amazon_markets import source_market, location_matches
 import json
 import re
 from html import unescape
@@ -36,10 +37,11 @@ def filled_value(previous, value):
 def sync_capture(catalog, db, lid, sku, asin, result, actor_id):
     from .editing import encoded, local_product, value_at
     result = dict(result)
-    if not re.search(r'\b10001\b', result.get('delivery_location') or ''):
+    row = db.execute('SELECT * FROM listings WHERE id=?', (lid,)).fetchone()
+    market=source_market(json.loads(row['data_json'])['source'])
+    if not location_matches(result.get('delivery_location'),market):
         for key in ('price', 'shipping', 'delivery', 'original_price', 'basis_price', 'currency'):
             result.pop(key, None)
-    row = db.execute('SELECT * FROM listings WHERE id=?', (lid,)).fetchone()
     old = db.execute('SELECT * FROM product_edits WHERE listing_id=?', (lid,)).fetchone()
     version = old['revision'] if old else 0
     before = json.loads(old['changes_json']) if old else []

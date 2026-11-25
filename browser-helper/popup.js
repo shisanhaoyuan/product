@@ -6,7 +6,7 @@ document.querySelector('#enable').addEventListener('click', async () => {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const url = new URL(tab.url);
-    if (url.hostname === 'www.amazon.com' || !(url.protocol === 'https:' ||
+    if (['www.amazon.com','www.amazon.ca'].includes(url.hostname) || !(url.protocol === 'https:' ||
         (url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname)))) {
       throw new Error('请先打开商品库网站，再连接。');
     }

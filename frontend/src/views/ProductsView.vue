@@ -488,7 +488,7 @@ onBeforeUnmount(() => {
         title="导出清单"
         aria-label="导出清单"
         ><AppIcon name="Download" /><span class="button-label">导出清单</span></a
-      ><RouterLink class="btn primary" to="/integrations"
+      ><RouterLink class="btn primary" :to="source === 'Amazon_CA' ? '/integrations?marketplace=CA' : '/integrations'"
         ><AppIcon name="Plus" />接入数据</RouterLink
       >
     </div>
@@ -674,7 +674,7 @@ onBeforeUnmount(() => {
       </button>
       <ProductRangeFilter
         :values="rangeValues"
-        :currency="source === 'GigaB2B_CA' ? 'CAD' : 'USD'"
+        :currency="['GigaB2B_CA','Amazon_CA'].includes(source) ? 'CAD' : 'USD'"
         @change="changeRanges"
       />
     </form>

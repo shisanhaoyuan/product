@@ -9,12 +9,16 @@ export function captureInBrowser(
   mode: 'images' | 'source' | 'import' = 'images',
   foreground = false,
   onAttention?: (reason: string, reveal: () => void) => void,
+  marketplace: 'US' | 'CA' = 'US',
 ): Promise<BrowserPage> {
   return new Promise((resolve, reject) => {
     const requestId = crypto.randomUUID();
     let started = false;
     const send = (action: string) =>
-      window.postMessage({ channel, action, requestId, asin, mode, foreground }, location.origin);
+      window.postMessage(
+        { channel, action, requestId, asin, mode, foreground, marketplace },
+        location.origin,
+      );
     const probeTimer = window.setTimeout(
       () => finish(new Error('请先安装集物采集插件，点击“连接当前商品库网站”，再刷新商品库。')),
       1800,

@@ -461,7 +461,11 @@ onBeforeUnmount(() => {
                 }}
                 ·
                 {{
-                  isSupplier(product.source) ? product.source_facts.currency || '币种未返回' : 'USD'
+                  isSupplier(product.source)
+                    ? product.source_facts.currency || '币种未返回'
+                    : product.source === 'Amazon_CA'
+                      ? 'CAD'
+                      : 'USD'
                 }}</label
               ><InlineEdit
                 :value="product.price"
@@ -476,7 +480,9 @@ onBeforeUnmount(() => {
                       : [product.price],
                     isSupplier(product.source)
                       ? String(product.source_facts.currency || '')
-                      : 'USD',
+                      : product.source === 'Amazon_CA'
+                        ? 'CAD'
+                        : 'USD',
                   )
                 }}</strong></InlineEdit
               >
@@ -485,7 +491,11 @@ onBeforeUnmount(() => {
               <label
                 >MSRP ·
                 {{
-                  isSupplier(product.source) ? product.source_facts.currency || '—' : 'USD'
+                  isSupplier(product.source)
+                    ? product.source_facts.currency || '—'
+                    : product.source === 'Amazon_CA'
+                      ? 'CAD'
+                      : 'USD'
                 }}</label
               ><InlineEdit
                 :value="product.msrp"
@@ -497,7 +507,9 @@ onBeforeUnmount(() => {
                     product.msrp,
                     isSupplier(product.source)
                       ? String(product.source_facts.currency || '')
-                      : 'USD',
+                      : product.source === 'Amazon_CA'
+                        ? 'CAD'
+                        : 'USD',
                   )
                 }}</strong></InlineEdit
               >
@@ -518,6 +530,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <SourceCapturePanel
+            :source="product.source"
             v-if="!isSupplier(product.source)"
             :listing-id="product.id"
             :asin="product.asin"
@@ -575,6 +588,7 @@ onBeforeUnmount(() => {
           <StatusBadge>{{ product.variants.length }} 个 SKU</StatusBadge>
         </div>
         <VariantPanel
+          :source="product.source"
           ref="variantPanel"
           :key="product.id"
           :variants="product.variants"

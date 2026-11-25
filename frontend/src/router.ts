@@ -8,6 +8,11 @@ export const router = createRouter({
     { path: '/login', component: () => import('./views/LoginView.vue') },
     { path: '/account', component: () => import('./views/AccountView.vue') },
     { path: '/users', component: () => import('./views/UsersView.vue') },
+    { path: '/amazon-canada-products', component: () => import('./views/ProductsView.vue') },
+    {
+      path: '/amazon-canada-product/:id',
+      component: () => import('./views/ProductDetailView.vue'),
+    },
     { path: '/products', component: () => import('./views/ProductsView.vue') },
     { path: '/saleyee-patrol', component: () => import('./views/GigaPatrolView.vue') },
     { path: '/giga-canada-patrol', component: () => import('./views/GigaPatrolView.vue') },

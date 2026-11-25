@@ -3,6 +3,7 @@ import { computed, ref } from 'vue';
 
 const props = defineProps<{
   asin?: string;
+  source?: string;
   multiplier: string;
   collection?: { state: string; message?: string };
   disabled: boolean;
@@ -18,7 +19,7 @@ const valid = computed(
 );
 const sourceUrl = computed(() =>
   /^[A-Z0-9]{10}$/.test(props.asin || '')
-    ? `https://www.amazon.com/dp/${props.asin}?th=1&psc=1`
+    ? `https://${props.source === 'Amazon_CA' ? 'www.amazon.ca' : 'www.amazon.com'}/dp/${props.asin}?th=1&psc=1`
     : '',
 );
 const reason = computed(() => {
@@ -50,7 +51,7 @@ defineExpose({ focus });
     </p>
     <div class="price-recovery-inputs">
       <label>
-        <span>来源原价（USD）</span>
+        <span>来源原价（{{ source === 'Amazon_CA' ? 'CAD' : 'USD' }}）</span>
         <input
           ref="input"
           v-model="originalPrice"

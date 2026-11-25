@@ -192,7 +192,7 @@ def start_job(catalog, publisher, bid, actor_id=None, ai=None, schedule=True, so
             schemas=schema_digests,partner=bound['partner_id'],binding_revision=bound['revision']))
         # A new Amazon filling run must observe current quotes, even for identical inputs.
         statuses=latest_results(db,bid)
-        amazon_editable=any(i.get('source')=='Amazon' and any(
+        amazon_editable=any(i.get('source') in ('Amazon', 'Amazon_CA') and any(
             statuses.get(v['platform_sku'],{}).get('status','unsubmitted') in EDITABLE
             for v in i['variants']) for i in basis['items'])
         if (not amazon_editable and prior and prior['state']=='complete' and prior['input_hash']==identity
@@ -227,7 +227,7 @@ def start_job(catalog, publisher, bid, actor_id=None, ai=None, schedule=True, so
         db.execute('INSERT INTO listing_generation_jobs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
             (jid,bid,state,stored['revision'],basis['store']['id'],bound['partner_id'],bound['revision'],identity,
              actor_id,encoded({'rules_version':RULES_VERSION,'model':ai.settings.model,'rows':{},'previous_fields':previous_fields,'resources_digest':resource_digest(db,bound),'source_mode':source_mode,'source_targets':targets,'source_digests':{i['listing_id']:i['source_digest'] for i in basis['items']}}),
-             '等待商品库采集会话；邮编失效时请在打开的网页设置 10001' if targets else '已加入生成队列，等待后台采集、计算售价、AI 填充与校验',started,timestamp))
+             '等待商品库采集会话；邮编失效时请在打开的网页设置当前站点配送地区' if targets else '已加入生成队列，等待后台采集、计算售价、AI 填充与校验',started,timestamp))
         row = db.execute('SELECT * FROM listing_generation_jobs WHERE id=?',(jid,)).fetchone()
     if schedule and state=='queued':
         schedule_job(catalog,publisher,jid,ai)
@@ -393,7 +393,7 @@ def run_job(catalog, publisher, jid, ai):
                 try:
                     # Amazon quote collection is already complete and persisted above.
                     # Do not launch a second competing fetch of the same page during AI filling.
-                    if item.get('source')=='Amazon' and 'source_collection' in entry:
+                    if item.get('source') in ('Amazon', 'Amazon_CA') and 'source_collection' in entry:
                         collection=entry['source_collection']
                         if collection.get('facts'):
                             facts,detail_collection=supplement_facts(catalog,sources[item['listing_id']],item,variant,ai,collection['facts'])

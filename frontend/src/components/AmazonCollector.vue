@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import CollectorPluginLinks from './CollectorPluginLinks.vue';
 import { collectorPluginVersion } from '../utils/collectorPlugin';
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import {
   collectorApi,
@@ -36,7 +36,16 @@ function resetCreateId() {
   createId = crypto.randomUUID();
 }
 const route = useRoute();
-const { refreshStats } = useCatalog('Amazon');
+const marketplace = ref<'US' | 'CA'>(route.query.marketplace === 'CA' ? 'CA' : 'US');
+const source = computed(() =>
+  (selected.value?.marketplace || marketplace.value) === 'CA' ? 'Amazon_CA' : 'Amazon',
+);
+const { refreshStats } = useCatalog(source);
+watch(marketplace, () => {
+  text.value = '';
+  sheet.value = undefined;
+  resetCreateId();
+});
 const completed = computed(
   () => selected.value?.items.filter((i) => i.state === 'done').length || 0,
 );
@@ -76,7 +85,7 @@ async function readFile(file: File) {
   uploading.value = true;
   try {
     if (file.size > 150 * 1024 * 1024) throw new Error('表格最大 150 MB');
-    sheet.value = await collectorApi.sheet(file);
+    sheet.value = await collectorApi.sheet(file, marketplace.value);
     text.value = sheet.value.asins.join('\n');
     createId = crypto.randomUUID();
     notice.value = '表格已识别，请核对数量后点击开始采集。';
@@ -110,7 +119,10 @@ async function run(job?: CollectorJob) {
   openPage.value = undefined;
   controller = new AbortController();
   try {
-    update(job || (await collectorApi.create(text.value, includeVariants.value, createId)));
+    update(
+      job ||
+        (await collectorApi.create(text.value, includeVariants.value, createId, marketplace.value)),
+    );
     if (!job) createId = crypto.randomUUID();
     const id = selected.value!.id;
     while (!controller.signal.aborted) {
@@ -228,7 +240,7 @@ onBeforeUnmount(() => {
     <div class="section-body">
       <p class="subtitle">
         浏览器采集 → 必要时调用服务器 Wraith → 核对商品 → 图片缓存 →
-        入库。首次或地区失效时打开网页设置 10001，其余后台运行。
+        入库。首次或地区失效时打开网页设置配送邮编（US：10001；Canada：M5V 3L9），其余后台运行。
       </p>
       <div class="collector-tools">
         <CollectorPluginLinks /><span>{{
@@ -250,11 +262,18 @@ onBeforeUnmount(() => {
         </ol>
       </details>
       <template v-if="writable">
+        <label class="collector-market"
+          >采集站点 / 目标商品库
+          <select v-model="marketplace" :disabled="busy || uploading" aria-label="亚马逊采集站点">
+            <option value="US">美国站 · amazon.com · USD</option>
+            <option value="CA">加拿大站 · amazon.ca · CAD</option>
+          </select>
+        </label>
         <textarea
           v-model="text"
           :disabled="busy || uploading"
           rows="5"
-          placeholder="每行一个 ASIN 或 https://www.amazon.com/dp/ASIN，最多 100 个"
+          :placeholder="`每行一个 ASIN 或 https://www.amazon.${marketplace === 'CA' ? 'ca' : 'com'}/dp/ASIN，最多 100 个`"
           aria-label="待采集 ASIN 或商品网址"
           @input="resetCreateId"
         ></textarea>
@@ -311,7 +330,8 @@ onBeforeUnmount(() => {
       <p v-if="notice" class="notice" role="status">{{ notice }}</p>
       <div v-if="selected" class="collector-progress">
         <strong
-          >已采集 {{ completed }} / {{ selected.items.length }} ·
+          >{{ selected.marketplace === 'CA' ? '加拿大站 · CAD' : '美国站 · USD' }} · 已采集
+          {{ completed }} / {{ selected.items.length }} ·
           {{ labels[selected.state] || selected.state }}</strong
         >
         <p v-if="selected.state === 'complete'">
@@ -333,7 +353,7 @@ onBeforeUnmount(() => {
             v-for="id in selected.result.listing_ids"
             :key="id"
             class="btn small"
-            :to="'/product/' + id"
+            :to="(selected.marketplace === 'CA' ? '/amazon-canada-product/' : '/product/') + id"
             >查看入库商品</RouterLink
           >
         </div>
@@ -342,7 +362,8 @@ onBeforeUnmount(() => {
         <summary>我的采集任务（最近 20 批）</summary>
         <div v-for="job in jobs" :key="job.id" class="collector-history">
           <span
-            >{{ new Date(job.created_at).toLocaleString('zh-CN') }} · {{ job.items.length }} 个 ASIN
+            >{{ job.marketplace || 'US' }} ·
+            {{ new Date(job.created_at).toLocaleString('zh-CN') }} · {{ job.items.length }} 个 ASIN
             · {{ labels[job.state] }}</span
           ><button class="btn small" :disabled="busy || cancelling" @click="update(job)">
             查看</button
@@ -367,6 +388,31 @@ onBeforeUnmount(() => {
 <style scoped>
 .amazon-collector {
   grid-column: 1 / -1;
+}
+.collector-market {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 1px solid #c5d7eb;
+  border-radius: 12px;
+  background: #edf4fc;
+  color: #345779;
+  font-weight: 600;
+}
+.collector-market select {
+  flex: 1 1 260px;
+  max-width: 420px;
+  min-width: 0;
+  min-height: 42px;
+  padding: 8px 12px;
+  border: 1px solid #b9cadd;
+  border-radius: 8px;
+  background: #fff;
+  color: #264966;
+  font: inherit;
 }
 .collector-cancel {
   color: #9c4148;

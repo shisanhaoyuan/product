@@ -283,9 +283,9 @@ class Catalog:
                 from .saleyee_addresses import address_options
                 counts.update(address_options(db, relation, args, self.postgres))
             counts["unique_counts"] = dict(db.execute(f"""SELECT
-                COUNT(DISTINCT COALESCE(NULLIF(p.asin,''),l.id)) AS all_products,
-                COUNT(DISTINCT CASE WHEN l.complete=1 THEN COALESCE(NULLIF(p.asin,''),l.id) END) AS complete,
-                COUNT(DISTINCT CASE WHEN l.complete=0 THEN COALESCE(NULLIF(p.asin,''),l.id) END) AS review
+                COUNT(DISTINCT (p.source || ':' || COALESCE(NULLIF(p.asin,''),l.id))) AS all_products,
+                COUNT(DISTINCT CASE WHEN l.complete=1 THEN (p.source || ':' || COALESCE(NULLIF(p.asin,''),l.id)) END) AS complete,
+                COUNT(DISTINCT CASE WHEN l.complete=0 THEN (p.source || ':' || COALESCE(NULLIF(p.asin,''),l.id)) END) AS review
                 FROM {relation} l JOIN products p ON p.id=l.product_id""", args).fetchone())
             return counts
 
@@ -337,12 +337,13 @@ class Catalog:
                 WHERE b.active=1 AND s.listing_id=listings.id)""" if self.postgres else BLOCKED_SQL
             clauses.append(("NOT " if seller_status == "unblocked" else "") + blocked)
         if listing_count_min is not None or listing_count_max is not None:
-            # Same global ASIN/template count as listing_coverage, before other filters
+            # Same source-scoped ASIN/template count as listing_coverage, before other filters
             # and pagination. Missing ASINs keep their individual count of one.
             count_sql = """(CASE WHEN (SELECT asin FROM products WHERE id=listings.product_id)=''
                 THEN 1 ELSE (SELECT COUNT(*) FROM listings counted
                     JOIN products counted_product ON counted_product.id=counted.product_id
-                    WHERE counted_product.asin=(SELECT asin FROM products WHERE id=listings.product_id)) END)"""
+                    WHERE counted_product.asin=(SELECT asin FROM products WHERE id=listings.product_id)
+                    AND counted_product.source=(SELECT source FROM products WHERE id=listings.product_id)) END)"""
             for value, operator in ((listing_count_min, '>='), (listing_count_max, '<=')):
                 if value is not None:
                     clauses.append(f'{count_sql}{operator}?')
@@ -373,7 +374,7 @@ class Catalog:
             # Select a matching template before pagination, retaining every source record.
             query = f"""SELECT * FROM (
                 SELECT listings.*, ROW_NUMBER() OVER (
-                    PARTITION BY COALESCE(NULLIF(products.asin,''),listings.id)
+                    PARTITION BY products.source,COALESCE(NULLIF(products.asin,''),listings.id)
                     ORDER BY listings.uploaded_at DESC,listings.id) AS asin_position
                 FROM current_listings AS listings JOIN products ON products.id=listings.product_id
                 WHERE {where}) AS grouped_listings WHERE asin_position=1"""
@@ -393,10 +394,10 @@ class Catalog:
             coverage = {}
             if asins:
                 placeholders = ','.join('?' for _ in asins)
-                for row in db.execute(f"""SELECT p.asin,l.store,COUNT(*) AS count FROM listings l
+                for row in db.execute(f"""SELECT p.source,p.asin,l.store,COUNT(*) AS count FROM listings l
                         JOIN products p ON p.id=l.product_id WHERE p.asin IN ({placeholders})
-                        GROUP BY p.asin,l.store ORDER BY l.store""", asins):
-                    coverage.setdefault(row['asin'], []).append(dict(store=row['store'],count=row['count']))
+                        GROUP BY p.source,p.asin,l.store ORDER BY l.store""", asins):
+                    coverage.setdefault((row['source'], row['asin']), []).append(dict(store=row['store'],count=row['count']))
             from .product_store_history import histories
             store_history=histories(db,[r['id'] for r in rows])
             from .product_thumbnails import page_image_evidence, thumbnail_urls
@@ -415,9 +416,9 @@ class Catalog:
                     image=covers[0] if covers else '', image_fallbacks=covers[1:],
                     saleyee_summary={k:d.get('source_facts',{}).get(k) for k in ('inventory','shipping','landed','warnings')} if d['source']=='Saleyee' else None,
                     giga_summary=giga_summary(d.get('source_facts')) if d['source'] in ('GigaB2B', 'GigaB2B_CA') else None,
-                    variant_count=len(d['variants']),prices=prices,currency=(d.get('source_facts',{}).get('currency') or '') if d['source'] in ('GigaB2B','GigaB2B_CA','Saleyee') else 'USD',issue_count=0 if review.get('valid') and review.get('complete') else len(d['issues']),category=r['category'],seller_blacklist=matches(d, entries),
-                    listing_count=sum(s['count'] for s in coverage.get(d['asin'], [])) or 1,
-                    store_history=store_history[r['id']],listing_stores=coverage.get(d['asin'], [dict(store=d['store'],count=1)])))
+                    variant_count=len(d['variants']),prices=prices,currency=(d.get('source_facts',{}).get('currency') or '') if d['source'] in ('GigaB2B','GigaB2B_CA','Saleyee') else ('CAD' if d['source']=='Amazon_CA' else 'USD'),issue_count=0 if review.get('valid') and review.get('complete') else len(d['issues']),category=r['category'],seller_blacklist=matches(d, entries),
+                    listing_count=sum(s['count'] for s in coverage.get((d['source'], d['asin']), [])) or 1,
+                    store_history=store_history[r['id']],listing_stores=coverage.get((d['source'], d['asin']), [dict(store=d['store'],count=1)])))
             return dict(items=items,total=total,page=page,page_size=page_size)
 
     def get(self, listing_id):

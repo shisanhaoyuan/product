@@ -13,7 +13,7 @@ export function listingSourceImages(product: ProductDetail, sku: string, asin: s
     (c) => !c.variant_sku && c.field === 'images',
   );
   const images =
-    product.source === 'Amazon' &&
+    ['Amazon', 'Amazon_CA'].includes(product.source || '') &&
     asin &&
     product.asin === asin &&
     !ownImagesEdited &&

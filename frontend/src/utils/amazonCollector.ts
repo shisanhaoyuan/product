@@ -61,22 +61,32 @@ export async function collectTask(
     }
   }
   try {
-    const page = captureInBrowser(task.asin, browser.signal, 'import', false, (reason, reveal) => {
-      if (reason === 'location') {
-        notice('请在已打开的网页设置邮编 10001，完成后自动继续', reveal);
-        return;
-      }
-      if (!fallbackStarted) {
-        fallbackStarted = true;
-        notice(
-          wraith
-            ? '遇到验证，正在调用服务器 Wraith；员工网页保持后台'
-            : '需要验证，请点击打开网页处理',
-          reveal,
-        );
-        if (wraith) void fallback(reveal);
-      }
-    });
+    const page = captureInBrowser(
+      task.asin,
+      browser.signal,
+      'import',
+      false,
+      (reason, reveal) => {
+        if (reason === 'location') {
+          notice(
+            `请在已打开的网页设置邮编 ${task.marketplace === 'CA' ? 'M5V 3L9' : '10001'}，完成后自动继续`,
+            reveal,
+          );
+          return;
+        }
+        if (!fallbackStarted) {
+          fallbackStarted = true;
+          notice(
+            wraith
+              ? '遇到验证，正在调用服务器 Wraith；员工网页保持后台'
+              : '需要验证，请点击打开网页处理',
+            reveal,
+          );
+          if (wraith) void fallback(reveal);
+        }
+      },
+      task.marketplace || 'US',
+    );
     // A returned browser page is saved once. Ambiguous network failures are not replayed.
     const browserDone = page.then((result) =>
       collectorApi.action<CollectorJob>(id, 'page', { ...task, ...result }),

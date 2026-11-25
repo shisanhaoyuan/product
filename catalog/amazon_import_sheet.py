@@ -10,16 +10,16 @@ _PARSE_GATE=threading.BoundedSemaphore(2)
 HEADERS={'asin','商品asin','父asin','子asin','url','链接','网址','商品链接','商品网址','亚马逊链接','amazonurl','producturl'}
 
 
-def parse_sheet(raw,filename):
+def parse_sheet(raw,filename,marketplace="US"):
     if not _PARSE_GATE.acquire(blocking=False):
         raise HTTPException(429,'当前有两个采集表正在解析，请稍后重新导入')
     try:
-        return _parse_sheet(raw,filename)
+        return _parse_sheet(raw,filename,marketplace)
     finally:
         _PARSE_GATE.release()
 
 
-def _parse_sheet(raw,filename):
+def _parse_sheet(raw,filename,marketplace="US"):
     asins=[];seen=set();columns={};errors=[];duplicate=0;invalid=0;scanned=0
     try:
         for sheet,index,row in spreadsheet_rows(raw,filename,max_file=MAX_FILE,max_uncompressed=512*1024*1024):
@@ -31,7 +31,7 @@ def _parse_sheet(raw,filename):
                 headings=[i for i,c in populated if normalized_header(c[0]) in HEADERS]
                 if headings:columns[sheet]=headings;continue
                 if len(populated)==1:
-                    try:parse_inputs(str(populated[0][1][0]))
+                    try:parse_inputs(str(populated[0][1][0]),marketplace)
                     except HTTPException:continue
                     columns[sheet]=[populated[0][0]]
                 elif index<=10:continue
@@ -41,7 +41,7 @@ def _parse_sheet(raw,filename):
                 if value is None or not str(value).strip():continue
                 try:
                     if kind=='f' or str(value).startswith(('=','+','@')):raise HTTPException(422,'不执行公式，请将链接粘贴为文本')
-                    values=parse_inputs(str(value))
+                    values=parse_inputs(str(value),marketplace)
                     for asin in values:
                         if asin in seen:duplicate+=1;continue
                         seen.add(asin);asins.append(asin)
@@ -53,5 +53,5 @@ def _parse_sheet(raw,filename):
     except HTTPException as exc:
         exc.detail=str(exc.detail).replace('编码表','采集表').replace('编码文件','采集文件')
         raise
-    if not asins:raise HTTPException(422,'没有找到有效 ASIN 或美国亚马逊商品链接；请使用 ASIN／商品链接列，链接以文本保存')
+    if not asins:raise HTTPException(422,'没有找到有效 ASIN 或所选站点亚马逊商品链接；请使用 ASIN／商品链接列，链接以文本保存')
     return dict(asins=asins,valid=len(asins),duplicate=duplicate,invalid=invalid,errors=errors)

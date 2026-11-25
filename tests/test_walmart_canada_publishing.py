@@ -372,3 +372,25 @@ def test_annotation_cleanup_preserves_properties_and_literals():
     assert 'examples' not in cleaned
     assert cleaned['properties']['examples']=={'type':'string','enum':['a']}
     assert cleaned['enum']==[{'examples':'a'}]
+
+
+def test_amazon_canada_import_prelisting_uses_cad_and_canadian_schema(ca_publishing):
+    from test_amazon_import import import_market, A
+    c,catalog,_,_,_=ca_publishing
+    lid=import_market(c,'CA','57.99')
+    settings=inputs(c,filters={'source':'Amazon_CA'})
+    preview=c.post('/api/prelisting/preview',json=settings)
+    assert preview.status_code==200,preview.text
+    plan=preview.json()
+    assert plan['store']['marketplace']=='CA' and plan['store']['currency']=='CAD'
+    assert len(plan['items'])==1 and plan['items'][0]['listing_id']==lid
+    assert plan['items'][0]['variants'][0]['price']=='100.79'  # captured CAD 83.99 reference x 1.2
+    batch,_=create(c,settings)
+    base=f'/api/prelisting/batches/{batch["id"]}/walmart'
+    result=c.post(base+'/prepare')
+    assert result.status_code==200,result.text
+    doc=result.json()
+    assert doc['marketplace']=='CA' and doc['currency']=='CAD'
+    assert doc['basis']['items'][0]['source']=='Amazon_CA'
+    assert doc['rows'][0]['source_sku']==A
+    assert c.post(base+'/taxonomy').status_code==200

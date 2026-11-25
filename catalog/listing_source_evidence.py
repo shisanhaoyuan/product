@@ -79,11 +79,14 @@ def supplement_facts(catalog,source,item,variant,ai,amazon_details_data=None):
             supplemented=copy.deepcopy(source)
             supplemented.setdefault('source_facts',{}).setdefault('saleyee',{})['detail']=detail
             collected=source_facts(supplemented,item,variant)
-        elif source['source'].casefold()=='amazon':
+        elif source['source'].casefold() in ('amazon','amazon_ca'):
             asin=variant.get('asin','')
             if not re.fullmatch('[A-Z0-9]{10}',asin):
                 return facts,dict(state='unavailable',message='当前 SKU 缺少明确 ASIN，未猜测来源链接')
-            collected=amazon_details_data if amazon_details_data is not None else amazon_details(fetch_amazon_page(asin),asin)
+            from .amazon_markets import source_market
+            market=source_market(source['source'])
+            collected=amazon_details_data if amazon_details_data is not None else amazon_details(
+                fetch_amazon_page(asin) if market=='US' else fetch_amazon_page(asin,market),asin)
         else:
             return facts,dict(state='unavailable',message='该来源暂未配置定向补采适配器')
         conflicts=[]
@@ -97,7 +100,7 @@ def supplement_facts(catalog,source,item,variant,ai,amazon_details_data=None):
             if empty(old):
                 return new
             if not empty(new) and old!=new:
-                if source['source'].casefold() == 'amazon' and path.startswith('.content.copy.'):
+                if source['source'].casefold() in ('amazon','amazon_ca') and path.startswith('.content.copy.'):
                     # ERP copy is deliberately rewritten for the target brand/store.
                     # Keep it and expose live copy separately; it is not an identity conflict.
                     copy_differences.append(path)

@@ -44,7 +44,7 @@ with tempfile.TemporaryDirectory(prefix='jiwu-collector-') as folder:
     manifest['host_permissions'].append(origin+'/*')
     manifest['content_scripts'].append(dict(matches=[origin+'/*'],js=['bridge.js']))
     (helper/'manifest.json').write_text(json.dumps(manifest))
-    worker=(helper/'worker.js').read_text().replace('url: `https://www.amazon.com/dp/${data.asin}?th=1&psc=1`',"url: 'about:blank'")
+    worker=(helper/'worker.js').read_text().replace('url: `https://${host}/dp/${data.asin}?th=1&psc=1`',"url: 'about:blank'")
     (helper/'worker.js').write_text(worker)
     try:
         with sync_playwright() as pw:
@@ -53,11 +53,14 @@ with tempfile.TemporaryDirectory(prefix='jiwu-collector-') as folder:
             def fixture(route):
                 asin=B if B in route.request.url else A
                 body=html(asin,price='37.99' if asin==A else '41.99')
+                if 'amazon.ca' in route.request.url:
+                    body=body.replace('10001','M5V 3L9').replace('$37.99','CA$57.99').replace('$41.99','CA$61.99').replace('$43.99','CA$83.99')
                 body+=f'<div id="imageBlock"><img id="landingImage" src="https://m.media-amazon.com/images/I/{asin}-main.jpg"><img src="https://m.media-amazon.com/images/I/{asin}-detail.jpg"></div>'
                 body+=f'<div id="variation_color_name"><span class="selection">{"Brown" if asin==A else "White"}</span><span data-asin="{B}"></span></div>'
                 body+='<script type="application/json">'+json.dumps({'asinVariationValues':{A:{'color_name':0},B:{'color_name':1}}})+'</script>'
                 route.fulfill(body=body,content_type='text/html')
             context.route('https://www.amazon.com/**',fixture)
+            context.route('https://www.amazon.ca/**',fixture)
             page=context.pages[0];errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
             page.goto(origin+'/#/integrations')
             expect(page.get_by_role('heading',name='亚马逊 · 集物自有采集')).to_be_visible()
@@ -110,6 +113,32 @@ with tempfile.TemporaryDirectory(prefix='jiwu-collector-') as folder:
             assert page.locator('.collector-history').filter(has_text='已取消').get_by_role('button',name='继续采集',exact=True).count()==0
             assert app.state.catalog.export()==before
             page.screenshot(path=str(ROOT/'validation/amazon-collector-cancel.png'))
+            # Same ASINs on amazon.ca must create an independent CAD family.
+            page.get_by_label('亚马逊采集站点').select_option('CA')
+            page.get_by_label('待采集 ASIN 或商品网址').fill(A)
+            with context.expect_page() as opened:
+                page.get_by_role('button',name='开始采集并入库',exact=True).click()
+            with context.expect_page(timeout=30000) as child:
+                opened.value.goto('https://www.amazon.ca/dp/'+A)
+            child.value.goto('https://www.amazon.ca/dp/'+B)
+            expect(page.locator('.collector-progress')).to_contain_text('新建 1 件',timeout=30000)
+            products=app.state.catalog.export()
+            assert len(products)==2
+            ca=next(p for p in products if p['source']=='Amazon_CA')
+            us=next(p for p in products if p['source']=='Amazon')
+            assert ca['source_facts']['currency']=='CAD' and ca['price']=='57.99'
+            assert us['price']=='37.99'
+            assert {v['asin']:v['price'] for v in ca['variants']}=={A:'57.99',B:'61.99'}
+            assert all(len(v['images'])==2 for v in ca['variants'])
+            page.screenshot(path=str(ROOT/'validation/amazon-collector-canada.png'))
+            page.goto(origin+'/#/amazon-canada-products')
+            expect(page.get_by_role('heading',name='亚马逊商品库 Canada 1',exact=True)).to_be_visible()
+            expect(page.locator('.product-card')).to_have_count(1)
+            page.screenshot(path=str(ROOT/'validation/amazon-canada-library.png'))
+            page.get_by_role('link',name='接入数据',exact=True).click()
+            expect(page.get_by_label('亚马逊采集站点')).to_have_value('CA')
+            page.screenshot(path=str(ROOT/'validation/amazon-collector-canada.png'))
+            assert not errors, errors
             context.close()
             # Shared extractor: real maps only, dropdown-only child, no recommendation map.
             browser=pw.chromium.launch(channel='chrome',headless=True)
@@ -131,6 +160,6 @@ with tempfile.TemporaryDirectory(prefix='jiwu-collector-') as folder:
             quote=amazon_source(f'<input id="ASIN" value="{A}">'+result,A)
             assert quote.get('price') is None and any('多条' in m for m in quote['issues'])
             browser.close()
-            print('PASS: real extension, XLSX drop, child discovery, separate prices/attributes, import, mobile, lazy offers, unrelated map exclusion')
+            print('PASS: US/CA isolated imports, CAD prices, Canadian library entry, real extension, XLSX drop, child discovery, separate prices/attributes, import, mobile, lazy offers, unrelated map exclusion')
     finally:
         server.should_exit=True

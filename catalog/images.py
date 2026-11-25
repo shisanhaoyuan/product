@@ -1,4 +1,5 @@
 """Local image assets and explicitly requested, ASIN-bound Amazon image discovery."""
+from .amazon_markets import source_market, market_config, product_url
 import ast
 import hashlib
 import io
@@ -220,8 +221,8 @@ def amazon_images(html, asin):
     return result[:100]
 
 
-def fetch_amazon_page(asin):
-    url = f'https://www.amazon.com/dp/{asin}?th=1&psc=1'
+def fetch_amazon_page(asin, marketplace="US"):
+    url = product_url(asin,marketplace)
     try:
         with httpx.Client(timeout=httpx.Timeout(20, connect=8), follow_redirects=False, trust_env=False) as client:
             with client.stream('GET', url, headers={'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en-US,en;q=0.9'}) as response:
@@ -240,9 +241,9 @@ def fetch_amazon_page(asin):
         raise ValueError('无法连接 Amazon，请检查服务器网络后重试') from exc
 
 
-def fetch_amazon_images(asin):
-    return {'asin': asin, 'source_url': f'https://www.amazon.com/dp/{asin}?th=1&psc=1',
-            'images': amazon_images(fetch_amazon_page(asin), asin),
+def fetch_amazon_images(asin, marketplace="US"):
+    return {'asin': asin, 'source_url': product_url(asin,marketplace),
+            'images': amazon_images(fetch_amazon_page(asin) if marketplace=="US" else fetch_amazon_page(asin,marketplace), asin),
             'fetched_at': datetime.now(timezone.utc).isoformat()}
 
 
@@ -364,10 +365,11 @@ def image_routes(catalog, storage):
     @router.post('/{lid}/images/capture')
     def capture(lid: str, data: CaptureInput):
         p, v = target(lid, data.variant_sku)
-        if p['source'].casefold() != 'amazon' or not re.fullmatch('[A-Z0-9]{10}', v['asin']):
+        if p['source'].casefold() not in ('amazon','amazon_ca') or not re.fullmatch('[A-Z0-9]{10}', v['asin']):
             raise HTTPException(422, '当前商品没有明确的 Amazon ASIN，不能推测抓取')
         try:
-            result = fetch_amazon_images(v['asin'])
+            marketplace=source_market(p['source'])
+            result = fetch_amazon_images(v['asin']) if marketplace=='US' else fetch_amazon_images(v['asin'],marketplace)
             from .source_images import collect_images
             collection = collect_images(catalog, lid, data.variant_sku or '', result['images'])
             result.update(images=collection['images'], image_collection=collection)
@@ -379,11 +381,11 @@ def image_routes(catalog, storage):
                 'status': 'browser_required',
                 'reason': str(exc),
                 'asin': v['asin'],
-                'source_url': f"https://www.amazon.com/dp/{v['asin']}?th=1&psc=1",
+                'source_url': product_url(v['asin'],source_market(p['source'])),
             }
         except HumanVerificationRequired:
             return {'status': 'verification_required', 'asin': v['asin'],
-                    'source_url': f"https://www.amazon.com/dp/{v['asin']}?th=1&psc=1"}
+                    'source_url': product_url(v['asin'],source_market(p['source']))}
         except ValueError as exc:
             raise HTTPException(502, str(exc))
 
@@ -394,9 +396,9 @@ def image_routes(catalog, storage):
             url = urlparse(data.source_url)
         except ValueError:
             raise HTTPException(422, '浏览器来源链接无效') from None
-        if (p['source'].casefold() != 'amazon' or not re.fullmatch('[A-Z0-9]{10}', v['asin'])
-                or url.scheme != 'https' or url.hostname != 'www.amazon.com'
-                or url.netloc not in {'www.amazon.com', 'www.amazon.com:443'}
+        if (p['source'].casefold() not in ('amazon','amazon_ca') or not re.fullmatch('[A-Z0-9]{10}', v['asin'])
+                or url.scheme != 'https' or url.hostname != market_config(source_market(p['source']))['host']
+                or url.netloc not in {market_config(source_market(p['source']))['host'], market_config(source_market(p['source']))['host']+':443'}
                 or not re.fullmatch(r'/(?:[^/]+/)?dp/' + re.escape(v['asin']) + r'/?', url.path)):
             raise HTTPException(422, '浏览器页面与当前商品 ASIN 不匹配')
         try:

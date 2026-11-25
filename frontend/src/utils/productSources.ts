@@ -3,8 +3,16 @@ export const productSources = [
     source: 'Amazon',
     path: '/products',
     detail: '/product/',
-    name: '亚马逊商品库',
-    label: '亚马逊',
+    name: '亚马逊商品库 US',
+    label: '亚马逊 US',
+    icon: 'LayoutGrid',
+  },
+  {
+    source: 'Amazon_CA',
+    path: '/amazon-canada-products',
+    detail: '/amazon-canada-product/',
+    name: '亚马逊商品库 Canada',
+    label: '亚马逊 Canada',
     icon: 'LayoutGrid',
   },
   {

@@ -106,7 +106,7 @@ class StoreState(StoreCodeInput):
 
 
 class Filters(StrictInput, ProductRanges):
-    source: Literal['', 'Amazon', 'GigaB2B', 'GigaB2B_CA', 'Saleyee'] = ''
+    source: Literal['', 'Amazon', 'Amazon_CA', 'GigaB2B', 'GigaB2B_CA', 'Saleyee'] = ''
     deduplicate: bool = False
     q: str = Field(default='', max_length=300)
     identifiers: str = Field(default='', max_length=6000)
@@ -271,7 +271,7 @@ def variant_images(product, variant):
     changes = (product.get('local_edit') or {}).get('changes') or []
     child_edited = any(c.get('field') == 'images' and c.get('variant_sku') == variant['sku'] for c in changes)
     parent_edited = any(c.get('field') == 'images' and not c.get('variant_sku') for c in changes)
-    if (product.get('source') == 'Amazon' and variant.get('asin')
+    if (product.get('source') in ('Amazon', 'Amazon_CA') and variant.get('asin')
             and product.get('asin') == variant['asin'] and not child_edited
             and (parent_edited or not images)):
         images = product.get('images') or []
@@ -332,13 +332,13 @@ def build_preview(catalog, db, data, exclude_batch=None):
                            content={**{k: v.get(k) for k in ('product_id_type', 'ean',
                                'swatch_attribute', 'swatch_image', 'shipping_weight', 'copy', 'source_url', 'seller')},
                                'attributes': child_attributes(v), 'images': variant_images(d, v)},
-                           **(amazon_price(db, row['id'], d, v, data.multiplier) if d['source'] == 'Amazon'
+                           **(amazon_price(db, row['id'], d, v, data.multiplier) if d['source'] in ('Amazon', 'Amazon_CA')
                               else planned_price(v, v['price_check'], data.multiplier, True))) for v in children]
         else:
             raw_checks = d['checks'].get('pricing_checks', [])
             checks = [c for c in raw_checks if isinstance(c, dict) and c.get('field') == 'dc_price'] if isinstance(raw_checks, list) else []
             priced = [dict(sku=d['sku'], asin=d['asin'], current_price=d['price'], stock=d['stock'],
-                           **(amazon_price(db, row['id'], d, d, data.multiplier) if d['source'] == 'Amazon'
+                           **(amazon_price(db, row['id'], d, d, data.multiplier) if d['source'] in ('Amazon', 'Amazon_CA')
                               else planned_price(d, checks[0] if len(checks) == 1 else {}, data.multiplier, False)))]
         identities = [platform_sku.identity(d['source'], v) for v in priced]
         if len(set(identities)) != len(identities) or seen_variants.intersection(identities):
@@ -372,7 +372,7 @@ def build_preview(catalog, db, data, exclude_batch=None):
                   execution_enabled=False,
                   price_rule=('giga_regular_landed_v1' if all(i['source'] in ('GigaB2B', 'GigaB2B_CA') for i in items)
                               else 'source_specific_v1' if any(i['source'] in ('GigaB2B', 'GigaB2B_CA', 'Saleyee') for i in items)
-                              else 'amazon_captured_original_v1' if all(i['source'] == 'Amazon' for i in items)
+                              else 'amazon_captured_original_v1' if all(i['source'] in ('Amazon', 'Amazon_CA') for i in items)
                               else 'source_specific_v1'), sku_rule=platform_sku.RULE)
     from .listing_templates import annotate_preview
     annotate_preview(db, data, result, exclude_batch)

@@ -1,6 +1,7 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { PrelistingPreview } from '../api/types';
 const mock = vi.hoisted(() => ({
+  context: vi.fn(async () => ({ marketplace: 'US', postal_code: '10001' })),
   capture: vi.fn(),
   browser: vi.fn(),
   page: vi.fn(),
@@ -8,6 +9,7 @@ const mock = vi.hoisted(() => ({
 }));
 vi.mock('../api/client', () => ({
   catalogApi: {
+    sourceContext: mock.context,
     sourceCapture: mock.read,
     captureSource: mock.capture,
     browserCaptureSource: mock.browser,
@@ -240,7 +242,7 @@ it('hands a location failure to the local browser and submits only its matching 
   });
   const result = await collectSource('one', 'child', signal);
   expect(result.status).toBe('captured');
-  expect(mock.page).toHaveBeenCalledWith(page.asin, signal, 'source', false);
+  expect(mock.page).toHaveBeenCalledWith(page.asin, signal, 'source', false, undefined, 'US');
   expect(mock.browser).toHaveBeenCalledWith('one', 'child', page, signal);
 });
 
@@ -407,10 +409,44 @@ it('manual listing ZIP setup is foreground for the first child only', async () =
       vi.fn(),
       true,
     );
-    expect(mock.page.mock.calls[0]).toEqual(['B000000001', signal, 'source', true]);
-    expect(mock.page.mock.calls[1]).toEqual(['B000000002', signal, 'source', false]);
+    expect(mock.page.mock.calls[0]).toEqual([
+      'B000000001',
+      signal,
+      'source',
+      true,
+      undefined,
+      'US',
+    ]);
+    expect(mock.page.mock.calls[1]).toEqual([
+      'B000000002',
+      signal,
+      'source',
+      false,
+      undefined,
+      'US',
+    ]);
     expect(mock.capture).not.toHaveBeenCalled();
   } finally {
     vi.unstubAllGlobals();
   }
+});
+
+it('uses the persisted Canadian source context for browser capture', async () => {
+  const { collectSourceInBrowser } = await import('./sourceCollection');
+  mock.context.mockResolvedValueOnce({ marketplace: 'CA', postal_code: 'M5V 3L9' });
+  const signal = new AbortController().signal;
+  const asin = 'B000000001';
+  mock.page.mockResolvedValue({ asin, source_url: `https://www.amazon.ca/dp/${asin}`, html: 'CA' });
+  mock.browser.mockResolvedValue({
+    asin,
+    status: 'captured',
+    currency: 'CAD',
+    delivery_location: 'Toronto M5V3L9',
+  });
+  expect((await collectSourceInBrowser('canada', 'child', asin, signal)).currency).toBe('CAD');
+  expect(mock.context).toHaveBeenCalledWith('canada', signal);
+  expect(mock.page).toHaveBeenCalledWith(asin, signal, 'source', false, undefined, 'CA');
+  mock.context.mockResolvedValueOnce({ marketplace: 'CA', postal_code: 'M5V 3L9' });
+  mock.browser.mockResolvedValue({ asin, status: 'captured', delivery_location: 'New York 10001' });
+  await expect(collectSourceInBrowser('canada', 'child', asin, signal)).rejects.toThrow('M5V 3L9');
 });

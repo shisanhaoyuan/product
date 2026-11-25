@@ -76,6 +76,11 @@ export const catalogApi = {
       body: JSON.stringify({ variant_sku: sku }),
       signal,
     }),
+  sourceContext: (id: string, signal?: AbortSignal) =>
+    request<{ marketplace: 'US' | 'CA'; currency: string; postal_code: string; host: string }>(
+      `/api/products/${encodeURIComponent(id)}/source-capture/context`,
+      { signal },
+    ),
   sourceCapture: (id: string, sku?: string, signal?: AbortSignal) =>
     request<SourceCapture | null>(
       `/api/products/${encodeURIComponent(id)}/source-capture${sku ? '?variant_sku=' + encodeURIComponent(sku) : ''}`,

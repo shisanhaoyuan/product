@@ -57,7 +57,7 @@ with tempfile.TemporaryDirectory(prefix='capture-helper-test-') as tmp:
     # Extension-created initial navigations bypass Playwright routing in this Chromium build.
     # Create a blank tab in the fixture; navigate it through Playwright's mocked route below.
     (helper / 'worker.js').write_text(worker.replace(
-        'url: `https://www.amazon.com/dp/${data.asin}?th=1&psc=1`', "url: 'about:blank'"))
+        'url: `https://${host}/dp/${data.asin}?th=1&psc=1`', "url: 'about:blank'"))
     try:
         with sync_playwright() as p:
             context = p.chromium.launch_persistent_context(str(temp / 'profile'), channel='chromium', headless=True,

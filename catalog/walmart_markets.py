@@ -12,9 +12,9 @@ def market_of(bound):
 
 def require_sources(items, marketplace):
     for item in items:
-        source_market = 'CA' if item['source'] == 'GigaB2B_CA' else 'US'
+        source_market = 'CA' if item['source'] in ('GigaB2B_CA', 'Amazon_CA') else 'US'
         if source_market != marketplace:
-            raise HTTPException(409, '加拿大云仓商品仅能预上架到加拿大站 CAD 店铺；美国来源商品仅能预上架到美国站 USD 店铺，不能跨站或自动换汇')
+            raise HTTPException(409, '加拿大来源商品仅能预上架到加拿大站 CAD 店铺；美国来源商品仅能预上架到美国站 USD 店铺，不能跨站或自动换汇')
 
 
 def spec_version(db, store_id):

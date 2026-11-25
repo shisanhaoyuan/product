@@ -466,7 +466,7 @@ const issues = computed(() => doc.value?.validation.rows?.[activeSku.value]?.err
 const priceReview = computed(() => doc.value?.source_price_reviews?.[activeSku.value]);
 const priceRecovery = ref<InstanceType<typeof ListingPriceRecovery>>();
 const hasSellingPrice = computed(() => Number.isFinite(Number(current.value?.orderable.price)) && Number(current.value?.orderable.price) > 0);
-const needsSourcePrice = computed(() => source.value?.source === 'Amazon' &&
+const needsSourcePrice = computed(() => ['Amazon', 'Amazon_CA'].includes(source.value?.source || '') &&
   sourceVariant.value?.error === '缺少来源采集原价，请采集卖家与报价后重新计算' && !priceReview.value);
 async function openPriceRecovery() {
   tab.value = 'basic';
@@ -476,7 +476,7 @@ async function openPriceRecovery() {
 
 function canVerifySourceIssue(issue: Issue) {
   const missing = '缺少来源采集原价，请采集卖家与报价后重新计算';
-  return issue.code === 'source_price_review' || (source.value?.source === 'Amazon' &&
+  return issue.code === 'source_price_review' || (['Amazon', 'Amazon_CA'].includes(source.value?.source || '') &&
     sourceVariant.value?.error === missing && [
       `${sourceVariant.value.sku}：${missing}`, '缺少已核验的来源售价，不能提交',
     ].includes(issue.message));
@@ -1047,7 +1047,7 @@ onBeforeUnmount(() => {
                   : 'AI 未配置，来源资料仍可正常查看和编辑')
               }}
             </p>
-            <p class="muted">商品库同一会话采集 → 计算售价 → AI 填充 → 校验；邮编失效时打开网页设置 10001，完成后自动继续。</p>
+            <p class="muted">商品库同一会话采集 → 计算售价 → AI 填充 → 校验；邮编失效时打开网页设置当前站点配送邮编，完成后自动继续。</p>
             <small v-if="generation"
               >已处理 {{ generationProcessed }} /
               {{ generation.report.total ?? doc.rows.length }} 个 SKU ·
@@ -1065,7 +1065,7 @@ onBeforeUnmount(() => {
         </div>
         <div v-if="awaitingSources" class="notice">
           <p>正在沿用商品库的采集方式。若邮编失效，可打开同一浏览器设置；浏览器会保留 Cookie，后续子商品继续使用。</p>
-          <button class="btn" :disabled="busy || collectingSources" @click="setSourceLocation">打开网页设置 10001 并继续</button>
+          <button class="btn" :disabled="busy || collectingSources" @click="setSourceLocation">打开网页设置当前站点配送邮编 并继续</button>
           <button class="btn" @click="cancelSourceCollection">停止本轮采集</button>
           <CollectorPluginLinks />
         </div>
@@ -1618,6 +1618,7 @@ onBeforeUnmount(() => {
               :key="activeSku"
               ref="priceRecovery"
               :asin="sourceVariant?.asin"
+              :source="source?.source"
               :multiplier="doc.basis.multiplier"
               :collection="generationRow?.source_collection || generationRow?.collection"
               :disabled="locked || busy || saving"

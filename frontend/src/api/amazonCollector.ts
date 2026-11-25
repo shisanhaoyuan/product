@@ -6,6 +6,7 @@ export interface CollectorItem {
   message: string;
 }
 export interface CollectorJob {
+  marketplace?: 'US' | 'CA';
   id: string;
   created_at: string;
   state: string;
@@ -21,6 +22,7 @@ export interface CollectorJob {
   };
 }
 export interface CollectorTask {
+  marketplace?: 'US' | 'CA';
   root_asin: string;
   asin: string;
   token: string;
@@ -36,11 +38,16 @@ const base = '/api/integrations/amazon-collector';
 export const collectorApi = {
   status: () => request<{ jobs: CollectorJob[]; wraith_configured: boolean }>(base),
   get: (id: string) => request<CollectorJob>(`${base}/jobs/${id}`),
-  create: (text: string, include_variants: boolean, request_id: string) =>
+  create: (
+    text: string,
+    include_variants: boolean,
+    request_id: string,
+    marketplace: 'US' | 'CA' = 'US',
+  ) =>
     request<CollectorJob>(`${base}/jobs`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, include_variants, request_id }),
+      body: JSON.stringify({ text, include_variants, request_id, marketplace }),
     }),
   action: <T = CollectorJob>(id: string, action: string, data?: unknown) =>
     request<T>(`${base}/jobs/${id}/${action}`, {
@@ -48,10 +55,13 @@ export const collectorApi = {
       headers: { 'Content-Type': 'application/json' },
       body: data ? JSON.stringify(data) : undefined,
     }),
-  sheet: (file: File) =>
-    request<SheetPreview>(`${base}/spreadsheet?filename=${encodeURIComponent(file.name)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/octet-stream' },
-      body: file,
-    }),
+  sheet: (file: File, marketplace: 'US' | 'CA' = 'US') =>
+    request<SheetPreview>(
+      `${base}/spreadsheet?filename=${encodeURIComponent(file.name)}&marketplace=${marketplace}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: file,
+      },
+    ),
 };

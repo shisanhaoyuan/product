@@ -1,3 +1,4 @@
+from .amazon_markets import source_market, location_matches
 """Consume this filling run's catalog captures without starting another browser session."""
 import json
 import re
@@ -18,8 +19,8 @@ class SourceReceipts(BaseModel):
 def source_targets(basis, statuses):
     from .walmart_publishing import EDITABLE
     return [dict(platform_sku=v['platform_sku'],listing_id=i['listing_id'],
-                 sku=v.get('capture_sku') or '',asin=v['asin'])
-            for i in basis['items'] if i.get('source')=='Amazon' for v in i['variants']
+                 sku=v.get('capture_sku') or '',asin=v['asin'],marketplace=source_market(i['source']))
+            for i in basis['items'] if i.get('source') in ('Amazon', 'Amazon_CA') for v in i['variants']
             if statuses.get(v['platform_sku'],{}).get('status','unsubmitted') in EDITABLE]
 
 
@@ -41,8 +42,8 @@ def checked_receipts(db, job, report, receipts):
         if not newest or newest['id']!=row['id']:
             raise HTTPException(409,'采集记录已被更新，请重新采集后继续')
         quote=json.loads(row['data_json'])
-        if quote.get('status') not in ('captured','partial') or not re.search(r'\b10001\b',quote.get('delivery_location') or ''):
-            raise HTTPException(409,'请在商品库使用的浏览器中设置邮编 10001，再继续采集')
+        if quote.get('status') not in ('captured','partial') or not location_matches(quote.get('delivery_location'), target.get('marketplace','US')):
+            raise HTTPException(409,'请在商品库使用的浏览器中设置当前站点的配送邮编，再继续采集')
         result[target['platform_sku']]=quote
     # Only this operator's captures may change the source overlay during the handoff.
     start=datetime.fromtimestamp(job['started_at']/1000,timezone.utc).isoformat()
@@ -103,7 +104,7 @@ def apply_sources(catalog, job, report, progress, checked_context):
         for target in report.get('source_targets',[]):
             sku=target['platform_sku'];quote=captures[sku]
             outcome=dict(state=quote['status'],asin=target['asin'],method=quote.get('method'),
-                         message='已使用本轮商品库采集结果，配送邮编 10001；未启动其他浏览器',
+                         message='已使用本轮商品库采集结果，配送地区已核验；未启动其他浏览器',
                          capture_id=quote['capture_id'],facts=quote.get('listing_facts',{}),
                          image_collection=quote.get('image_collection',{}))
             entry=report['rows'].setdefault(sku,dict(state='running',preparation_state='collecting',issues=[],fields={},rounds=[]))
