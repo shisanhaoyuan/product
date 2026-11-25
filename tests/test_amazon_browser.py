@@ -292,11 +292,18 @@ def test_location_failure_still_returns_verified_product_html(monkeypatch):
     from catalog import amazon_browser_worker as worker
     closed = []
     html = page(ASIN).replace('10001', '90001')
+    gallery_reads = [0]
+    def evaluate(script):
+        if 'signature:value.signature' in script:
+            gallery_reads[0] += 1
+            return {'available': True, 'signature': 'fixture-gallery'}
+        return html
     browser_page = SimpleNamespace(
         set_default_timeout=lambda _: None,
         set_default_navigation_timeout=lambda _: None,
         goto=lambda *a, **k: SimpleNamespace(ok=True),
-        evaluate=lambda _: html,
+        evaluate=evaluate,
+        wait_for_timeout=lambda _: None,
     )
     session = SimpleNamespace(page=browser_page, close=lambda: closed.append(True))
     monkeypatch.setitem(sys.modules, 'wraith.engine', SimpleNamespace(

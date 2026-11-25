@@ -47,5 +47,6 @@ globalThis.jiwuImageGallery = function () {
     if (value && urls.size < 100) urls.add(value);
   }
   for (const url of urls) { const image = document.createElement('img'); image.setAttribute('src', url); section.append(image); }
-  return { html: section.outerHTML + (gallery ? `'colorImages': {'initial': ${gallery}}` : ''), available: !!gallery || urls.size > 0 };
+  const html = section.outerHTML + (gallery ? `'colorImages': {'initial': ${gallery}}` : '');
+  return { html, available: !!gallery || urls.size > 0, count: urls.size, signature: html };
 };

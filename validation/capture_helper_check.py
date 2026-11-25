@@ -65,14 +65,26 @@ with tempfile.TemporaryDirectory(prefix='capture-helper-test-') as tmp:
             html = '''<!doctype html><meta charset="utf-8"><title>Simulated verification</title>
               <button id="manual">模拟人工验证完成</button><div id="gallery"></div>
               <script>document.querySelector('#manual').onclick=()=>{
-                document.querySelector('#gallery').innerHTML='<input id="ASIN" value="B000000000"><img id="landingImage" src="https://m.media-amazon.com/images/I/verified.jpg">';
+                const urls=Array.from({length:8},(_,i)=>`https://m.media-amazon.com/images/I/verified-${i}.jpg`);
+                const initial=JSON.stringify(urls.slice(0,3).map(hiRes=>({hiRes})));
+                document.querySelector('#gallery').innerHTML=`<input id="ASIN" value="B000000000">
+                  <div id="imageBlock"><img id="landingImage" src="${urls[0]}">
+                    <div id="altImages">${urls.slice(1).map(url=>`<li class="imageThumbnail"><img src="${url}"></li>`).join('')}</div></div>`;
+                const script=document.createElement('script');
+                script.textContent='"colorImages": {"initial": '+initial+'}';
+                document.querySelector('#gallery').append(script);
                 document.querySelector('#manual').remove();
               }</script>'''
             context.route('https://www.amazon.com/**', lambda route: route.fulfill(body=html, content_type='text/html'))
             image = io.BytesIO()
             Image.new('RGB', (160, 160), '#7997ba').save(image, format='PNG')
             import catalog.listing_vision
-            catalog.listing_vision.fetch_image = lambda _: image.getvalue()
+            def unique_image(url):
+                out = io.BytesIO()
+                color = tuple((sum(url.encode()) + index * 31) % 256 for index in range(3))
+                Image.new('RGB', (160, 160), color).save(out, format='PNG')
+                return out.getvalue()
+            catalog.listing_vision.fetch_image = unique_image
             context.route('https://m.media-amazon.com/**', lambda route: route.fulfill(body=image.getvalue(), content_type='image/png'))
             context.add_init_script("localStorage.setItem('jiwu-source-browser-v2','no')")
             page = context.pages[0]
@@ -92,8 +104,9 @@ with tempfile.TemporaryDirectory(prefix='capture-helper-test-') as tmp:
             # This is a fixture button, never a real CAPTCHA.
             amazon.get_by_role('button', name='模拟人工验证完成').click()
             expect(page.locator('.image-capture-grid')).to_be_visible(timeout=15000)
-            expect(page.get_by_text('已核验 ASIN B000000000，抓取到 1 张图片；请选择需要添加的图片。')).to_be_visible()
-            expect(page.locator('.image-capture-grid img')).to_have_js_property('naturalWidth', 160)
+            expect(page.get_by_text('已核验 ASIN B000000000，抓取到 8 张图片；请选择需要添加的图片。')).to_be_visible()
+            expect(page.locator('.image-capture-grid img')).to_have_count(8)
+            expect(page.locator('.image-capture-grid img').first).to_have_js_property('naturalWidth', 160)
             assert app.state.catalog.export() == before
             page.screenshot(path=str(ROOT / 'validation/capture-helper-success.png'))
             page.set_viewport_size({'width': 390, 'height': 844})

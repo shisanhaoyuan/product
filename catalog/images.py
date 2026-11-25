@@ -129,59 +129,63 @@ def amazon_images(html, asin):
             return False
 
     result = list(dict.fromkeys(url for url in candidates if accepted(url)))
-    if not result:
-        from .source_capture import Document
+    from .source_capture import Document
 
-        doc = Document(html).root
-        # A plugin-produced current gallery explicitly carries the verified ASIN.
-        galleries = doc.ids('jiwu-image-gallery')
-        if any(node.attrs.get('data-asin') != asin for node in galleries):
-            raise ValueError('图片图库 ASIN 与当前子商品不一致，原图片未改变')
-        nodes = [child for section in galleries for child in section.nodes() if child.tag == 'img']
-        if not nodes:
-            # Raw HTML/manual HTTP capture: only the current product image block,
-            # never a page-wide img scan (recommendations/variant swatches).
-            for node in doc.nodes():
-                if node.tag != 'img':
-                    continue
-                parent = node
-                within = False
-                excluded = False
-                while parent.parent:
-                    ident = parent.attrs.get('id', '')
-                    if re.search(r'recommend|sponsored|twister|^variation_', ident, re.I):
-                        excluded = True
-                    if 'videoThumbnail' in parent.attrs.get('class', '').split():
-                        excluded = True
-                    if ident in ('landingImage', 'imgBlkFront', 'ebooksImgBlkFront', 'imgTagWrapperId', 'imageBlock'):
-                        within = True
-                    parent = parent.parent
-                if within and not excluded:
-                    nodes.append(node)
-        for node in nodes:
-            attrs = node.attrs
-            dynamic = []
-            try:
-                values = json.loads(attrs.get('data-a-dynamic-image', '{}'))
-                if isinstance(values, dict):
+    doc = Document(html).root
+    # A plugin-produced current gallery explicitly carries the verified ASIN.
+    # Do this check even when the script gallery returned URLs, so a mismatched
+    # page cannot be partially accepted from one of its other representations.
+    galleries = doc.ids('jiwu-image-gallery')
+    if any(node.attrs.get('data-asin') != asin for node in galleries):
+        raise ValueError('图片图库 ASIN 与当前子商品不一致，原图片未改变')
+    # The static colorImages data is often incomplete (e.g. only the first three
+    # images). Merge it with the browser gallery instead of treating either
+    # representation as an exclusive fallback.
+    nodes = [child for section in galleries for child in section.nodes() if child.tag == 'img']
+    if not nodes:
+        # Raw HTML/manual HTTP capture: only the current product image block,
+        # never a page-wide img scan (recommendations/variant swatches).
+        for node in doc.nodes():
+            if node.tag != 'img':
+                continue
+            parent = node
+            within = False
+            excluded = False
+            while parent.parent:
+                ident = parent.attrs.get('id', '')
+                if re.search(r'recommend|sponsored|twister|^variation_', ident, re.I):
+                    excluded = True
+                if 'videoThumbnail' in parent.attrs.get('class', '').split():
+                    excluded = True
+                if ident in ('landingImage', 'imgBlkFront', 'ebooksImgBlkFront', 'imgTagWrapperId', 'imageBlock'):
+                    within = True
+                parent = parent.parent
+            if within and not excluded:
+                nodes.append(node)
+    for node in nodes:
+        attrs = node.attrs
+        dynamic = []
+        try:
+            values = json.loads(attrs.get('data-a-dynamic-image', '{}'))
+            if isinstance(values, dict):
 
-                    def area(pair):
-                        dimensions = pair[1]
-                        if (
-                            isinstance(dimensions, list)
-                            and len(dimensions) == 2
-                            and all(isinstance(value, (int, float)) for value in dimensions)
-                        ):
-                            return dimensions[0] * dimensions[1]
-                        return 0
+                def area(pair):
+                    dimensions = pair[1]
+                    if (
+                        isinstance(dimensions, list)
+                        and len(dimensions) == 2
+                        and all(isinstance(value, (int, float)) for value in dimensions)
+                    ):
+                        return dimensions[0] * dimensions[1]
+                    return 0
 
-                    dynamic = [url for url, _ in sorted(values.items(), key=area, reverse=True)]
-            except (ValueError, TypeError):
-                pass
-            urls = [attrs.get('data-old-hires'), *dynamic, attrs.get('src'), attrs.get('data-src')]
-            url = next((candidate for candidate in urls if accepted(candidate)), None)
-            if url and url not in result:
-                result.append(url)
+                dynamic = [url for url, _ in sorted(values.items(), key=area, reverse=True)]
+        except (ValueError, TypeError):
+            pass
+        urls = [attrs.get('data-old-hires'), *dynamic, attrs.get('src'), attrs.get('data-src')]
+        url = next((candidate for candidate in urls if accepted(candidate)), None)
+        if url and url not in result:
+            result.append(url)
     if not result:
         raise ImageGalleryUnavailable('页面未返回可核验的当前商品图片，原图片未改变')
     return result[:100]

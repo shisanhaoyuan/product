@@ -191,6 +191,34 @@ def test_empty_invalid_gallery_falls_back_to_visible_current_image():
     assert amazon_images(body+f'<img id="landingImage" data-old-hires="https://evil.test/a.jpg" src="{image}">','B012345678')==[image]
 
 
+def test_script_gallery_is_merged_with_full_browser_gallery():
+    asin = 'B012345678'
+    urls = [f'https://m.media-amazon.com/images/I/image-{index}.jpg' for index in range(8)]
+    initial = json.dumps([{'hiRes': url} for url in urls[:3]])
+    browser_gallery = ''.join(f'<img src="{url}">' for url in urls)
+    html = (
+        f'<input id="ASIN" value="{asin}"><script>"colorImages": {{"initial": {initial}}}</script>'
+        f'<section id="jiwu-image-gallery" data-asin="{asin}">{browser_gallery}</section>'
+    )
+
+    assert amazon_images(html, asin) == urls
+
+
+def test_script_gallery_only_is_not_taken_before_late_thumbnails():
+    asin = 'B012345678'
+    urls = [f'https://m.media-amazon.com/images/I/late-{index}.jpg' for index in range(8)]
+    initial = json.dumps([{'hiRes': url} for url in urls[:3]])
+    html = (
+        f'<input id="ASIN" value="{asin}"><script>"colorImages": {{"initial": {initial}}}</script>'
+        f'<section id="jiwu-image-gallery" data-asin="{asin}">'
+        + ''.join(f'<img src="{url}">' for url in urls)
+        + '</section>'
+    )
+    # Re-parsing after the live thumbnail gallery settles must recover every image,
+    # even though Amazon's initial JSON contains only a subset.
+    assert len(amazon_images(html, asin)) == 8
+
+
 def test_static_missing_gallery_requests_browser_instead_of_stopping(local,monkeypatch):
     from catalog.images import ImageGalleryUnavailable
     client,_=local;p=detail(client)

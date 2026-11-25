@@ -192,8 +192,16 @@ def collect_in_profile(asin, engine, report, profile):
             verify_or_try(session, asin, report, clear_challenge)
         page.evaluate('() => {' + (helper / 'gallery.js').read_text() + '}')
         # Product media may arrive after the offer; wait briefly before snapshotting.
-        for _ in range(10):
-            if page.evaluate('() => globalThis.jiwuImageGallery().available'):
+        previous_gallery = None
+        stable_gallery = 0
+        for _ in range(12):
+            gallery = page.evaluate('() => { const value = globalThis.jiwuImageGallery(); return {available:value.available, signature:value.signature}; }')
+            if gallery['available'] and gallery['signature'] == previous_gallery:
+                stable_gallery += 1
+            else:
+                stable_gallery = 0
+            previous_gallery = gallery['signature']
+            if stable_gallery >= 2:
                 break
             page.wait_for_timeout(600)
         verify_or_try(session, asin, report, clear_challenge)

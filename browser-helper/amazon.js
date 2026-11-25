@@ -1,6 +1,6 @@
 (() => {
   // Observe the page only. All CAPTCHA interaction remains with the user.
-  let running = false, misses = 0, imageWait = 0;
+  let running = false, misses = 0, imageWait = 0, imageStable = 0, lastGallery = '';
   let lastSource = '', sourceStable = 0;
   const locationState = globalThis.jiwuLocationState();
   const visible = node => node && node.getClientRects().length && getComputedStyle(node).visibility !== 'hidden';
@@ -50,7 +50,11 @@
         lastSource = snippet;
         if (!snippet || sourceStable < 2) return;
         const gallery = globalThis.jiwuImageGallery();
-        if (!gallery.available && ++imageWait < 8) return;
+        if (gallery.signature === lastGallery) imageStable++;
+        else imageStable = 0;
+        lastGallery = gallery.signature;
+        imageWait++;
+        if (imageStable < 2 && imageWait < 8) return;
         const html = asinInput.outerHTML + snippet + globalThis.jiwuProductDetails() + gallery.html;
         if (html.length > 6 * 1024 * 1024) return;
         const result = await chrome.runtime.sendMessage({ channel: 'catalog-capture-v1', action: 'page', asin, html });
@@ -58,7 +62,11 @@
         return;
       }
       const gallery = globalThis.jiwuImageGallery();
-      if (!gallery.available && ++imageWait < 8) return;
+      if (gallery.signature === lastGallery) imageStable++;
+      else imageStable = 0;
+      lastGallery = gallery.signature;
+      imageWait++;
+      if (imageStable < 2 && imageWait < 8) return;
       const html = asinInput.outerHTML + gallery.html;
       if (html.length > 6 * 1024 * 1024) return;
       const result = await chrome.runtime.sendMessage({ channel: 'catalog-capture-v1', action: 'page', asin, html });
