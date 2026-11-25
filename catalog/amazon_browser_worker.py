@@ -180,21 +180,19 @@ def collect_in_profile(asin, engine, report, profile):
             location_verified = False
         report['location_verified'] = location_verified
         verify_or_try(session, asin, report, clear_challenge)
+        helper = Path(__file__).parent.parent / 'browser-helper'
+        page.evaluate('() => {' + (helper / 'offers.js').read_text() +
+                      '; globalThis.jiwuReadOffer = globalThis.jiwuOfferReader(); }')
         if location_verified:
-            regular = page.get_by_text(re.compile(r'^Regular\s+Price$', re.I))
-            for node in regular.all():
-                if node.is_visible():
-                    node.click();page.wait_for_timeout(600);break
-            entrances = page.locator('#aod-ingress-link, #buybox-see-all-buying-choices a, [data-action="show-all-offers-display"]')
-            for node in entrances.all():
-                if node.is_visible() and not page.locator('#aod-offer-list:visible').count():
-                    node.click()
-                    page.locator('#aod-offer-list').wait_for(state='visible', timeout=8000)
+            for _ in range(27):
+                ready = page.evaluate('() => { globalThis.jiwuOfferHTML = globalThis.jiwuReadOffer(); return !!globalThis.jiwuOfferHTML; }')
+                if ready:
                     break
-            page.wait_for_timeout(1000)
+                page.wait_for_timeout(600)
             verify_or_try(session, asin, report, clear_challenge)
         # Send only product/offer markup, not scripts, account menus, tokens or cookies.
-        html = page.evaluate(r'''() => {
+        html = page.evaluate('() => {' + (helper / 'product.js').read_text() + r'''
+
   function initialGallery(script) {
     const match = /["']colorImages["']\s*:\s*\{\s*["']initial["']\s*:\s*/.exec(script);
     if (!match) return '';
@@ -217,44 +215,16 @@ def collect_in_profile(asin, engine, report, profile):
   }
 
 
-    function excludedOfferNode(node) {
-      for (let current = node; current; current = current.parentElement) {
-        if (/primeSavings|recommend|sponsored/i.test(current.id || '')) return true;
-        const style = getComputedStyle(current);
-        if (current.hidden || style.display === 'none' || style.visibility === 'hidden') return true;
-      }
-      return false;
-    }
-    function offerClone(node) {
-      const clone = node.cloneNode(true);
-      const originals = [...node.querySelectorAll('*')];
-      const copies = [...clone.querySelectorAll('*')];
-      originals.forEach((child, index) => {
-        if (excludedOfferNode(child)) copies[index].remove();
-      });
-      return clone;
-    }
-
-          const selectors = ['input#ASIN', '#productTitle', '#feature-bullets', '#productDescription',
-            '#productOverview_feature_div', '#productDetails_techSpec_section_1', '#productDetails_detailBullets_sections1',
-            '#glow-ingress-line2', '#contextualIngressPtLabel_deliveryShortLine',
-            '#corePriceDisplay_desktop_feature_div', '#corePrice_feature_div', '#desktop_buybox', '#buybox',
-            '#merchant-info', '#tabular-buybox', '#deliveryBlockMessage',
-            '[id^="mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE"]', '#aod-offer-list', '#aod-ingress-link'];
-          const nodes = [...new Set(selectors.flatMap(s => [...document.querySelectorAll(s)]))].filter(node => !excludedOfferNode(node));
-          const root = document.createElement('section'); root.id = 'catalog-main-offer';
-          for (const node of nodes) {
-            if (nodes.some(other => other !== node && other.contains(node))) continue;
-            root.append(offerClone(node));
-          }
-          for (const node of root.querySelectorAll('script, style, [id*="recommend"], [id*="sponsored"]')) node.remove();
+          const identity = document.createElement('input'); identity.id = 'ASIN';
+          identity.setAttribute('value', document.querySelector('input#ASIN')?.value || '');
+          const offer = globalThis.jiwuOfferHTML || globalThis.jiwuReadOffer();
           const gallery = [...document.scripts].map(script => initialGallery(script.textContent)).find(Boolean);
           const landing = document.querySelector('img#landingImage');
           const image = document.createElement('img'); image.id = 'landingImage';
           for (const name of ['data-old-hires', 'data-a-dynamic-image']) {
             if (landing?.hasAttribute(name)) image.setAttribute(name, landing.getAttribute(name));
           }
-          return root.outerHTML + image.outerHTML + (gallery ? `'colorImages': {'initial': ${gallery}}` : '');
+          return identity.outerHTML + offer + globalThis.jiwuProductDetails() + image.outerHTML + (gallery ? `'colorImages': {'initial': ${gallery}}` : '');
         }''')
         if len(html.encode()) > 6 * 1024 * 1024:
             raise CaptureStopped('failed')

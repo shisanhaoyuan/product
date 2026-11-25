@@ -12,19 +12,27 @@ chrome.runtime.onMessage.addListener((data, sender, reply) => {
     if (origin !== 'https://www.amazon.com') {
       const permitted = await chrome.permissions.contains({ origins: [origin + '/*'] });
       if (!permitted) throw new Error('请先通过助手连接商品库网站。');
-      if (data.action === 'probe') return { ready: true, modes: ['images', 'source'], backgroundSource: true };
+      if (data.action === 'probe') return { ready: true, modes: ['images', 'source', 'import'], backgroundSource: true };
       const key = jobKey(sender.tab.id);
       const old = (await chrome.storage.session.get(key))[key];
+      if (data.action === 'reveal' && old?.requestId === data.requestId) {
+        await chrome.tabs.update(old.amazon, { active: true });
+        await chrome.storage.session.set({ [key]: { ...old, revealed: true } });
+        return {};
+      }
       if (data.action === 'cancel') {
-        if (old?.requestId === data.requestId) await chrome.storage.session.remove(key);
+        if (old?.requestId === data.requestId) {
+          await chrome.storage.session.remove(key);
+          if (!old.revealed) await chrome.tabs.remove(old.amazon).catch(() => {});
+        }
         return {};
       }
       if (data.action !== 'start' || !/^[A-Z0-9]{10}$/.test(data.asin) ||
           typeof data.requestId !== 'string' || data.requestId.length > 100) throw new Error('无效抓取请求');
       if (old) await finish(key, old, { error: '上一次抓取已被新的请求取消。' });
-      const tab = await chrome.tabs.create({ url: `https://www.amazon.com/dp/${data.asin}?th=1&psc=1`, active: data.mode !== 'source' || data.foreground === true });
+      const tab = await chrome.tabs.create({ url: `https://www.amazon.com/dp/${data.asin}?th=1&psc=1`, active: !['source', 'import'].includes(data.mode) || data.foreground === true });
       await chrome.storage.session.set({ [key]: { owner: sender.tab.id, amazon: tab.id,
-        asin: data.asin, revealed: data.foreground === true, mode: data.mode === 'source' ? 'source' : 'images',
+        asin: data.asin, revealed: data.foreground === true, mode: ['source', 'import'].includes(data.mode) ? data.mode : 'images',
         requestId: data.requestId, expires: Date.now() + 600000 } });
       return { started: true };
     }
@@ -35,6 +43,11 @@ chrome.runtime.onMessage.addListener((data, sender, reply) => {
       if (job.expires < Date.now()) { await finish(key, job, { error: '验证等待已超时，请重新抓取。' }); break; }
       if (data.action === 'task') return { asin: job.asin, mode: job.mode };
       if (data.action === 'attention') {
+        if (job.mode === 'import') {
+          await chrome.tabs.sendMessage(job.owner, { channel, requestId: job.requestId, attention: data.reason || 'verification' }).catch(() => {});
+          // Only an invalid/missing ZIP may automatically reveal an import tab.
+          if (data.reason !== 'location') return { accepted: true };
+        }
         if (!job.revealed) {
           await chrome.storage.session.set({ [key]: { ...job, revealed: true } });
           await chrome.tabs.update(job.amazon, { active: true }).catch(() => {});
@@ -45,9 +58,9 @@ chrome.runtime.onMessage.addListener((data, sender, reply) => {
       const url = new URL(sender.url);
       if (!new RegExp(`/(?:[^/]+/)?dp/${job.asin}/?$`).test(url.pathname)) break;
       await finish(key, job, { html: data.html, source_url: sender.url, asin: job.asin });
-      if (job.revealed || job.mode !== 'source')
+      if (job.revealed || !['source', 'import'].includes(job.mode))
         await chrome.tabs.update(job.owner, { active: true }).catch(() => {});
-      if (job.mode === 'source' && !job.revealed)
+      if (['source', 'import'].includes(job.mode) && !job.revealed)
         await chrome.tabs.remove(job.amazon).catch(() => {});
       return { accepted: true };
     }

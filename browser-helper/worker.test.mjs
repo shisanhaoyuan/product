@@ -104,3 +104,23 @@ test('manual foreground applies to one request only, without changing later coll
   await b.send({ action: 'start', asin: 'B012345679', mode: 'source', requestId: 'next' });
   assert.equal(b.opened[1].active, false);
 });
+
+test('import verification stays background; only ZIP or explicit reveal focuses', async () => {
+  const b = await setup();
+  await b.send({ action: 'start', asin: 'B012345678', mode: 'import', requestId: 'import1' });
+  const url = 'https://www.amazon.com/dp/B012345678';
+  await b.send({ action: 'attention', reason: 'verification' }, 22, url);
+  assert.equal(b.focused.length, 0);
+  assert.equal(b.sent[0].data.attention, 'verification');
+  await b.send({ action: 'reveal', requestId: 'wrong' });
+  assert.equal(b.focused.length, 0);
+  await b.send({ action: 'attention', reason: 'location' }, 22, url);
+  assert.equal(b.focused.length, 1);
+  await b.send({ action: 'attention', reason: 'location' }, 22, url);
+  assert.equal(b.focused.length, 1);
+  await b.send({ action: 'page', asin: 'B012345678', html: 'product' }, 22, url);
+  await b.send({ action: 'start', asin: 'B012345678', mode: 'import', requestId: 'import2' });
+  assert.equal(b.opened[1].active, false);
+  await b.send({ action: 'reveal', requestId: 'import2' });
+  assert.equal(b.focused.at(-1).id, 22);
+});

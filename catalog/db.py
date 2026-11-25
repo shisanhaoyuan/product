@@ -4,7 +4,7 @@ import json
 import sqlite3
 import threading
 import weakref
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from .models import ImportBundle
@@ -61,6 +61,8 @@ class Catalog:
                 initialize_saleyee_addresses(db, True)
                 from .product_ranges import initialize as initialize_product_ranges
                 initialize_product_ranges(db, True)
+                from .amazon_import import initialize as initialize_amazon_import
+                initialize_amazon_import(db)
             return
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -122,6 +124,8 @@ class Catalog:
             initialize_saleyee_addresses(db)
             from .product_ranges import initialize as initialize_product_ranges
             initialize_product_ranges(db)
+            from .amazon_import import initialize as initialize_amazon_import
+            initialize_amazon_import(db)
 
     def pool(self):
         from psycopg_pool import ConnectionPool
@@ -174,12 +178,14 @@ class Catalog:
         finally:
             db.close()
 
-    def ingest(self, bundle: ImportBundle, actor_id=None):
+    def ingest(self, bundle: ImportBundle, actor_id=None, *, connection=None):
         result = dict(created=0, updated=0, unchanged=0, older_skipped=0, snapshots_added=0)
         seen = set()
         rank = {"source_only": 0, "editor_snapshot": 1, "persisted_readback": 2}
-        with self.connect() as db:
-            write_lock(db)
+        with (nullcontext(connection) if connection is not None else self.connect()) as db:
+            # An injected connection belongs to the already-locked caller transaction.
+            if connection is None:
+                write_lock(db)
             from .import_history import context_data, previous_result
             context = context_data(bundle.import_context, actor_id)
             bundle_digest = hashlib.sha256(encoded(bundle.model_dump()).encode()).hexdigest()

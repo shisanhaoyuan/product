@@ -65,6 +65,8 @@ def create_app(database=None):
         if os.environ.get('CATALOG_LISTING_RESULT_WORKER','1')=='1':
             tasks.append(asyncio.create_task(serve(app)))
         tasks.append(asyncio.create_task(serve_generation(app)))
+        from .amazon_import import fallback_worker
+        tasks.append(asyncio.create_task(fallback_worker(catalog)))
         try:
             yield
         finally:
@@ -88,6 +90,8 @@ def create_app(database=None):
     app.state.image_storage=storage
     app.include_router(image_routes(catalog,storage))
     app.include_router(source_routes(catalog))
+    from .amazon_import import routes as amazon_import_routes
+    app.include_router(amazon_import_routes(catalog))
     from .giga import giga_routes
     app.include_router(giga_routes(catalog))
     app.include_router(giga_routes(catalog, 'CA'))
@@ -164,8 +168,9 @@ def create_app(database=None):
                 return Response('不允许跨站写入',status_code=403)
             length=request.headers.get('content-length')
             try:
-                if length and (int(length)<0 or int(length)>20*1024*1024):
-                    return Response('请求不能超过 20 MB',status_code=413)
+                limit_mb=150 if path.rstrip('/')=='/api/integrations/amazon-collector/spreadsheet' else 20
+                if length and (int(length)<0 or int(length)>limit_mb*1024*1024):
+                    return Response(f'请求不能超过 {limit_mb} MB',status_code=413)
             except ValueError:
                 return Response('无效 Content-Length',status_code=400)
         result=await call_next(request)

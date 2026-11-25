@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import AmazonCollector from '../components/AmazonCollector.vue';
 import AppIcon from '../components/AppIcon.vue';
 import SaleyeeIntegration from '../components/SaleyeeIntegration.vue';
 import GigaIntegration from '../components/GigaIntegration.vue';
@@ -16,6 +17,7 @@ const { auth } = useAuth();
     <a class="btn" href="/docs" target="_blank" rel="noopener">API 文档 ↗</a>
   </div>
   <div class="integration-grid">
+    <AmazonCollector />
     <GigaIntegration region="US" />
     <GigaIntegration region="CA" />
     <SaleyeeIntegration />

@@ -20,63 +20,11 @@
     }
     return '';
   }
-  let running = false, misses = 0, openedOffers = false, selectedRegular = false;
+  let running = false, misses = 0;
   let lastSource = '', sourceStable = 0;
   const locationState = globalThis.jiwuLocationState();
   const visible = node => node && node.getClientRects().length && getComputedStyle(node).visibility !== 'hidden';
-  function sourceSnippet() {
-    const regular = [...document.querySelectorAll('label, button, a, span')]
-      .filter(n => visible(n) && /^Regular\s+Price$/i.test(n.textContent.trim()));
-    if (!selectedRegular && regular.length) {
-      selectedRegular = true;
-      regular[regular.length - 1].click();
-      return '';
-    }
-    const entries = [...new Set([
-      ...document.querySelectorAll('a[href*="aod"], [data-action="show-all-offers-display"], #buybox-see-all-buying-choices a, #aod-ingress-link'),
-      ...[...document.querySelectorAll('a, button')].filter(n => /Other sellers on Amazon|See All Buying Options/i.test(n.textContent)),
-    ])].filter(visible);
-    const panel = [...document.querySelectorAll('#aod-offer-list')]
-      .find(visible);
-    if (entries.length && !panel) {
-      if (!openedOffers) { openedOffers = true; entries[0].click(); }
-      return '';
-    }
-    if (panel && [...panel.parentElement.querySelectorAll('[aria-busy="true"], .a-spinner-wrapper')].some(visible)) return '';
-
-    function excludedOfferNode(node) {
-      for (let current = node; current; current = current.parentElement) {
-        if (/primeSavings|recommend|sponsored/i.test(current.id || '')) return true;
-        const style = getComputedStyle(current);
-        if (current.hidden || style.display === 'none' || style.visibility === 'hidden') return true;
-      }
-      return false;
-    }
-    function offerClone(node) {
-      const clone = node.cloneNode(true);
-      const originals = [...node.querySelectorAll('*')];
-      const copies = [...clone.querySelectorAll('*')];
-      originals.forEach((child, index) => {
-        if (excludedOfferNode(child)) copies[index].remove();
-      });
-      return clone;
-    }
-
-    const wrapper = document.createElement('section');
-    wrapper.id = 'catalog-main-offer';
-    const selectors = ['#corePriceDisplay_desktop_feature_div', '#corePrice_feature_div',
-      '#desktop_buybox', '#buybox', '#merchant-info', '#tabular-buybox', '#deliveryBlockMessage',
-      '[id^="mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE"]'];
-    const nodes = [...new Set(selectors.flatMap(s => [...document.querySelectorAll(s)]))].filter(node => visible(node) && !excludedOfferNode(node));
-    for (const node of nodes) {
-      if (nodes.some(other => other !== node && other.contains(node))) continue;
-      wrapper.append(offerClone(node));
-    }
-    if (!wrapper.textContent.trim() && !panel) return '';
-    for (const node of wrapper.querySelectorAll('script, style, [id*="recommend"], [id*="sponsored"], #aod-container, #all-offers-display')) node.remove();
-    const locationNode = document.querySelector('#glow-ingress-line2, #contextualIngressPtLabel_deliveryShortLine');
-    return wrapper.outerHTML + (locationNode?.outerHTML || '') + (panel?.outerHTML || '');
-  }
+  const sourceSnippet = globalThis.jiwuOfferReader();
   function stop() {
     clearInterval(timer);
     document.getElementById('jiwu-location-help')?.remove();
@@ -88,8 +36,8 @@
       const task = await chrome.runtime.sendMessage({ channel: 'catalog-capture-v1', action: 'task' });
       if (!task?.asin) { if (++misses >= 4) stop(); return; }
       if (document.querySelector('form[action*="validateCaptcha"], input#captchacharacters') ||
-          /sorry, we just need to make sure|click the button below to continue shopping/i.test(document.body?.innerText || '')) {
-        await chrome.runtime.sendMessage({ channel: 'catalog-capture-v1', action: 'attention' });
+          /sorry, we just need to make sure|click the button below to continue shopping|verify you are human|robot check|press and hold/i.test(document.body?.innerText || '')) {
+        await chrome.runtime.sendMessage({ channel: 'catalog-capture-v1', action: 'attention', reason: 'verification' });
         return;
       }
       const asins = [...document.querySelectorAll('input#ASIN')].map(el => el.value);
@@ -99,14 +47,14 @@
       if (document.querySelector('form[action*="validateCaptcha"], input#captchacharacters')) return;
       const asinInput = document.createElement('input');
       asinInput.id = 'ASIN'; asinInput.setAttribute('value', asin);
-      if (task.mode === 'source') {
+      if (task.mode === 'source' || task.mode === 'import') {
         const delivery = [...document.querySelectorAll('#glow-ingress-line2, #contextualIngressPtLabel_deliveryShortLine')]
           .filter(visible).map(node => node.textContent).join(' ');
         const locationStatus = locationState(delivery, document.readyState === 'complete', Date.now());
         if (locationStatus === 'pending') return;
         if (locationStatus === 'invalid') {
-          await chrome.runtime.sendMessage({ channel: 'catalog-capture-v1', action: 'attention' });
-          lastSource = ''; sourceStable = 0; openedOffers = false;
+          await chrome.runtime.sendMessage({ channel: 'catalog-capture-v1', action: 'attention', reason: 'location' });
+          lastSource = ''; sourceStable = 0;
           if (!document.getElementById('jiwu-location-help')) {
             const banner = document.createElement('div');
             banner.id = 'jiwu-location-help';
@@ -127,7 +75,7 @@
         for (const name of ['data-old-hires', 'data-a-dynamic-image']) {
           if (landing?.hasAttribute(name)) image.setAttribute(name, landing.getAttribute(name));
         }
-        const html = asinInput.outerHTML + snippet + image.outerHTML + (gallery ? `'colorImages': {'initial': ${gallery}}` : '');
+        const html = asinInput.outerHTML + snippet + (globalThis.jiwuProductDetails?.() || '') + image.outerHTML + (gallery ? `'colorImages': {'initial': ${gallery}}` : '');
         if (html.length > 6 * 1024 * 1024) return;
         const result = await chrome.runtime.sendMessage({ channel: 'catalog-capture-v1', action: 'page', asin, html });
         if (result?.accepted) stop();

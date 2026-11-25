@@ -46,7 +46,10 @@ with sync_playwright() as p:
     context.route('https://www.amazon.com/**', lambda r:r.fulfill(body=markup(),content_type='text/html'))
     page = context.new_page()
     page.goto(f'https://www.amazon.com/dp/{ASIN}')
-    backend = page.evaluate(extractor)
+    for name in ('offers.js','product.js','location-state.js'):
+        page.add_script_tag(path=str(ROOT/'browser-helper'/name))
+    page.evaluate('globalThis.jiwuReadOffer = jiwuOfferReader(); globalThis.jiwuOfferHTML = jiwuReadOffer();')
+    backend = page.evaluate('() => {' + extractor)
     page.evaluate('''() => {window.submissions=[];window.chrome={runtime:{sendMessage:async d=> {
       if(d.action==='task')return {asin:'B0HJ4NFJ4V',mode:'source'};
       if(d.action==='page'){submissions.push(d);return {accepted:true};}

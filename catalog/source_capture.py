@@ -98,7 +98,7 @@ def amounts(text):
 
 def crossed(node, root):
     while node is not root:
-        if (node.tag in {'s', 'del'} or 'a-text-price' in node.attrs.get('class', '').split()
+        if (node.tag in {'s', 'del', 'strike'} or 'a-text-price' in node.attrs.get('class', '').split()
                 or node.attrs.get('data-a-strike') == 'true'
                 or 'line-through' in node.attrs.get('style', '')):
             return True
@@ -108,6 +108,10 @@ def crossed(node, root):
 
 def parse_offer(root, scope):
     prices, originals = [], []
+    for node in list(root.nodes()):
+        classes = node.attrs.get('class', '').split()
+        if 'a-accordion-row' in classes and 'a-accordion-active' not in classes:
+            node.attrs['hidden'] = ''
     price_roots = root.ids('corePriceDisplay_desktop_feature_div', 'corePrice_feature_div',
                            'apex_desktop', 'aod-offer-price') or [root]
     for price_root in price_roots:
@@ -133,6 +137,9 @@ def parse_offer(root, scope):
             if symbol not in {'$', 'US$'} or not re.fullmatch(r'[0-9]+(?:,[0-9]{3})*', whole) or not re.fullmatch(r'[0-9]{2}', fraction):
                 continue
             (originals if crossed(n, root) else prices).extend(amounts(f'{symbol}{whole}.{fraction}'))
+    # Legacy buyboxes expose visible dollar amounts without a-offscreen markup.
+    for node in root.ids('price_inside_buybox', 'newBuyBoxPrice', 'priceblock_ourprice', 'priceblock_dealprice'):
+        (originals if crossed(node, root) else prices).extend(amounts(node.text()))
     prices = unique(prices)
     originals = unique(originals)
     price = prices[0] if len(prices) == 1 else None
@@ -201,6 +208,10 @@ def amazon_source(html, asin):
     if identity.asins != {asin}:
         raise ValueError('网页 ASIN 与当前商品不一致，未保存采集结果')
     doc = Document(html).root
+    if any(n.attrs.get('data-offers-incomplete') == 'true' for n in doc.nodes()):
+        return dict(status='partial', asin=asin, price=None, original_price=None, basis_price=None,
+                    delivery_location=' '.join(n.text() for n in doc.ids('glow-ingress-line2', 'contextualIngressPtLabel_deliveryShortLine')),
+                    issues=['卖家报价列表尚未加载完整，价格暂缺，未根据部分列表猜测'])
     panels = doc.ids('aod-offer-list')
     entrances = doc.ids('aod-ingress-link', 'buybox-see-all-buying-choices', 'buybox-see-all-buying-choices-announce')
     entrances += [n for n in doc.nodes() if n.tag in {'a', 'button'} and (
@@ -221,7 +232,7 @@ def amazon_source(html, asin):
                 if excluded or heading.strip().casefold() != 'new' or re.search(r'(?:prime|members?)[ -]*(?:exclusive|only|price)|(?:price|deal|offer)\s*(?:exclusive to|for)\s*(?:prime|members)|join prime to buy|prime members', node.text(), re.I):
                     continue
                 ids = {n.attrs.get('value', n.attrs.get('data-asin', '')) for n in node.nodes()
-                       if n.attrs.get('name', '').lower() == 'asin' or n.attrs.get('data-asin')}
+                       if n.attrs.get('name', '').lower() in ('asin', 'items[0.base][asin]') or n.attrs.get('data-asin')}
                 if ids and ids != {asin}:
                     raise ValueError('报价行 ASIN 不匹配，未保存采集结果')
                 offer = parse_offer(node, f'sellers_on_amazon_list:{i + 1}')
@@ -243,6 +254,11 @@ def amazon_source(html, asin):
                 ident = node.attrs.get('id', '')
                 if re.search(r'recommend|sponsored|aod-|all-offers|primeSavings', ident, re.I):
                     node.attrs['hidden'] = ''
+        if roots:
+            ids = {n.attrs.get('value', '') for n in roots[0].nodes()
+                   if n.attrs.get('name', '').lower() in ('asin', 'items[0.base][asin]')}
+            if ids and ids != {asin}:
+                raise ValueError('主报价 ASIN 不匹配，未保存采集结果')
         result = parse_offer(roots[0], 'main_offer') if roots else {}
         if roots and re.search(r'(?:prime|members?)[ -]*(?:exclusive|only|price)|join prime to buy|prime members', roots[0].text(), re.I):
             result = {}
@@ -284,10 +300,10 @@ def collect_quote_page(asin, fetch):
     return html,quote,'wraith_background'
 
 
-def save_capture(catalog, db, lid, sku, asin, result, actor_id, url, method):
+def save_capture(catalog, db, lid, sku, asin, result, actor_id, url, method, *, observed_at=None, sync_to_catalog=True):
     """Persist with the caller's transaction so generation can atomically rebase its snapshot."""
     capture_id = uuid.uuid4().hex
-    result = dict(result, capture_id=capture_id, source_url=url, captured_at=datetime.now(timezone.utc).isoformat(),
+    result = dict(result, capture_id=capture_id, source_url=url, captured_at=observed_at or datetime.now(timezone.utc).isoformat(),
                   variant_sku=sku or '', method=method)
     row = db.execute('SELECT data_json FROM listings WHERE id=?', (lid,)).fetchone()
     product = json.loads(row[0]) if row else {}
@@ -297,7 +313,7 @@ def save_capture(catalog, db, lid, sku, asin, result, actor_id, url, method):
     result['source_digest_before'] = db.execute('SELECT digest FROM current_listings WHERE id=?',(lid,)).fetchone()[0]
     db.execute('INSERT INTO source_captures VALUES(?,?,?,?,?,?,?)',
                (capture_id, lid, sku or '', asin, result['captured_at'], actor_id, json.dumps(result, ensure_ascii=False)))
-    if result['status'] != 'verification_required':
+    if sync_to_catalog and result['status'] != 'verification_required':
         from .source_sync import sync_capture
         result['sync'] = sync_capture(catalog, db, lid, sku, asin, result, actor_id)
     result['source_digest_after'] = db.execute('SELECT digest FROM current_listings WHERE id=?',(lid,)).fetchone()[0]

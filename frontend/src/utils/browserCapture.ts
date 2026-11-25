@@ -4,8 +4,9 @@ const channel = 'catalog-capture-v1';
 export function captureInBrowser(
   asin: string,
   signal: AbortSignal,
-  mode: 'images' | 'source' = 'images',
+  mode: 'images' | 'source' | 'import' = 'images',
   foreground = false,
+  onAttention?: (reason: string, reveal: () => void) => void,
 ): Promise<BrowserPage> {
   return new Promise((resolve, reject) => {
     const requestId = crypto.randomUUID();
@@ -42,11 +43,19 @@ export function captureInBrowser(
         !['reply', 'result'].includes(data.action)
       )
         return;
+      if (data.attention) {
+        onAttention?.(String(data.attention), () => send('reveal'));
+        return;
+      }
       if (data.error) {
         finish(new Error(String(data.error)));
         return;
       }
       if (data.ready && !started) {
+        if (mode === 'import' && !data.modes?.includes('import')) {
+          finish(new Error('请下载并重新加载集物商品采集助手 2.0.0，再刷新页面。'));
+          return;
+        }
         if (mode === 'source' && (!data.modes?.includes('source') || !data.backgroundSource)) {
           finish(
             new Error(

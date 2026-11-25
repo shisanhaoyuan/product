@@ -233,3 +233,13 @@ def test_verified_ordinary_offer_does_not_require_browser_retry(monkeypatch):
     _,quote,method=collect_quote_page('B000000000',lambda asin:page(asin,content))
     assert method=='server' and quote['price']=='143.99'
     assert quote['original_price'] is None
+
+
+def test_legacy_prices_inactive_accordion_and_unloaded_offers():
+    body='<span id="price_inside_buybox">$35.00</span><div class="a-accordion-row"><span class="a-offscreen">$1.00</span></div><a id="sellerProfileTriggerId">Store</a><div id="deliveryBlockMessage">FREE delivery tomorrow</div>'
+    assert amazon_source(page(content=body),'B000000000')['price']=='35.00'
+    incomplete=page(content=body).replace('id="desktop_buybox"','id="desktop_buybox" data-offers-incomplete="true"')
+    result=amazon_source(incomplete,'B000000000')
+    assert result['price'] is None and '完整' in result['issues'][0]
+    with pytest.raises(ValueError,match='ASIN'):
+        amazon_source(page(content=body+'<input name="items[0.base][asin]" value="B999999999">'),'B000000000')

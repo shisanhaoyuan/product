@@ -169,3 +169,13 @@ python validation/frontend_state_check.py
 ## 2026-11-20 店铺商品管理
 
 新增 store_items.py 和 StoreItemsView.vue，直接读取绑定店铺 API 的全部商品/精确 SKU，不通过来源库或本地提交记录推断线上商品。人工改价、分仓库存、永久下架使用独立审计表 walmart_offer_changes；校验当前账号、绑定版本、原值和权限，发送前持久化意图，模糊结果仅回读核对。手工与巡查通过共同数据库写锁及待确认记录避免互相覆盖。新表在账号 schema 初始化时创建，纳入 SQLite → PostgreSQL 迁移；权限为成员可读、编辑/管理员可写，绑定管理权限不变。详见 deploy/store-items.md。
+
+## 2026-11-25 Amazon 自有插件采集
+
+数据接入新增自有扩展采集任务，见 [采集部署说明](deploy/amazon-collector.md)。`amazon_import.py` 编排员工浏览器与既有服务器 Wraith，迁移26保存任务、逐ASIN租约和结果；使用 `amazon-browser-us` namespace，通过 `Catalog.ingest(connection=已加锁事务)` 与报价记录原子入库。暂停／租约过期／失权后的旧结果拒绝保存，较旧采集不能覆盖新资料；不修改历史 ERP 模板或人工覆盖层。
+
+`browser-helper/product.js` 与 `offers.js` 同时供插件2.0和Wraith使用。真实映射须包含当前ASIN，逐子ASIN采图、价格与属性；只展开真实变体，不乘规格数或借用其他商品报价。普通价、原价分别保存；卖家报价需完成懒加载后判断唯一性。地区失效才自动前台，验证失败可人工打开，状态不继承到下一次采集。
+
+采集表支持150MB的XLSX/CSV/TSV及拖放；上传流写临时文件，CSV流式读取，两个表格解析槽，保留解压、共享文本、10000扫描行及100输入/500子ASIN的批次上限。其他导入接口保留原上限。已有Nginx站点需要将`client_max_body_size`同步为150m并检查重载，Git更新不直接修改线上站点。
+
+新增测试使用隔离库和模拟页面；`validation/amazon_collector_check.py`加载实际扩展，覆盖Excel拖入、子变体识别、报价展开和入库。不得用生产库或真实沃尔玛提交作为验收。

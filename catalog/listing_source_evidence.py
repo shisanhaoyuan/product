@@ -18,16 +18,33 @@ def amazon_details(html,asin):
         raise ListingAIError('补采页面 ASIN 与当前子商品不一致')
     root=Document(html).root
     title=root.ids('productTitle')
-    features=[n.text() for section in root.ids('feature-bullets') for n in section.nodes()
+    features=[n.text() for section in root.ids('feature-bullets','featurebullets_feature_div') for n in section.nodes()
               if n.tag=='li' and n.text()]
     description=root.ids('productDescription')
     attrs={}
-    for section in root.ids('productOverview_feature_div','productDetails_techSpec_section_1','productDetails_detailBullets_sections1'):
+    for section in root.ids('productOverview_feature_div','productDetails_techSpec_section_1','productDetails_detailBullets_sections1',
+                            'productDetails_techSpec_section_2','productDetails_db_sections',
+                            'technicalSpecifications_section_1','technicalSpecifications_section_2'):
         for tr in (n for n in section.nodes() if n.tag=='tr'):
             labels=[n.text() for n in tr.nodes() if n.tag=='th']
             values=[n.text() for n in tr.nodes() if n.tag=='td']
             if len(labels)==len(values)==1 and labels[0] and values[0]:
                 attrs[labels[0]]=values[0]
+            elif not labels and len(values)==2 and all(values):
+                attrs[values[0]]=values[1]
+    for section in root.ids('detailBullets_feature_div','productFactsDesktopExpander'):
+        for node in section.nodes():
+            if node.tag=='li':
+                match=re.match(r'^([^:：]{1,120})[:：]\s*(.+)$',node.text().replace('\u200e','').replace('\u200f',''))
+                if match:attrs.setdefault(match[1].strip(),match[2].strip())
+    for node in root.ids('jiwu-attributes'):
+        try:
+            selected=json.loads(node.text())
+            if isinstance(selected,dict):
+                for key,value in selected.items():
+                    if isinstance(value,str) and len(key)<=160 and len(value)<=500:
+                        attrs[key]=value
+        except ValueError:pass
     return {'content.copy':dict(title=title[0].text() if len(title)==1 else '',
             features=list(dict.fromkeys(features)),description=description[0].text() if len(description)==1 else ''),
             'content.attributes':attrs}

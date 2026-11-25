@@ -5,7 +5,7 @@
   window.addEventListener('message', async (event) => {
     if (event.source !== window || event.origin !== location.origin || event.data?.channel !== channel) return;
     const data = event.data;
-    if (!['probe', 'start', 'cancel'].includes(data.action)) return;
+    if (!['probe', 'start', 'cancel', 'reveal'].includes(data.action)) return;
     try {
       const result = await chrome.runtime.sendMessage({ ...data, channel });
       window.postMessage({ ...result, channel, action: 'reply', requestId: data.requestId }, location.origin);

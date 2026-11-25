@@ -1,4 +1,5 @@
 """Bounded, read-only spreadsheet ingestion. Codes are strings, never formulas."""
+import codecs
 import csv
 import hashlib
 import io
@@ -32,19 +33,27 @@ def normalized_header(value):
     return re.sub(r'[\s/＿_\-:：()（）]+', '', str(value or '')).casefold()
 
 
-def spreadsheet_rows(raw, filename):
+def spreadsheet_rows(raw, filename, *, max_file=MAX_FILE, max_uncompressed=80*1024*1024):
     suffix = PurePath(filename).suffix.lower()
-    if not raw or len(raw) > MAX_FILE:
-        raise HTTPException(422, '编码表不能为空，文件最大8MB')
+    stream = io.BytesIO(raw) if isinstance(raw, (bytes, bytearray)) else raw
+    stream.seek(0, 2)
+    size = stream.tell()
+    stream.seek(0)
+    if not size or size > max_file:
+        raise HTTPException(422, f'编码表不能为空，文件最大{max_file//1024//1024}MB')
     if suffix == '.xlsx':
         from openpyxl import load_workbook
         try:
-            with ZipFile(io.BytesIO(raw)) as archive:
-                if len(archive.infolist()) > 1000 or sum(v.file_size for v in archive.infolist()) > 80*1024*1024:
+            with ZipFile(stream) as archive:
+                if len(archive.infolist()) > 1000 or sum(v.file_size for v in archive.infolist()) > max_uncompressed:
                     raise HTTPException(422, 'Excel 解压内容过大，请拆分表格')
+                # openpyxl loads shared strings and styles before streaming rows.
+                if any(v.filename in ('xl/sharedStrings.xml', 'xl/styles.xml') and v.file_size > 32*1024*1024 for v in archive.infolist()):
+                    raise HTTPException(422, 'Excel 共享文本或样式过大，请删除多余格式后重试')
                 if any('vbaProject' in n for n in archive.namelist()):
                     raise HTTPException(422, '不接收包含宏的编码文件')
-            workbook = load_workbook(io.BytesIO(raw), read_only=True, data_only=False, keep_links=False)
+            stream.seek(0)
+            workbook = load_workbook(stream, read_only=True, data_only=False, keep_links=False)
             try:
                 scanned = 0
                 for sheet in workbook:
@@ -65,13 +74,22 @@ def spreadsheet_rows(raw, filename):
     elif suffix in ('.csv', '.tsv'):
         try:
             try:
-                text = raw.decode('utf-8-sig')
+                decoder = codecs.getincrementaldecoder('utf-8-sig')()
+                while chunk := stream.read(1024*1024):
+                    decoder.decode(chunk)
+                decoder.decode(b'', final=True)
+                encoding = 'utf-8-sig'
             except UnicodeDecodeError:
-                text = raw.decode('gb18030')
-            for index, row in enumerate(csv.reader(io.StringIO(text), delimiter='\t' if suffix == '.tsv' else ','), 1):
-                if index > MAX_ROWS+1 or len(row) > MAX_COLUMNS:
-                    raise HTTPException(422, '编码表最多100000行、50列，请拆分导入')
-                yield 'CSV', index, [(v, 's', 'General') for v in row]
+                encoding = 'gb18030'
+            stream.seek(0)
+            text = io.TextIOWrapper(stream, encoding=encoding, newline='')
+            try:
+                for index, row in enumerate(csv.reader(text, delimiter='\t' if suffix == '.tsv' else ','), 1):
+                    if index > MAX_ROWS+1 or len(row) > MAX_COLUMNS:
+                        raise HTTPException(422, '编码表最多100000行、50列，请拆分导入')
+                    yield 'CSV', index, [(v, 's', 'General') for v in row]
+            finally:
+                text.detach()
         except (UnicodeError, csv.Error):
             raise HTTPException(422, '无法读取 CSV/TSV，请使用 UTF-8 编码') from None
     else:
