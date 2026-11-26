@@ -544,9 +544,11 @@ def prelisting_routes(catalog):
             item=json.loads(row['data_json'])
             raw_variants=item['variants'] or [dict(sku='__parent__',asin=item.get('asin',''),price=item.get('price'),stock=item.get('stock'),attributes={})]
             images=item.get('images') or next((v.get('images',[]) for v in raw_variants if v.get('images')),[])
+            fallback_image=images[0] if images else ''
             items.append(dict(listing_id=row['id'],title=item['copy']['title'],source=item['source'],
                 asin=item.get('asin',''),image=images[0] if images else '',
-                variants=[dict(sku=v['sku'],asin=v.get('asin',''),price=v.get('price'),stock=v.get('stock'),attributes=v.get('attributes',{})) for v in raw_variants]))
+                variants=[dict(sku=v['sku'],asin=v.get('asin',''),price=v.get('price'),stock=v.get('stock'),
+                    image=(v.get('images') or [fallback_image])[0],attributes=v.get('attributes',{})) for v in raw_variants]))
         return dict(items=items,total=len(items))
 
     @router.post('/api/prelisting/preview')

@@ -271,6 +271,7 @@ export interface PrelistingSelectionItem {
   variants: {
     sku: string;
     asin: string;
+    image: string;
     price: string | null;
     stock: string | null;
     attributes: Fields;

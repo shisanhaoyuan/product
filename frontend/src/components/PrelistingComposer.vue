@@ -11,6 +11,7 @@ import type {
 } from '../api/types';
 import { errorMessage } from '../utils/display';
 import { collectMissingPrices } from '../utils/sourceCollection';
+import { previewVariantAttributes } from '../utils/variantPreview';
 import PrelistingPreview from './PrelistingPreview.vue';
 import AppIcon from './AppIcon.vue';
 import FilterSelect from './FilterSelect.vue';
@@ -364,16 +365,21 @@ async function create() {
                     setVariant(item, variant.sku, ($event.target as HTMLInputElement).checked)
                   "
                 />
+                <img
+                  v-if="variant.image"
+                  :src="variant.image"
+                  :alt="`${variant.asin || variant.sku} 商品图片`"
+                  loading="lazy"
+                />
                 <span
-                  ><b>{{ variant.asin || variant.sku }}</b
-                  ><small>{{
-                    variant.sku === '__parent__'
-                      ? '单体商品'
-                      : Object.entries(variant.attributes || {})
-                          .map(([key, value]) => `${key}: ${String(value)}`)
-                          .slice(0, 2)
-                          .join(' · ')
-                  }}</small></span
+                  ><b>{{ variant.asin || variant.sku }}</b>
+                  <small v-if="variant.sku === '__parent__'">单体商品</small>
+                  <small v-else-if="previewVariantAttributes(variant.attributes).length">
+                    <template
+                      v-for="attribute in previewVariantAttributes(variant.attributes).slice(0, 2)"
+                      :key="attribute.label"
+                    >{{ attribute.label }}：{{ attribute.value }}<br /></template>
+                  </small></span
                 >
               </label>
             </div>

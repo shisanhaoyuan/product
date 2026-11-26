@@ -272,16 +272,21 @@ def test_prelisting_can_select_subset_of_child_variants(local):
     for index in range(3):
         child=deepcopy(original.variants[0].model_dump())
         child.update(sku=f'child-20-{index}',asin=f'B00000002{index}',price_check=child['price_check']|{'sku':f'child-20-{index}'},
-                    source_facts=child['source_facts']|{'asin':f'B00000002{index}'})
+                    source_facts=child['source_facts']|{'asin':f'B00000002{index}'},
+                    attributes={'Color':{'val':['White' if index == 0 else 'Black']}},
+                    images=[f'https://img.test/child-{index}.jpg'] if index == 0 else [])
         children.append(child)
-    multi=Listing.model_validate(original.model_dump()|{'variants':children})
+    multi=Listing.model_validate(original.model_dump()|{'variants':children,'images':['https://img.test/parent.jpg']})
     catalog.ingest(ImportBundle(namespace='test',label='test',listings=[multi]))
-    response=client.post('/api/prelisting/selection',json={'listing_ids':[multi.external_id]})
     # Resolve the persisted catalog ID rather than assuming the external ID is the local row ID.
     listing_id=catalog.find(q='B000000020')['items'][0]['id']
     response=client.post('/api/prelisting/selection',json={'listing_ids':[listing_id]})
     assert response.status_code==200,response.text
-    assert [v['sku'] for v in response.json()['items'][0]['variants']]==[v['sku'] for v in children]
+    selected_variants=response.json()['items'][0]['variants']
+    assert [v['sku'] for v in selected_variants]==[v['sku'] for v in children]
+    assert selected_variants[0]['image']=='https://img.test/child-0.jpg'
+    assert selected_variants[1]['image']=='https://img.test/parent.jpg'
+    assert selected_variants[0]['attributes']=={'Color':{'val':['White']}}
     store=next(s for s in client.get('/api/listing-stores').json() if s['name']=='MYZ-L-17')
     chosen={listing_id:[children[0]['sku'],children[2]['sku']]}
     payload={'listing_ids':[listing_id],'variant_skus':chosen,'store_id':store['id'],'brand':'NewBrand','multiplier':'1.2'}

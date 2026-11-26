@@ -2975,6 +2975,14 @@ input[type='checkbox'] {
   gap: 3px;
   min-width: 0;
 }
+.variant-selection-sku > img {
+  flex: 0 0 48px;
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
+  border-radius: 6px;
+  background: #f4f6f8;
+}
 .variant-selection-sku small {
   overflow-wrap: anywhere;
 }
