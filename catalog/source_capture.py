@@ -99,9 +99,23 @@ def amounts(text, marketplace="US"):
                   re.findall(r'(?<![A-Z])(?:US\s*)?\$\s*([0-9]+(?:,[0-9]{3})*(?:\.[0-9]{2})?)(?![\d.])', text))
 
 
-def crossed(node, root):
+def unit_price(node, root):
+    """Per-count/weight amounts are neither the item price nor its reference price."""
+    while node is not None:
+        markers = (node.attrs.get('class', '') + ' ' + node.attrs.get('id', '')).lower()
+        if any(marker in markers for marker in ('contains-ppu', 'priceperunit', 'price-per-unit')):
+            return True
+        if node is root:
+            break
+        node = node.parent
+    return False
+
+
+def crossed(node, root, explicit=False):
     while node is not root:
-        if (node.tag in {'s', 'del', 'strike'} or 'a-text-price' in node.attrs.get('class', '').split()
+        if (node.tag in {'s', 'del', 'strike'}
+                or (not explicit and 'a-text-price' in node.attrs.get('class', '').split()
+                    and node.attrs.get('data-a-strike') != 'false')
                 or node.attrs.get('data-a-strike') == 'true'
                 or 'line-through' in node.attrs.get('style', '')):
             return True
@@ -110,7 +124,18 @@ def crossed(node, root):
 
 
 def parse_offer(root, scope, marketplace="US"):
-    prices, originals = [], []
+    prices, originals, struck_originals = [], [], []
+
+    def record(node, values):
+        if unit_price(node, root):
+            return
+        if crossed(node, root, explicit=True):
+            struck_originals.extend(values)
+        elif crossed(node, root):
+            originals.extend(values)
+        else:
+            prices.extend(values)
+
     for node in list(root.nodes()):
         classes = node.attrs.get('class', '').split()
         if 'a-accordion-row' in classes and 'a-accordion-active' not in classes:
@@ -122,7 +147,7 @@ def parse_offer(root, scope, marketplace="US"):
             if 'a-offscreen' not in n.attrs.get('class', '').split():
                 continue
             values = amounts(n.text(), marketplace)
-            (originals if crossed(n, root) else prices).extend(values)
+            record(n, values)
         # Some Amazon offers omit the accessible text; use complete, same-node
         # symbol/whole/fraction parts only, never guess a missing decimal part.
         for n in price_root.nodes():
@@ -139,18 +164,19 @@ def parse_offer(root, scope, marketplace="US"):
             whole = re.sub(r'\s', '', whole).rstrip('.')
             if symbol not in ({'$', 'C$', 'CA$', 'CDN$', 'CAD$'} if marketplace=='CA' else {'$', 'US$'}) or not re.fullmatch(r'[0-9]+(?:,[0-9]{3})*', whole) or not re.fullmatch(r'[0-9]{2}', fraction):
                 continue
-            (originals if crossed(n, root) else prices).extend(amounts(f'{symbol}{whole}.{fraction}', marketplace))
+            record(n, amounts(f'{symbol}{whole}.{fraction}', marketplace))
     # Legacy buyboxes expose visible dollar amounts without a-offscreen markup.
     for node in root.ids('price_inside_buybox', 'newBuyBoxPrice', 'priceblock_ourprice', 'priceblock_dealprice'):
-        (originals if crossed(node, root) else prices).extend(amounts(node.text(), marketplace))
+        record(node, amounts(node.text(), marketplace))
     prices = unique(prices)
-    originals = unique(originals)
+    # Explicit strikethrough wins over legacy styling shared by other amounts.
+    originals = unique(struck_originals or originals)
     price = prices[0] if len(prices) == 1 else None
     # Preserve both displayed and original amounts. The user's price basis uses
     # a unique higher original price from this same offer, without multiplication.
-    original = originals[0] if len(originals) == 1 else None
-    if price and original and Decimal(original) < Decimal(price):
-        original = None
+    eligible_originals = [value for value in originals
+                          if not price or Decimal(value) > Decimal(price)]
+    original = eligible_originals[0] if len(eligible_originals) == 1 else None
     seller_nodes = root.ids('sellerProfileTriggerId', 'aod-offer-soldBy')
     sellers = []
     for n in seller_nodes:

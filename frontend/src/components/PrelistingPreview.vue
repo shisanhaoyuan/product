@@ -72,8 +72,8 @@ function money(value: string | number | null | undefined) {
         }}× {{ preview.multiplier }}，结果保留两位小数。
       </p>
       <p v-if="item.variants.some((v) => v.price_basis?.startsWith('amazon_'))" class="subtitle">
-        计算规则：本次来源原价（无划线原价则用普通售价）×
-        {{ preview.multiplier }}，四舍五入保留两位小数。
+        计算规则：本次来源划线原价（无可用划线原价则用普通售价）×
+        {{ preview.multiplier }}，保留整数部分，小数统一为 .99。
       </p>
       <div class="table-scroll">
         <table class="data-table">
@@ -150,7 +150,7 @@ function money(value: string | number | null | undefined) {
               <td>
                 {{ money(v.base)
                 }}<small v-if="v.price_basis === 'amazon_regular_no_reference_v1'" class="muted"
-                  >无划线原价 · 采用普通售价</small
+                  >无可用划线原价 · 采用普通售价</small
                 >
               </td>
               <td>

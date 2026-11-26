@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -10,6 +11,32 @@ from catalog.images import HumanVerificationRequired
 from test_editing import local, detail
 from test_auth import team, login, ORIGIN
 from test_prelisting import product
+
+
+@pytest.mark.parametrize('marketplace', ['US', 'CA'])
+@pytest.mark.parametrize('unit_price', ['80.99', '40.50'])
+def test_unit_price_does_not_conflict_with_struck_original(marketplace, unit_price):
+    html = Path(__file__).with_name('fixtures').joinpath('amazon_ca_unit_price.html').read_text()
+    html = html.replace('class="a-offscreen">$80.99', f'class="a-offscreen">${unit_price}')
+    if marketplace == 'US':
+        html = html.replace('M5V 3L9', '10001')
+    result = amazon_source(html, 'B0FRG4YN3M', marketplace)
+    assert result['status'] == 'captured'
+    assert result['price'] == '80.99'
+    assert result['original_price'] == result['basis_price'] == '95.99'
+    assert result['original_price_state'] == 'verified'
+
+
+@pytest.mark.parametrize('unit_markup', [
+    '<span class="pricePerUnit"><span class="a-price"><span class="a-offscreen">$40.50</span></span> / count</span>',
+    '<span class="contains-ppu"><span class="a-price"><span class="a-price-symbol">$</span><span class="a-price-whole">40</span><span class="a-price-fraction">50</span></span></span>',
+])
+def test_unit_price_is_neither_current_nor_reference(unit_markup):
+    html = page(content='<div id="corePrice_feature_div"><span class="a-price"><span class="a-offscreen">$80.99</span></span>' + unit_markup + '</div>')
+    result = amazon_source(html, 'B000000000')
+    assert result['price'] == '80.99'
+    assert result['original_price'] is None
+    assert result['original_price_state'] == 'not_displayed'
 
 
 def offer(seller='Garden Store', delivery='FREE delivery Friday, November 6', price='37.99', original='43.99'):

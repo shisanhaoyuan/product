@@ -47,12 +47,12 @@ def test_each_filling_run_fetches_all_children_before_pricing_and_ai(amazon,monk
     def before_ai():
         assert len(fetched)==2
         rows=c.get(base).json()['rows']
-        assert sorted(r['orderable']['price'] for r in rows)==[87.47,96]
+        assert sorted(r['orderable']['price'] for r in rows)==[87.99,96.99]
     ai.hook=before_ai
     doc,status=execute(amazon,ai)
     assert status['state']=='complete',status
     assert len(fetched)==2 and len(set(fetched))==2
-    assert sorted(r['orderable']['price'] for r in doc['rows'])==[87.47,96]
+    assert sorted(r['orderable']['price'] for r in doc['rows'])==[87.99,96.99]
     assert all(r['orderable']['msrp']>0 for r in doc['rows'])
     assert all(r['visible'].get('assembledProductHeight') for r in doc['rows'])
     with catalog.connect() as db:
@@ -63,7 +63,7 @@ def test_each_filling_run_fetches_all_children_before_pricing_and_ai(amazon,monk
     again,second=execute(amazon)
     assert second['id']!=status['id']
     assert len(fetched)==4
-    assert all(r['orderable']['price']==108 for r in again['rows'])
+    assert all(r['orderable']['price']==108.99 for r in again['rows'])
     assert not remote.posts and not remote.stock
 
 
@@ -78,7 +78,7 @@ def test_captcha_does_not_block_other_child_or_ai(amazon,monkeypatch):
     assert status['state']=='complete',status
     rows={r['source_sku']:r for r in doc['rows']}
     assert 'price' not in rows['child-70']['orderable']
-    assert rows['child-71']['orderable']['price']==96
+    assert rows['child-71']['orderable']['price']==96.99
     assert all(r['visible'].get('assembledProductHeight') for r in rows.values())
     report=status['report']['rows'][rows['child-70']['platform_sku']]
     assert report['collection']['state']=='verification_required'
@@ -94,7 +94,7 @@ def test_fresh_capture_reprices_manual_draft_but_preserves_msrp_and_submitted_ro
     monkeypatch.setattr('catalog.images.fetch_amazon_page',lambda asin:page(asin,offer(original='72.89')))
     doc,status=execute(amazon)
     assert status['state']=='complete',status
-    assert [(r['orderable']['price'],r['orderable']['msrp']) for r in doc['rows']]==[(87.47,150),(87.47,250)]
+    assert [(r['orderable']['price'],r['orderable']['msrp']) for r in doc['rows']]==[(87.99,150),(87.99,250)]
     submitted=c.post(base+'/submit',json=submission(doc,skus=[doc['rows'][0]['platform_sku']]))
     assert submitted.status_code==200,submitted.text
     after=c.get(base).json()
@@ -133,7 +133,7 @@ def test_capture_saved_in_catalog_before_generation_rebases_old_document(amazon,
     doc,status=execute(amazon)
     assert status['state']=='complete',status
     assert len(fetched)==4
-    assert all(row['orderable']['price']==96 for row in doc['rows'])
+    assert all(row['orderable']['price']==96.99 for row in doc['rows'])
 
 
 def test_two_variants_of_one_product_use_their_own_captured_prices(publishing,monkeypatch):
@@ -161,7 +161,7 @@ def test_two_variants_of_one_product_use_their_own_captured_prices(publishing,mo
     doc,status=execute(env)
     assert status['state']=='complete',status
     assert len(fetched)==2
-    assert {r['source_sku']:r['orderable']['price'] for r in doc['rows']}=={'child-70':87.47,'child-71':96}
+    assert {r['source_sku']:r['orderable']['price'] for r in doc['rows']}=={'child-70':87.99,'child-71':96.99}
     assert len({r['listing_id'] for r in doc['rows']})==1
 
 
@@ -174,7 +174,7 @@ def test_wraith_recovery_flows_into_pricing_and_ai(amazon,monkeypatch):
     monkeypatch.setattr('catalog.amazon_browser.fetch_page',lambda asin:page(asin,offer(original='72.89')))
     doc,status=execute(amazon)
     assert status['state']=='complete',status
-    assert all(row['orderable']['price']==87.47 for row in doc['rows'])
+    assert all(row['orderable']['price']==87.99 for row in doc['rows'])
     assert all(row['source_collection']['method']=='wraith_background' for row in status['report']['rows'].values())
 
 
@@ -193,7 +193,7 @@ def test_confirmed_manual_price_is_recollected_when_filling_again(amazon,monkeyp
     after,status=execute(amazon)
     assert status['state']=='complete',status
     assert len(fetched)==2
-    assert all(row['orderable']['price']==96 for row in after['rows'])
+    assert all(row['orderable']['price']==96.99 for row in after['rows'])
     assert not after['source_price_reviews']
 
 
@@ -256,7 +256,7 @@ def test_failed_new_capture_clears_old_successful_price(amazon,monkeypatch):
     assert status['state']=='complete',status
     rows={r['source_sku']:r for r in after['rows']}
     assert 'price' not in rows['child-70']['orderable']
-    assert rows['child-71']['orderable']['price']==96
+    assert rows['child-71']['orderable']['price']==96.99
     assert not after['source_price_reviews']
 
 
@@ -265,7 +265,7 @@ def test_fresh_ordinary_offer_without_reference_fills_price(amazon,monkeypatch):
     monkeypatch.setattr('catalog.images.fetch_amazon_page',lambda asin:page(asin,content))
     doc,status=execute(amazon)
     assert status['state']=='complete',status
-    assert all(r['orderable']['price']==172.79 for r in doc['rows'])
+    assert all(r['orderable']['price']==172.99 for r in doc['rows'])
     assert all(v['price_basis']=='amazon_regular_no_reference_v1' and v['original'] is None
                for item in doc['basis']['items'] for v in item['variants'])
 

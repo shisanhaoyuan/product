@@ -117,8 +117,8 @@ def test_manual_original_calculates_and_confirms_only_current_sku(amazon):
     response=c.post(base+'/verify-source-price',json=payload)
     assert response.status_code==200,response.text
     result=response.json();row=result['rows'][0]
-    assert row['orderable']['price']==87.47  # fixture multiplier 1.2, ROUND_HALF_UP
-    assert row['orderable']['msrp']==174.99
+    assert row['orderable']['price']==87.99  # fixture multiplier 1.2, dollar part + .99
+    assert row['orderable']['msrp']==175.99
     assert result['rows'][1]==before_other and result['basis']==basis
     review=result['source_price_reviews'][sku]
     assert review['original_price']=='72.89' and review['multiplier']=='1.2'
@@ -154,5 +154,5 @@ def test_manual_original_preserves_custom_msrp_and_revision_checks(amazon):
     assert c.post(base+'/verify-source-price',json=payload | {'revision':doc['revision']-1}).status_code==409
     assert c.post(base+'/verify-source-price',json=payload | {'platform_sku':'other-store'}).status_code==404
     result=c.post(base+'/verify-source-price',json=payload).json()
-    assert result['rows'][0]['orderable']['price']==84
+    assert result['rows'][0]['orderable']['price']==84.99
     assert result['rows'][0]['orderable']['msrp']==111

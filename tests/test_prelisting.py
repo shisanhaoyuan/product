@@ -55,8 +55,8 @@ def test_batch_prices_sku_and_idempotency(local):
     for item in plan['items']:
         assert item['variants'][0]['sku'] == 'child-' + item['sku'].split('-')[1]
         assert item['variants'][0]['base'] == '50.00'
-        assert item['variants'][0]['price'] == '60.00'  # Captured original 50 * 1.2, no .99 rewrite
-        assert item['msrp'] == '120.99'
+        assert item['variants'][0]['price'] == '60.99'  # Captured original 50 * 1.2, then .99 ending
+        assert item['msrp'] == '121.99'
     assert client.post('/api/prelisting/preview',json=settings).json() == plan
     batch,payload = create(client,settings)
     assert batch['status'] == 'draft' and batch['execution_enabled'] is False
@@ -144,7 +144,7 @@ def test_single_rounding_and_multiple_msrp(local):
     second.source_facts['original_price']='90'
     multiple.variants.append(second)
     catalog.ingest(ImportBundle(namespace='test',label='more',listings=[single,multiple]))
-    for q,price,msrp in [('parent-4','48.39','96.99'),('parent-5','55.00','198.99')]:
+    for q,price,msrp in [('parent-4','48.99','97.99'),('parent-5','55.99','199.99')]:
         result=client.post('/api/prelisting/preview',json=inputs(client,filters={'q':q},multiplier='1.1')).json()['items'][0]
         assert result['variants'][0]['price'] == price
         assert result['msrp'] == msrp
@@ -217,7 +217,7 @@ def test_amazon_price_uses_source_identity_instead_of_legacy_erp_audit(local, fa
     if fault in {'asin', 'ambiguous'}:
         assert row['status']=='review' and row['variants'][0]['price'] is None
     else:
-        assert row['variants'][0]['price']=='60.00'  # Original source price, independent of old ERP audits.
+        assert row['variants'][0]['price']=='60.99'  # Original source price, independent of old ERP audits.
 
 
 def test_concurrent_retry_creates_one_batch(local):

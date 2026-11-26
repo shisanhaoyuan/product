@@ -2,14 +2,19 @@
 from .amazon_markets import source_market, market_config, location_matches
 import json
 import re
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import ROUND_FLOOR, Decimal, InvalidOperation
+
+
+def selling_price(basis, multiplier):
+    """Automatic Amazon prices keep the multiplied dollar part and end in .99."""
+    return (basis * multiplier).to_integral_value(rounding=ROUND_FLOOR) + Decimal('.99')
 
 
 def regular_price_basis(facts):
-    """No reference price shown: use the verified ordinary offer, never a guess."""
+    """No usable reference: retain the uniquely captured ordinary item price."""
     return (facts.get('original_price') in (None, '') and facts.get('currency') in ('USD','CAD')
             and not facts.get('offer_ambiguous')
-            and (facts.get('original_price_state') == 'not_displayed'
+            and (facts.get('original_price_state') in ('not_displayed', 'ambiguous')
                  or (not facts.get('original_price_state') and facts.get('status') == 'captured'))
             and facts.get('offer_scope', '').startswith(('main_offer', 'sellers_on_amazon_list:')))
 
@@ -50,7 +55,7 @@ def price_plan(db, listing_id, product, variant, multiplier):
         if facts.get('original_price') in (None, '') and not ordinary:
             raise ValueError('缺少来源采集原价，请采集卖家与报价后重新计算')
         original = money(facts.get('price') if ordinary else facts['original_price'])
-        final = (original * multiplier).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
+        final = selling_price(original, multiplier)
         money(final)
         result.update(base=f'{original:.2f}', original=f'{original:.2f}', price=f'{final:.2f}')
         if ordinary:

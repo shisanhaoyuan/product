@@ -763,11 +763,12 @@ def publishing_routes(catalog):
                 raise HTTPException(409,'只有缺少来源原价的提醒可以人工确认，其他来源异常请单独处理')
             audit={}
             if data.original_price is not None:
+                from .amazon_pricing import selling_price
                 from .prelisting import money
                 from .listing_preparation_source import positive
                 try:
                     multiplier=money(basis['multiplier'])
-                    price=money((data.original_price*multiplier).quantize(Decimal('.01'),rounding=ROUND_HALF_UP))
+                    price=money(selling_price(data.original_price,multiplier))
                 except ValueError as exc:
                     raise HTTPException(422,'原价乘倍率后的售价无效：'+str(exc)) from None
                 row['orderable']['price']=float(price)

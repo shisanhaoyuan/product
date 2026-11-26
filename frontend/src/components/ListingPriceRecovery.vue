@@ -62,7 +62,7 @@ defineExpose({ focus });
           @keydown.enter.prevent="valid && !disabled && emit('confirm', originalPrice.trim())"
         />
       </label>
-      <span class="price-recovery-formula">原价 × {{ multiplier }} = 上架售价</span>
+      <span class="price-recovery-formula">原价 × {{ multiplier }}，小数调整为 .99</span>
       <button
         class="btn primary"
         :disabled="disabled || !valid"

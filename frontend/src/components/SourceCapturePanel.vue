@@ -200,7 +200,8 @@ onBeforeUnmount(() => controller?.abort());
       Cookie 保存在本机；清除 Cookie 后可能需要重新设置。
     </p>
     <p v-if="record?.original_price" class="muted">
-      预上架售价 = 计价原价 × 倍率；没有划线原价时采用已核验的普通售价。
+      预上架售价按计价原价 × 倍率后将小数调整为
+      .99；优先采用高于现价的划线原价，没有可用划线原价时采用已核验的普通售价。
     </p>
     <p v-if="busy" class="muted" role="status">
       {{ progress || '正在后台采集卖家、原价和图片…' }}

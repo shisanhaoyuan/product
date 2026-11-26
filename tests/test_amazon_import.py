@@ -330,7 +330,7 @@ def test_canada_same_asin_isolated_prices_families_context_and_filters(local_imp
         with catalog.connect() as db:
             planned=price_plan(db,lid,p,p['variants'][0],Decimal('1.4'))
         assert not planned['error'],planned
-        assert planned['price']==('117.59' if source=='Amazon_CA' else '61.59')
+        assert planned['price']==('117.99' if source=='Amazon_CA' else '61.99')
     assert client.get('/api/products',params={'deduplicate':True}).json()['total']==2
     assert client.get('/api/stats').json()['unique_counts']['all_products']==2
     require_sources([{'source':'Amazon_CA'}],'CA')
