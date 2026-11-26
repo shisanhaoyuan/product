@@ -262,6 +262,20 @@ export interface ListingStore {
   origin: string;
   sku_code: string | null;
 }
+export interface PrelistingSelectionItem {
+  listing_id: string;
+  title: string;
+  source: string;
+  asin: string;
+  image: string;
+  variants: {
+    sku: string;
+    asin: string;
+    price: string | null;
+    stock: string | null;
+    attributes: Fields;
+  }[];
+}
 export interface PrelistingSelection {
   listing_ids?: string[];
   variant_skus?: Record<string, string[]>;

@@ -6,6 +6,7 @@ import type {
   PlanInput,
   PrelistingPreview as Preview,
   PrelistingSelection,
+  PrelistingSelectionItem,
   TemplateOptions,
 } from '../api/types';
 import { errorMessage } from '../utils/display';
@@ -27,6 +28,9 @@ const busy = ref(false),
 const templates = ref<TemplateOptions['items']>([]);
 const selectedTemplates = ref<Record<string, string>>({});
 const templatesLoading = ref(false);
+const selectionItems = ref<PrelistingSelectionItem[]>([]);
+const selectedVariants = ref<Record<string, string[]>>({});
+const selectionLoading = ref(false);
 const storeOptions = computed(() =>
   stores.value
     .filter(
@@ -45,9 +49,23 @@ let templateController: AbortController | undefined;
 let submitted: PlanInput | undefined;
 let requestKey = '';
 let controller: AbortController | undefined;
+const selectedCount = computed(() =>
+  Object.values(selectedVariants.value).reduce((sum, values) => sum + values.length, 0),
+);
+const totalVariantCount = computed(() =>
+  selectionItems.value.reduce((sum, item) => sum + item.variants.length, 0),
+);
+const allVariantsSelected = computed(
+  () => totalVariantCount.value > 0 && selectedCount.value === totalVariantCount.value,
+);
+const effectiveSelection = computed<PrelistingSelection>(() => ({
+  listing_ids: selectionItems.value.map((item) => item.listing_id),
+  variant_skus: selectedVariants.value,
+}));
 const valid = computed(
   () =>
     !!storeId.value &&
+    selectedCount.value > 0 &&
     !templatesLoading.value &&
     !!brand.value.trim() &&
     Number(multiplier.value) > 0 &&
@@ -70,6 +88,42 @@ watch(
   },
   { flush: 'sync' },
 );
+watch(
+  selectedVariants,
+  () => {
+    preview.value = undefined;
+    submitted = undefined;
+    requestKey = '';
+    if (storeId.value) void loadTemplates();
+  },
+  { deep: true },
+);
+function setVariant(item: PrelistingSelectionItem, sku: string, checked: boolean) {
+  const selected = new Set(selectedVariants.value[item.listing_id] || []);
+  if (checked) selected.add(sku);
+  else selected.delete(sku);
+  selectedVariants.value[item.listing_id] = item.variants
+    .map((variant) => variant.sku)
+    .filter((value) => selected.has(value));
+}
+function selectAllVariants() {
+  selectedVariants.value = Object.fromEntries(
+    selectionItems.value.map((item) => [
+      item.listing_id,
+      item.variants.map((variant) => variant.sku),
+    ]),
+  );
+}
+function clearVariants() {
+  selectedVariants.value = Object.fromEntries(
+    selectionItems.value.map((item) => [item.listing_id, []]),
+  );
+}
+function selectItemVariants(item: PrelistingSelectionItem, checked: boolean) {
+  selectedVariants.value[item.listing_id] = checked
+    ? item.variants.map((variant) => variant.sku)
+    : [];
+}
 watch(
   selectedTemplates,
   () => {
@@ -99,7 +153,7 @@ async function loadTemplates() {
   try {
     const result = await prelistingApi.templates(
       {
-        ...props.selection,
+        ...effectiveSelection.value,
         store_id: Number(storeId.value),
         brand: brand.value || '待设置',
         multiplier: '1',
@@ -115,10 +169,31 @@ async function loadTemplates() {
 }
 onMounted(async () => {
   dialog.value?.showModal();
+  selectionLoading.value = true;
   try {
-    stores.value = await prelistingApi.stores();
+    const [availableStores, selected] = await Promise.all([
+      prelistingApi.stores(),
+      prelistingApi.selection(
+        props.selection.filters
+          ? { filters: props.selection.filters }
+          : { listing_ids: props.selection.listing_ids },
+      ),
+    ]);
+    stores.value = availableStores;
+    selectionItems.value = selected.items;
+    const choices: Record<string, string[]> = {};
+    for (const item of selected.items) {
+      const available = item.variants.map((variant) => variant.sku);
+      const initial = props.selection.variant_skus?.[item.listing_id];
+      choices[item.listing_id] = initial
+        ? available.filter((sku) => initial.includes(sku))
+        : available;
+    }
+    selectedVariants.value = choices;
   } catch (e) {
     error.value = errorMessage(e);
+  } finally {
+    selectionLoading.value = false;
   }
 });
 onBeforeUnmount(() => {
@@ -133,7 +208,7 @@ async function calculate() {
   controller?.abort();
   controller = new AbortController();
   const input: PlanInput = {
-    ...props.selection,
+    ...effectiveSelection.value,
     store_id: Number(storeId.value),
     brand: brand.value.trim(),
     multiplier: multiplier.value,
@@ -193,7 +268,8 @@ async function create() {
                 ? '当前筛选的全部结果（跨页）'
                 : '手动勾选商品'
           }}
-          · {{ count }} {{ selection.variant_skus ? '个 SKU' : '件' }}
+          · {{ selectionLoading ? count : selectedCount }}
+          {{ selection.variant_skus || selectionLoading ? '个 SKU' : '件' }}
         </p>
       </div>
       <button
@@ -208,6 +284,103 @@ async function create() {
       </button>
     </div>
     <div class="composer-body">
+      <section class="variant-selection" aria-label="选择上架子变体">
+        <div class="variant-selection-head">
+          <div>
+            <strong>选择要上架的商品 / 子变体</strong
+            ><span
+              >{{ selectedCount }} /
+              {{ totalVariantCount }} 个 SKU 已选择</span
+            >
+          </div>
+          <div class="variant-selection-actions">
+            <button
+              type="button"
+              class="btn small"
+              :disabled="busy || selectionLoading"
+              @click="allVariantsSelected ? clearVariants() : selectAllVariants()"
+            >
+              {{ allVariantsSelected ? '取消全选' : '全选' }}
+            </button>
+            <button
+              type="button"
+              class="btn small"
+              :disabled="busy || selectionLoading || selectedCount === 0"
+              @click="clearVariants"
+            >
+              清空
+            </button>
+          </div>
+        </div>
+        <p v-if="selectionLoading" class="muted" role="status">正在读取商品子变体…</p>
+        <p v-else-if="!selectionItems.length" class="muted">
+          没有可选商品或商品已发生变化，请关闭后重新选择。
+        </p>
+        <div v-else class="variant-selection-list">
+          <article
+            v-for="item in selectionItems"
+            :key="item.listing_id"
+            class="variant-selection-product"
+          >
+            <div class="variant-selection-product-head">
+              <img v-if="item.image" :src="item.image" :alt="item.title" />
+              <div>
+                <strong>{{ item.title || item.asin || item.listing_id }}</strong
+                ><small
+                  >{{ item.asin || item.source }} ·
+                  {{ selectedVariants[item.listing_id]?.length || 0 }} /
+                  {{ item.variants.length }} 个</small
+                >
+              </div>
+              <button
+                type="button"
+                class="btn small"
+                :disabled="busy"
+                @click="
+                  selectItemVariants(
+                    item,
+                    (selectedVariants[item.listing_id]?.length || 0) !== item.variants.length,
+                  )
+                "
+              >
+                {{
+                  (selectedVariants[item.listing_id]?.length || 0) === item.variants.length
+                    ? '取消全选'
+                    : '全选本商品'
+                }}
+              </button>
+            </div>
+            <div class="variant-selection-skus">
+              <label
+                v-for="variant in item.variants"
+                :key="variant.sku"
+                class="variant-selection-sku"
+              >
+                <input
+                  type="checkbox"
+                  :checked="selectedVariants[item.listing_id]?.includes(variant.sku)"
+                  :disabled="busy || selectionLoading"
+                  @change="
+                    setVariant(item, variant.sku, ($event.target as HTMLInputElement).checked)
+                  "
+                />
+                <span
+                  ><b>{{ variant.asin || variant.sku }}</b
+                  ><small>{{
+                    variant.sku === '__parent__'
+                      ? '单体商品'
+                      : Object.entries(variant.attributes || {})
+                          .map(([key, value]) => `${key}: ${String(value)}`)
+                          .slice(0, 2)
+                          .join(' · ')
+                  }}</small></span
+                >
+              </label>
+            </div>
+          </article>
+        </div>
+        <p v-if="selectedCount === 0" class="seller-risk-label">请至少选择一个 SKU 上架。</p>
+      </section>
       <p v-if="collectionProgress" class="notice" role="status">{{ collectionProgress }}</p>
       <button v-if="collectionProgress" class="btn small" @click="controller?.abort()">
         取消采集

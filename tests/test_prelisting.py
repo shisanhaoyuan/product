@@ -262,3 +262,47 @@ def test_amazon_preview_uses_parent_images_only_for_same_asin(local):
     rows = {item['sku']: item for item in response.json()['items']}
     assert rows['parent-8']['variants'][0]['content']['images'] == same.images
     assert rows['parent-9']['variants'][0]['content']['images'] == []
+
+
+
+def test_prelisting_can_select_subset_of_child_variants(local):
+    client,catalog=local
+    original=product(20)
+    children=[]
+    for index in range(3):
+        child=deepcopy(original.variants[0].model_dump())
+        child.update(sku=f'child-20-{index}',asin=f'B00000002{index}',price_check=child['price_check']|{'sku':f'child-20-{index}'},
+                    source_facts=child['source_facts']|{'asin':f'B00000002{index}'})
+        children.append(child)
+    multi=Listing.model_validate(original.model_dump()|{'variants':children})
+    catalog.ingest(ImportBundle(namespace='test',label='test',listings=[multi]))
+    response=client.post('/api/prelisting/selection',json={'listing_ids':[multi.external_id]})
+    # Resolve the persisted catalog ID rather than assuming the external ID is the local row ID.
+    listing_id=catalog.find(q='B000000020')['items'][0]['id']
+    response=client.post('/api/prelisting/selection',json={'listing_ids':[listing_id]})
+    assert response.status_code==200,response.text
+    assert [v['sku'] for v in response.json()['items'][0]['variants']]==[v['sku'] for v in children]
+    store=next(s for s in client.get('/api/listing-stores').json() if s['name']=='MYZ-L-17')
+    chosen={listing_id:[children[0]['sku'],children[2]['sku']]}
+    payload={'listing_ids':[listing_id],'variant_skus':chosen,'store_id':store['id'],'brand':'NewBrand','multiplier':'1.2'}
+    preview=client.post('/api/prelisting/preview',json=payload)
+    assert preview.status_code==200,preview.text
+    assert preview.json()['variant_count']==2
+    assert [v['sku'] for v in preview.json()['items'][0]['variants']]==[children[0]['sku'],children[2]['sku']]
+    batch_payload=payload|{'preview_hash':preview.json()['preview_hash'],'request_key':str(uuid.uuid4())}
+    created=client.post('/api/prelisting/batches',json=batch_payload)
+    assert created.status_code==201,created.text
+    assert len(created.json()['preview']['items'][0]['variants'])==2
+    assert created.json()['preview']['variant_count']==2
+    assert client.post('/api/prelisting/preview',json=payload|{'variant_skus':{listing_id:[]}}).status_code==422
+
+
+def test_prelisting_selection_supports_parent_products_and_filter_selection(local):
+    client,catalog=local
+    item=catalog.find(q='B000000000')['items'][0]
+    selected=client.post('/api/prelisting/selection',json={'listing_ids':[item['id']]})
+    assert selected.status_code==200,selected.text
+    assert selected.json()['items'][0]['variants'][0]['sku']=='child-0'
+    filtered=client.post('/api/prelisting/selection',json={'filters':{'q':'B000000000'}})
+    assert filtered.status_code==200,filtered.text
+    assert filtered.json()['total']==1

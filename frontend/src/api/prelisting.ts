@@ -6,6 +6,8 @@ import type {
   PrelistingBatch,
   BatchPage,
   TemplateOptions,
+  PrelistingSelection,
+  PrelistingSelectionItem,
 } from './types';
 const json = (method: string, data: unknown) => ({
   method,
@@ -23,6 +25,11 @@ export const prelistingApi = {
     request(`/api/listing-stores/${id}`, json('PATCH', { active })),
   setStoreCode: (id: number, sku_code: string) =>
     request(`/api/listing-stores/${id}`, json('PATCH', { sku_code })),
+  selection: (input: PrelistingSelection, signal?: AbortSignal) =>
+    request<{ items: PrelistingSelectionItem[]; total: number }>('/api/prelisting/selection', {
+      ...json('POST', input),
+      signal,
+    }),
   preview: (input: PlanInput, signal?: AbortSignal) =>
     request<PrelistingPreview>('/api/prelisting/preview', { ...json('POST', input), signal }),
   templates: (input: PlanInput, signal?: AbortSignal) =>

@@ -141,6 +141,19 @@ class Filters(StrictInput, ProductRanges):
         return self
 
 
+class SelectionInput(StrictInput):
+    listing_ids: list[str] | None = Field(default=None, min_length=1, max_length=500)
+    filters: Filters | None = None
+
+    @model_validator(mode='after')
+    def selection(self):
+        if (self.listing_ids is None) == (self.filters is None):
+            raise ValueError('请选择商品 ID 列表或筛选条件之一')
+        if self.listing_ids is not None and len(set(self.listing_ids)) != len(self.listing_ids):
+            raise ValueError('不能重复选择同一商品')
+        return self
+
+
 class PlanInput(StrictInput):
     listing_ids: list[str] | None = Field(default=None, min_length=1, max_length=500)
     variant_skus: dict[str, list[str]] | None = None
@@ -168,9 +181,13 @@ class PlanInput(StrictInput):
         if self.variant_skus is not None:
             if self.listing_ids is None or set(self.variant_skus) != set(self.listing_ids):
                 raise ValueError('子 SKU 选择必须逐个对应明确的商品 ID')
+            selected_count=0
             for skus in self.variant_skus.values():
-                if not 1 <= len(skus) <= 5000 or len(set(skus)) != len(skus) or any(not s or len(s) > 200 for s in skus):
+                if len(skus) > 5000 or len(set(skus)) != len(skus) or any(not s or len(s) > 200 for s in skus):
                     raise ValueError('请选择不重复的有效子 SKU')
+                selected_count += len(skus)
+            if selected_count == 0:
+                raise ValueError('请至少保留一个子变体上架')
         return self
 
 
@@ -258,10 +275,18 @@ def selected_rows(catalog, db, data):
     if not rows or len(rows) > 500:
         raise HTTPException(422, '每批请选择 1–500 个商品；请缩小筛选范围')
     if data.variant_skus is not None:
+        selected_rows=[]
         for row in rows:
             children=json.loads(row['data_json'])['variants']
-            if not set(data.variant_skus[row['id']]).issubset({v['sku'] for v in children}):
-                raise HTTPException(409, '所选子 SKU 不属于该商品或已不存在，请刷新后重新选择')
+            chosen=set(data.variant_skus[row['id']])
+            allowed={v['sku'] for v in children} if children else {'__parent__'}
+            if not chosen.issubset(allowed):
+                raise HTTPException(409, '所选子 SKU 不属于该商品或已不存在，请刷新商品库')
+            if chosen:
+                selected_rows.append(row)
+        if not selected_rows:
+            raise HTTPException(422, '请至少保留一个子变体上架')
+        rows=selected_rows
     return rows
 
 
@@ -315,9 +340,12 @@ def build_preview(catalog, db, data, exclude_batch=None):
         children = d['variants']
         if data.variant_skus is not None:
             selected = set(data.variant_skus[row['id']])
-            if not selected.issubset({v['sku'] for v in children}):
-                raise HTTPException(409, '所选子 SKU 不属于该商品或已不存在，请刷新后重新选择')
-            children = [v for v in children if v['sku'] in selected]
+            if children:
+                if not selected.issubset({v['sku'] for v in children}):
+                    raise HTTPException(409, '所选子 SKU 不属于该商品或已不存在，请刷新后重新选择')
+                children = [v for v in children if v['sku'] in selected]
+            elif selected != {'__parent__'}:
+                continue
         if is_supplier:
             original = json.loads(db.execute('SELECT data_json FROM listings WHERE id=?', (row['id'],)).fetchone()[0])
             if d['source'] == 'Saleyee':
@@ -494,6 +522,32 @@ def prelisting_routes(catalog):
             if data.active is not None:
                 db.execute('UPDATE listing_stores SET active=? WHERE id=?', (int(data.active), store_id))
             return {'ok': True}
+
+    @router.post('/api/prelisting/selection')
+    def selection(data: SelectionInput):
+        if data.listing_ids is not None:
+            marks=','.join('?' for _ in data.listing_ids)
+            with catalog.connect() as db:
+                read_snapshot(db)
+                rows=db.execute(f'SELECT id,data_json FROM current_listings WHERE id IN ({marks}) ORDER BY uploaded_at DESC,id',data.listing_ids).fetchall()
+                if len(rows)!=len(data.listing_ids):
+                    raise HTTPException(409,'部分所选商品不存在，请刷新商品库')
+        else:
+            with catalog.connect() as db:
+                read_snapshot(db)
+                query,args=catalog.selection_sql(**data.filters.model_dump())
+                rows=db.execute(f'SELECT id,data_json FROM ({query}) AS listings ORDER BY uploaded_at DESC,id LIMIT 501',args).fetchall()
+        if not rows or len(rows)>500:
+            raise HTTPException(422,'每批请选择 1–500 个商品；请缩小筛选范围')
+        items=[]
+        for row in rows:
+            item=json.loads(row['data_json'])
+            raw_variants=item['variants'] or [dict(sku='__parent__',asin=item.get('asin',''),price=item.get('price'),stock=item.get('stock'),attributes={})]
+            images=item.get('images') or next((v.get('images',[]) for v in raw_variants if v.get('images')),[])
+            items.append(dict(listing_id=row['id'],title=item['copy']['title'],source=item['source'],
+                asin=item.get('asin',''),image=images[0] if images else '',
+                variants=[dict(sku=v['sku'],asin=v.get('asin',''),price=v.get('price'),stock=v.get('stock'),attributes=v.get('attributes',{})) for v in raw_variants]))
+        return dict(items=items,total=len(items))
 
     @router.post('/api/prelisting/preview')
     def preview(data: PlanInput):

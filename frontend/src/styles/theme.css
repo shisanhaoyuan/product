@@ -2892,3 +2892,102 @@ input[type='checkbox'] {
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
+
+.variant-selection {
+  margin-bottom: 20px;
+  padding: 16px;
+  border: 1px solid #dce4ed;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+.variant-selection-head,
+.variant-selection-product-head,
+.variant-selection-actions,
+.variant-selection-product-head > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.variant-selection-head,
+.variant-selection-product-head {
+  justify-content: space-between;
+}
+.variant-selection-head > div:first-child,
+.variant-selection-product-head > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.variant-selection-head span,
+.variant-selection-product-head small,
+.variant-selection-sku small {
+  color: var(--muted);
+  font-size: 12px;
+}
+.variant-selection-list {
+  display: grid;
+  gap: 10px;
+  max-height: 34vh;
+  overflow: auto;
+  margin-top: 12px;
+}
+.variant-selection-product {
+  padding: 12px;
+  border: 1px solid #e0e7ef;
+  border-radius: 10px;
+  background: #fff;
+}
+.variant-selection-product-head {
+  justify-content: flex-start;
+}
+.variant-selection-product-head > div {
+  flex: 1;
+}
+.variant-selection-product-head img {
+  width: 42px;
+  height: 42px;
+  object-fit: contain;
+  border-radius: 7px;
+  background: #f4f6f8;
+}
+.variant-selection-product-head strong,
+.variant-selection-sku b {
+  overflow-wrap: anywhere;
+}
+.variant-selection-skus {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 10px;
+}
+.variant-selection-sku {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid #e3e9f0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.variant-selection-sku > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.variant-selection-sku small {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 620px) {
+  .variant-selection {
+    padding: 12px;
+  }
+  .variant-selection-head,
+  .variant-selection-product-head {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .variant-selection-skus {
+    grid-template-columns: 1fr;
+  }
+}
