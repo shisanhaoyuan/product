@@ -349,6 +349,8 @@ def prerequisite_routes(catalog):
         from .walmart_listing_schema import taxonomy_options
         with catalog.connect() as db:
             _,bound=binding(db,sid)
+        if bound.get('marketplace')=='CA' and data.exemptions:
+            raise HTTPException(422,'加拿大暂不支持自动核验 GTIN 豁免，请使用真实 EAN／UPC／GTIN 编码')
         try:
             with market_session(request.app.state.walmart_publisher,bound) as remote:
                 if data.fulfillment_center_id and data.fulfillment_center_id not in {n['id'] for n in normalize_nodes(remote.nodes())}:

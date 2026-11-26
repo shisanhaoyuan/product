@@ -322,7 +322,7 @@ onBeforeUnmount(() => {
       <p v-else class="wm-empty">绑定该店铺的 API 密钥，核对沃尔玛账号名称和编号后保存。</p>
       <footer>
         <button
-          v-if="s.account?.bound && s.account.marketplace === 'US'"
+          v-if="s.account?.bound"
           class="btn"
           :disabled="busy || !s.active"
           @click="

@@ -13,6 +13,7 @@ import { errorMessage } from '../utils/display';
 import AppIcon from './AppIcon.vue';
 import FilterSelect from './FilterSelect.vue';
 const props = defineProps<{ store?: WalmartStore | null }>();
+const isCanada = computed(() => props.store?.account?.marketplace === 'CA');
 const emit = defineEmits<{ close: []; imported: [number] }>();
 const dialog = ref<HTMLElement>();
 const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -166,7 +167,7 @@ async function save() {
   await run(async () => {
     if (!props.store || !settings.value) return;
     settings.value = await preparationApi.save(props.store.store_id, settings.value);
-    message.value = '已在线核验并保存，现有批次需重新生成或校验。';
+    message.value = '已核验并保存，现有批次需重新生成或校验。';
   });
 }
 function selectType(index: number, value: string) {
@@ -245,7 +246,11 @@ async function importCodes() {
       <p v-if="message" class="notice" role="status">{{ message }}</p>
       <template v-if="store && settings">
         <p class="muted">
-          按实际 Partner 绑定。生成时自动使用默认仓库与准确匹配的已批准豁免；保存配置不会刊登。
+          {{
+            isCanada
+              ? '加拿大站配置独立绑定当前店铺授权，生成时使用店铺默认品牌和加拿大默认库存。'
+              : '按实际 Partner 绑定。生成时自动使用默认仓库与准确匹配的已批准豁免。'
+          }}保存配置不会刊登。
         </p>
         <label
           >店铺默认品牌<input
@@ -267,58 +272,68 @@ async function importCodes() {
               ...nodes.map((n) => ({ value: n.id, label: n.name + ' · ' + n.id })),
             ]"
         /></label>
-        <div class="prep-heading">
-          <h3>已批准的 GTIN 豁免</h3>
-          <button
-            class="btn small"
-            :disabled="busy"
-            @click="
-              settings.exemptions.push({
-                brand: '',
-                product_type: '',
-                category: '',
-                submission_id: '',
-              })
-            "
-          >
-            添加豁免
-          </button>
-        </div>
-        <p class="muted">
-          按品牌＋官方商品类型唯一匹配，保存和生成时均在线核验 APPROVED。未批准记录不能代替条码。
+        <p v-if="isCanada" class="notice">
+          加拿大站当前使用默认库存。GTIN 豁免暂不支持自动核验， 请通过 EAN
+          编码池导入真实 EAN／UPC／GTIN 编码用于刊登。
         </p>
-        <article v-for="(ex, index) in settings.exemptions" :key="index" class="prep-exemption">
-          <label
-            >品牌<input
-              v-model="ex.brand"
+        <template v-else>
+          <div class="prep-heading">
+            <h3>已批准的 GTIN 豁免</h3>
+            <button
+              class="btn small"
               :disabled="busy"
-              maxlength="200"
-              placeholder="与批次品牌完全一致"
-          /></label>
-          <label
-            >官方商品类型<FilterSelect
-              label="豁免商品类型"
-              :model-value="ex.product_type"
+              @click="
+                settings.exemptions.push({
+                  brand: '',
+                  product_type: '',
+                  category: '',
+                  submission_id: '',
+                })
+              "
+            >
+              添加豁免
+            </button>
+          </div>
+          <p class="muted">
+            按品牌＋官方商品类型唯一匹配，保存和生成时均在线核验 APPROVED。未批准记录不能代替条码。
+          </p>
+          <article v-for="(ex, index) in settings.exemptions" :key="index" class="prep-exemption">
+            <label
+              >品牌<input
+                v-model="ex.brand"
+                :disabled="busy"
+                maxlength="200"
+                placeholder="与批次品牌完全一致"
+            /></label>
+            <label
+              >官方商品类型<FilterSelect
+                label="豁免商品类型"
+                :model-value="ex.product_type"
+                :disabled="busy"
+                :options="[
+                  { value: '', label: '请选择实际类型' },
+                  ...types.map((t) => ({ value: t.name, label: t.name + ' · ' + t.category })),
+                ]"
+                @update:model-value="selectType(index, $event)"
+            /></label>
+            <label
+              >批准申请编号<input
+                v-model="ex.submission_id"
+                :disabled="busy"
+                maxlength="200"
+                placeholder="真实 submissionId"
+            /></label>
+            <button
+              class="btn small"
               :disabled="busy"
-              :options="[
-                { value: '', label: '请选择实际类型' },
-                ...types.map((t) => ({ value: t.name, label: t.name + ' · ' + t.category })),
-              ]"
-              @update:model-value="selectType(index, $event)"
-          /></label>
-          <label
-            >批准申请编号<input
-              v-model="ex.submission_id"
-              :disabled="busy"
-              maxlength="200"
-              placeholder="真实 submissionId"
-          /></label>
-          <button class="btn small" :disabled="busy" @click="settings.exemptions.splice(index, 1)">
-            移除
-          </button>
-        </article>
+              @click="settings.exemptions.splice(index, 1)"
+            >
+              移除
+            </button>
+          </article>
+        </template>
         <footer>
-          <button class="btn primary" :disabled="busy" @click="save">在线核验并保存配置</button>
+          <button class="btn primary" :disabled="busy" @click="save">核验并保存配置</button>
         </footer>
       </template>
       <template v-if="!store">

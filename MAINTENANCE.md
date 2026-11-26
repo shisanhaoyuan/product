@@ -193,3 +193,7 @@ python validation/frontend_state_check.py
 `amazon_markets.py` 统一来源、站点、币种、邮编和 namespace：Amazon/US/USD/10001 与 Amazon_CA/CA/CAD/M5V 3L9。采集任务把站点持久化到 result_json 的私有元数据；保存页面以数据库任务站点为准，不信任客户端覆盖。旧任务默认为美国。来源补采、图片恢复、AI 补充、价格计划和预上架均沿来源选择站点，加拿大来源只进入加拿大店铺。同 ASIN 不跨来源共享变体归属或人工编辑；图片文件可按摘要复用，但证据关联仍按 listing_id 和 SKU 隔离。
 
 插件 2.1.0 新增 amazon.ca 权限，前后端及插件需一起更新并重新加载。加拿大 Wraith 使用原 profile 路径追加 -ca，和美国共用既有工作槽及进程锁。未使用真实 Amazon 或沃尔玛账号进行验收；隔离测试覆盖双站同 ASIN 入库、CAD 币种、邮编、跨站拒绝、Wraith 路由及真实插件模拟页面。详见 deploy/amazon-collector.md。
+
+## 加拿大店铺生成前提配置（2026-11-26）
+
+沃尔玛绑定页对 US / CA 已绑定店铺统一显示生成前提配置。加拿大复用按店铺授权隔离的默认品牌与默认库存保存流程；仓库选择仅使用加拿大默认库存，类目来自加拿大规格，不调用美国站仓库／类目接口。加拿大界面不提供自动核验 GTIN 豁免，服务端也拒绝保存加拿大豁免配置。保存后刷新店铺卡片，原批次品牌保持冻结。回归见 `tests/test_walmart_canada_publishing.py` 和隔离浏览器验收 `validation/canada_preparation_check.py`。

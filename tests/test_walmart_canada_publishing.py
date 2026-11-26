@@ -394,3 +394,33 @@ def test_amazon_canada_import_prelisting_uses_cad_and_canadian_schema(ca_publish
     assert doc['basis']['items'][0]['source']=='Amazon_CA'
     assert doc['rows'][0]['source_sku']==A
     assert c.post(base+'/taxonomy').status_code==200
+
+
+def test_ca_store_preparation_brand_inventory_and_scope(ca_publishing):
+    c,catalog,b,base,remote=ca_publishing
+    sid=b['preview']['store']['id']
+    path=f'/api/walmart/accounts/{sid}/preparation'
+    initial=c.get(path).json()
+    assert initial['default_brand']==''
+    options=c.post(path+'/options')
+    assert options.status_code==200,options.text
+    assert [n['id'] for n in options.json()['nodes']]==[DEFAULT_NODE]
+    assert options.json()['types']
+    settings=dict(revision=initial['revision'],default_brand='Myxchome',fulfillment_center_id=DEFAULT_NODE,exemptions=[])
+    saved=c.put(path,json=settings)
+    assert saved.status_code==200,saved.text
+    assert c.get(path).json()==saved.json()
+    cards=c.get('/api/walmart/accounts').json()['stores']
+    assert next(s for s in cards if s['store_id']==sid)['default_brand']=='Myxchome'
+    assert all(s.get('default_brand','')=='' for s in cards if s['store_id']!=sid)
+    assert c.get(base).json()['basis']['brand']=='NewBrand'  # Existing draft stays frozen.
+    assert c.put(path,json=settings).status_code==409
+    settings=saved.json()
+    assert c.put(path,json=settings|{'fulfillment_center_id':'US-WAREHOUSE'}).status_code==422
+    exemption=dict(brand='Myxchome',product_type=PT,category='furniture',submission_id='approved')
+    invalid=c.put(path,json=settings|{'exemptions':[exemption]})
+    assert invalid.status_code==422 and '加拿大' in invalid.text
+    assert c.get(path).json()==settings
+    assert not any(r.url.path in ('/v3/items/taxonomy','/v3/settings/shipping/shipnodes',
+        '/v3/items/gtin-exemption/status','/v3/settings/partnerprofile') for r in remote.calls)
+    assert not remote.posts
