@@ -63,6 +63,29 @@ def test_source_parent_group_is_stable_unique_and_not_title_based():
     assert plan(rows, basis, schemas, apply=True) == []
 
 
+def test_three_products_in_one_batch_keep_separate_variant_groups():
+    all_rows=[]
+    all_basis={'store':{'id':12},'items':[]}
+    for parent in ('cages','fire-pits','tents'):
+        rows,basis,schemas=family()
+        for row,variant in zip(rows,basis['items'][0]['variants']):
+            row['listing_id']=parent
+            row['platform_sku']=parent+'-'+row['platform_sku']
+            row['source_sku']=parent+'-'+row['source_sku']
+            variant.update(platform_sku=row['platform_sku'],sku=row['source_sku'])
+        basis['items'][0]['listing_id']=parent
+        all_rows.extend(rows)
+        all_basis['items'].extend(basis['items'])
+    groups=plan(all_rows,all_basis,schemas,apply=True)
+    assert len(groups)==3 and not any(g['errors'] for g in groups)
+    assert len({r['visible']['variantGroupId'] for r in all_rows})==3
+    for group in groups:
+        members=[r for r in all_rows if r['listing_id']==group['listing_id']]
+        assert len(members)==2
+        assert {r['visible']['variantGroupId'] for r in members}=={group_id(12,group['listing_id'])}
+        assert sum(r['visible']['isPrimaryVariant']=='Yes' for r in members)==1
+
+
 def test_shared_attributes_fill_each_child_despite_family_manual_flag():
     rows, basis, schemas = family()
     props = sections(schemas[PT], PT)['visible']['properties']

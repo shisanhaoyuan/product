@@ -20,6 +20,7 @@ import { useAuth } from '../composables/useAuth';
 import { errorMessage, plain, money as formatMoney } from '../utils/display';
 import { listingSourceImages } from '../utils/listingSourceImages';
 import { listingAsins, listingIdentityLabel } from '../utils/listingIdentity';
+import { listingProductGroups } from '../utils/listingProductGroups';
 import { claimAutomaticCollection } from '../utils/automaticCollection';
 import { shouldPrepareOnEntry } from '../utils/listingPreparation';
 import { completeGroupCandidates, toggleVariantSelection, reviewVariantValue, reviewedVariantAttributes } from '../utils/listingVariants';
@@ -576,6 +577,17 @@ const rowsToShow = computed(() =>
     return true;
   }),
 );
+const productGroups = computed(() => listingProductGroups(doc.value?.rows || [], rowsToShow.value));
+const productCount = computed(() => new Set(doc.value?.rows.map((row) => row.listing_id)).size);
+const collapsedProducts = ref<string[]>([]);
+function toggleProduct(listingId: string) {
+  collapsedProducts.value = collapsedProducts.value.includes(listingId)
+    ? collapsedProducts.value.filter((id) => id !== listingId)
+    : [...collapsedProducts.value, listingId];
+}
+watch(activeSku, () => {
+  collapsedProducts.value = collapsedProducts.value.filter((id) => id !== current.value?.listing_id);
+});
 const statusLabels: Record<string, string> = {
   processing: '处理中',
   unknown: '结果待确认',
@@ -1231,15 +1243,28 @@ onBeforeUnmount(() => {
       <div class="listing-workspace">
         <aside class="listing-sku-sidebar">
           <div class="listing-sku-heading">
-            <strong>商品 / 子 SKU</strong><span>{{ doc.rows.length }}</span>
+            <strong>商品分组</strong><span>{{ productCount }} 件 · {{ doc.rows.length }} 个 SKU</span>
           </div>
           <select v-model="statusFilter" aria-label="筛选批次商品">
             <option value="all">全部商品</option>
             <option value="issues">资料待补齐</option>
             <option value="failed">处理异常</option>
           </select>
+          <p class="listing-group-hint">同一框内为同一商品的子变体；不同商品独立分组提交。</p>
+          <section v-for="group in productGroups" :key="group.listingId" class="listing-product-group">
+            <button
+              type="button"
+              class="listing-product-group-heading"
+              :aria-expanded="!collapsedProducts.includes(group.listingId)"
+              @click="toggleProduct(group.listingId)"
+            >
+              <strong>商品 {{ group.index }}</strong>
+              <span>{{ group.total > 1 ? `${group.total} 个子变体` : '单规格商品' }} · {{ collapsedProducts.includes(group.listingId) ? '展开' : '收起' }}</span>
+            </button>
+            <p v-if="group.rows.length !== group.total" class="listing-group-hint">当前筛选显示 {{ group.rows.length }} / {{ group.total }} 个 SKU</p>
+            <div v-show="!collapsedProducts.includes(group.listingId)">
           <div
-            v-for="row in rowsToShow"
+            v-for="row in group.rows"
             :key="row.platform_sku"
             class="listing-sku-card"
             :class="{ active: row.platform_sku === activeSku }"
@@ -1293,6 +1318,8 @@ onBeforeUnmount(() => {
               查看商品档案
             </button>
           </div>
+            </div>
+          </section>
           <p v-if="!rowsToShow.length" class="muted">没有符合条件的商品</p>
         </aside>
         <main v-if="current" class="listing-form-main">
