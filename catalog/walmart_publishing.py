@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .listing_content import normalize as normalize_content
 from .product_store_history import histories
 from . import platform_sku
-from .listing_titles import branded_title, source_brands
+from .listing_titles import branded_title, source_brands, normalize_copy_brand, brand_errors, BRAND_POLICY
 from .blacklist import active_entries, matches
 from .credential_vault import VaultError
 from .database import write_lock, is_postgres
@@ -32,6 +32,7 @@ from .prelisting import PlanInput, build_preview, encoded, fingerprint
 from .projection import category
 from .walmart_accounts import account, now, store
 from .walmart_client import WalmartError
+from .walmart_publication import publication_result, normalize_saved_result
 from .walmart_publishing_client import SubmissionUnknown
 from .walmart_markets import market_of, require_sources, spec_version, session as market_session, header as market_header
 from .walmart_listing_schema import (LABELS, feed_item, identifier_errors,
@@ -209,15 +210,15 @@ def latest_results(db, bid):
     result = {}
     for attempt in db.execute('SELECT * FROM walmart_listing_attempts WHERE batch_id=? ORDER BY created_at,id', (bid,)):
         for row in json.loads(attempt['rows_json']):
-            result[row['platform_sku']] = json.loads(attempt['results_json']).get(row['platform_sku'],
-                dict(status='unknown', message='提交结果未确认，请查询原批次', errors=[])) | {'attempt_id': attempt['id']}
+            result[row['platform_sku']] = normalize_saved_result(json.loads(attempt['results_json']).get(row['platform_sku'],
+                dict(status='unknown', message='提交结果未确认，请查询原批次', errors=[]))) | {'attempt_id': attempt['id']}
     return result
 
 
 def public_attempt(row):
     return {k: row[k] for k in ('id','store_id','partner_id','binding_revision','document_revision',
                                 'state','feed_id','message','created_at','updated_at')} | {
-        'results': json.loads(row['results_json']), 'skus': [r['platform_sku'] for r in json.loads(row['rows_json'])]}
+        'results': {sku: normalize_saved_result(r) for sku, r in json.loads(row['results_json']).items()}, 'skus': [r['platform_sku'] for r in json.loads(row['rows_json'])]}
 
 
 def source_category_hints(source):
@@ -340,6 +341,7 @@ def default_rows(preview):
             from .listing_content import image_policy
             image_policy(visible, default_selection=True)
             normalize_content(visible)
+            normalize_copy_brand(visible, preview['brand'], item.get('source_brands', []))
             result.append(dict(platform_sku=v['platform_sku'], listing_id=item['listing_id'],source_sku=v['sku'],
                 product_type='',fulfillment_center_id='__DEFAULT_CA__' if preview.get('store',{}).get('marketplace')=='CA' else '', identification=dict(mode='identifier',type=code_type,value=code,submission_id=''),
                 visible=visible,orderable=orderable,extra={}))
@@ -436,7 +438,7 @@ def feedback_errors(db,doc,row,spec):
         originals=[r for r in json.loads(a['rows_json']) if r['platform_sku']==sku]
         if not originals:
             continue
-        result=json.loads(a['results_json']).get(sku,{})
+        result=normalize_saved_result(json.loads(a['results_json']).get(sku,{}))
         if not (result.get('status')=='unpublished' or
                 (result.get('status')=='failed' and result.get('ingestion_status')=='DATA_ERROR')):
             return []
@@ -489,8 +491,8 @@ def check_rows(db, doc, session, binding_row, skus=None):
         errors.extend(identifier_ownership_errors(db,doc,row,item))
         if row['fulfillment_center_id'] not in {n['id'] for n in nodes}:
             errors.append(dict(path='fulfillment_center_id',message='请选择该沃尔玛店铺实际启用的发货仓'))
-        if row['visible'].get('brand')!=basis['brand']:
-            errors.append(dict(path='visible.brand',message='品牌与本批次目标品牌不一致，请核对'))
+        source=db.execute('SELECT data_json FROM current_listings WHERE id=?',(row['listing_id'],)).fetchone()
+        errors.extend(brand_errors(row['visible'],basis['brand'],source_brands(json.loads(source[0])) if source else []))
         for field,urls in (('mainImageUrl',[row['visible'].get('mainImageUrl')]),
                            ('productSecondaryImageURL',row['visible'].get('productSecondaryImageURL',[])),
                            ('swatchImages',[s.get('swatchImageUrl') for s in row['visible'].get('swatchImages',[]) if isinstance(s,dict)]
@@ -535,7 +537,7 @@ def check_rows(db, doc, session, binding_row, skus=None):
                 errors.append(dict(path='visible.mainImageUrl',message=str(exc)))
         results[sku] = dict(valid=not errors,errors=errors)
     from .listing_prerequisites import resource_digest
-    return dict(variant_policy=POLICY,feedback_policy='publication_feedback_v1',content_policy='default8_manual_images_copy_origin_v3',title_policy='brand_prefix_v1',feedback_digest=fingerprint(latest_results(db,doc['batch_id'])),resources_digest=resource_digest(db,binding_row),id=uuid.uuid4().hex,revision=doc['revision'],at=int(time.time()),binding_revision=binding_row['revision'],
+    return dict(variant_policy=POLICY,feedback_policy='publication_feedback_v1',content_policy='default8_manual_images_copy_origin_v3',title_policy=BRAND_POLICY,feedback_digest=fingerprint(latest_results(db,doc['batch_id'])),resources_digest=resource_digest(db,binding_row),id=uuid.uuid4().hex,revision=doc['revision'],at=int(time.time()),binding_revision=binding_row['revision'],
                 partner_id=binding_row['partner_id'],rows=results,schema_digests=schema_digests,payloads=payloads,
                 feed_headers=headers, marketplace=market_of(binding_row), valid_count=sum(r['valid'] for r in results.values()))
 
@@ -984,6 +986,10 @@ def publishing_routes(catalog):
                         if latest.get(sku,{}).get('status','unsubmitted') not in EDITABLE:
                             raise HTTPException(409,'所选 SKU 已成功、正在处理或结果未知，禁止重复提交')
                         row=all_rows[sku]
+                        source=db.execute('SELECT data_json FROM current_listings WHERE id=?',(row['listing_id'],)).fetchone()
+                        branding=brand_errors(row['visible'],basis['brand'],source_brands(json.loads(source[0])) if source else [])
+                        if branding:
+                            raise HTTPException(409,'；'.join(e['path']+'：'+e['message'] for e in branding))
                         pt=row['product_type'];s=cache_value(db,bound,'spec',doc['version'],pt)
                         if not s or fingerprint(s)!=report['schema_digests'].get(pt):
                             raise HTTPException(409,'官方规格已过期或变化，请重新加载并校验')
@@ -1221,7 +1227,7 @@ def _refresh_attempt(catalog,bid,aid,request,poll_token,*,sync_inventory=True):
                     results[sku]=dict(status='processing',message='沃尔玛正在处理或进行合规审核，请稍后查询',errors=errors)
                     continue
                 # Publication is independent of source freshness and inventory synchronization.
-                previous=results.get(sku,{})
+                previous=normalize_saved_result(results.get(sku,{}))
                 stock_done=previous.get('stock_verified') is True
                 try:
                     item=remote.item(sku)
@@ -1230,19 +1236,15 @@ def _refresh_attempt(catalog,bid,aid,request,poll_token,*,sync_inventory=True):
                         candidate=[candidate]
                     if not isinstance(candidate,list) or len(candidate)!=1 or candidate[0].get('sku')!=sku:
                         raise WalmartError('商品状态回读与目标 SKU 不一致')
-                    detail_item=candidate[0];published=detail_item.get('publishedStatus')
-                    if published=='PUBLISHED':
-                        results[sku]=dict(status='published',message='沃尔玛已确认商品发布成功',errors=[],stock_verified=stock_done)
-                    elif published=='UNPUBLISHED':
-                        reasons=detail_item.get('unpublishedReasons',{}).get('reason',[])
-                        results[sku]=dict(status='unpublished',message='商品资料已处理，但尚未发布；请查看平台原因',errors=upstream_reason([{'description':r} for r in reasons]),stock_verified=stock_done)
-                    else:
-                        results[sku]=dict(status='ingested',message='商品资料处理成功，等待平台发布',errors=[],stock_verified=stock_done)
-                    results[sku].update(published_status=published or '',wpid=detail.get('wpid',''),item_id=detail.get('itemid',''))
+                    results[sku]=publication_result(candidate[0]) | dict(stock_verified=stock_done,
+                        wpid=detail.get('wpid',''),item_id=detail.get('itemid',''))
                 except WalmartError as exc:
-                    results[sku]=dict(status='ingested',message='资料已接收，平台发布状态暂未核实：'+str(exc),
-                                      errors=[],stock_verified=stock_done,
-                                      stock_message=previous.get('stock_message',''))
+                    if previous.get('status') == 'unpublished':
+                        results[sku]=previous | {'status_check_error':str(exc)}
+                    else:
+                        results[sku]=dict(status='unknown',message='资料已接收，平台发布状态暂未核实：'+str(exc),
+                                          errors=previous.get('errors',[]),stock_verified=stock_done,
+                                          stock_message=previous.get('stock_message',''))
                     continue
                 try:
                     if not stock_done:

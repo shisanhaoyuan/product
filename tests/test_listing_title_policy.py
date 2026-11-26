@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from catalog.listing_titles import branded_title
+from catalog.listing_titles import branded_title, source_brands, normalize_copy_brand, brand_errors
 from catalog.prelisting import encoded
 from catalog.walmart_publishing import source_issues
 from catalog.listing_generation import prepare_copy
@@ -107,3 +107,96 @@ def test_edit_save_is_idempotent_and_does_not_reprice(publishing):
     assert saved['rows'][0]['orderable']['msrp']==123.45
     again=c.patch(base,json={k:saved[k] for k in ('revision','version','rows')}).json()
     assert again['revision']==saved['revision'] and again['rows']==saved['rows']
+
+
+@pytest.mark.parametrize('source', [
+    {'source':'Amazon_CA','brand':'','fields':{'Brand':'Tangkula'}},
+    {'source':'Amazon','variants':[{'attributes':{'Brand':{'val':['Tangkula']}}}]},
+    {'source_facts':{'listing_facts':{'content.attributes':{'Brand Name':{'value':'Tangkula'}}}}},
+    {'source_facts':{'giga':{'detail':{'brandInfo':[{'brandName':'Tangkula'}]}}}},
+    {'fields':{'attributes':[{'name':'Brand','value':'Tangkula'}]}},
+])
+def test_extract_explicit_source_brand_from_all_import_shapes(source):
+    before=copy.deepcopy(source)
+    assert source_brands(source)==['Tangkula']
+    assert source==before
+    assert source_brands({'seller':'Other','copy':{'title':'Guess Me Chair'},'manufacturer':'Factory'})==[]
+
+
+def test_brand_rule_covers_title_descriptions_and_features_without_changing_dimensions():
+    visible={'brand':'Myxchome','productName':'Myxchome Tangkula 51.5 Inch Bookcase',
+             'shortDescription':'<p>Brand: Tangkula</p><p>Width: 51.5 inches</p>',
+             'longDescription':'TANGKULA storage', 'keyFeatures':['Tangkula 10-cube shelves']}
+    normalize_copy_brand(visible,'Myxchome',['Tangkula'])
+    assert visible['productName']=='Myxchome 51.5 Inch Bookcase'
+    assert visible['shortDescription']=='<p>Brand: Myxchome</p><p>Width: 51.5 inches</p>'
+    assert visible['longDescription']=='Myxchome storage'
+    assert visible['keyFeatures']==['Myxchome 10-cube shelves']
+    assert not brand_errors(visible,'Myxchome',['Tangkula'])
+    before=copy.deepcopy(visible)
+    normalize_copy_brand(visible,'Myxchome',['Tangkula'])
+    assert visible==before
+    visible['keyFeatures']=['Tang<b>kula</b> shelves']
+    assert brand_errors(visible,'Myxchome',['Tangkula'])[0]['path']=='visible.keyFeatures.0'
+
+
+def test_brand_rule_does_not_corrupt_target_containing_source_token():
+    from catalog.listing_templates import replace_brand
+    assert replace_brand('Oak Home table; Oakwood finish; Oak stool',['Oak'],'Oak Home')=='Oak Home table; Oakwood finish; Oak Home stool'
+    assert not brand_errors({'brand':'Oak Home','productName':'Oak Home Table',
+                             'shortDescription':'Oak Home table'},'Oak Home',['Oak'])
+
+
+def test_submit_rechecks_brands_even_with_existing_valid_report(publishing):
+    c,catalog,_,_,b,base,remote=publishing
+    doc=ready(publishing)
+    with catalog.connect() as db:
+        record=db.execute('SELECT data_json FROM listings WHERE id=?',(doc['rows'][0]['listing_id'],)).fetchone()
+        source=json.loads(record[0]);source['fields']['Brand']='Tangkula'
+        db.execute('UPDATE listings SET data_json=? WHERE id=?',(encoded(source),doc['rows'][0]['listing_id']))
+    refreshed=c.post(base+'/refresh-source',json={'revision':doc['revision']})
+    assert refreshed.status_code==200,refreshed.text
+    checked=c.post(base+'/validate',json={'revision':refreshed.json()['revision']})
+    assert checked.status_code==200,checked.text
+    doc=checked.json()
+    # An old validation stamp cannot authorize a subsequently corrupted row.
+    with catalog.connect() as db:
+        rows=copy.deepcopy(doc['rows'])
+        rows[0]['visible']['shortDescription']='Brand: Tang<b>kula</b>'
+        db.execute('UPDATE walmart_listing_documents SET rows_json=? WHERE batch_id=?',(encoded(rows),b['id']))
+    response=c.post(base+'/submit',json=submission(doc))
+    assert response.status_code==409,response.text
+    assert 'Tangkula' in response.text and 'shortDescription' in response.text
+    assert not remote.posts
+    doc['rows'][0]['visible'].update(productName='NewBrand Tangkula Chair',
+        shortDescription='<p>Brand: Tangkula</p><p>Wood chair.</p>', keyFeatures=['Tangkula shelf'])
+    saved=c.patch(base,json={k:doc[k] for k in ('revision','version','rows')})
+    assert saved.status_code==200,saved.text
+    assert 'Tangkula' not in json.dumps(saved.json()['rows'][0]['visible'])
+    assert saved.json()['rows'][0]['visible']['productName']=='NewBrand Chair'
+
+
+def test_brand_cleanup_runs_after_final_ai_copy_step(monkeypatch):
+    from catalog.listing_generation import fill_row
+    from test_listing_generation import listing, AI, spec
+    def final_copy(row,*args,**kwargs):
+        row['visible'].update(productName='Tangkula Chair',shortDescription='<p>Brand: Tangkula</p>',
+                              keyFeatures=['Tangkula wooden shelf'])
+        return []
+    monkeypatch.setattr('catalog.listing_copy_generation.fill_missing_copy',final_copy)
+    facts={'content.attributes':{'Brand':{'val':['Tangkula']}}}
+    row,_=fill_row(listing(),spec(),facts,AI(),{})
+    assert row['visible']['productName']=='NewBrand Chair'
+    assert 'Tangkula' not in json.dumps(row['visible'])
+
+
+def test_legacy_brand_validation_requires_recheck(publishing):
+    c,catalog,_,_,b,base,remote=publishing
+    doc=ready(publishing)
+    with catalog.connect() as db:
+        report=json.loads(db.execute('SELECT validation_json FROM walmart_listing_documents WHERE batch_id=?',(b['id'],)).fetchone()[0])
+        report['title_policy']='brand_prefix_v1'
+        db.execute('UPDATE walmart_listing_documents SET validation_json=? WHERE batch_id=?',(encoded(report),b['id']))
+    assert not c.get(base).json()['validation']['current']
+    assert c.post(base+'/submit',json=submission(doc)).status_code==409
+    assert not remote.posts

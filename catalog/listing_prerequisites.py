@@ -118,7 +118,8 @@ def identifier_ownership_errors(db,doc,row,item):
 
 def validation_current(db, doc, bound, report):
     from .listing_variants import POLICY
-    if (not report or report.get('variant_policy')!=POLICY or report.get('feedback_policy')!='publication_feedback_v1' or report.get('content_policy')!='default8_manual_images_copy_origin_v3' or report.get('title_policy')!='brand_prefix_v1' or report.get('revision')!=doc['revision']
+    from .listing_titles import BRAND_POLICY
+    if (not report or report.get('variant_policy')!=POLICY or report.get('feedback_policy')!='publication_feedback_v1' or report.get('content_policy')!='default8_manual_images_copy_origin_v3' or report.get('title_policy')!=BRAND_POLICY or report.get('revision')!=doc['revision']
             or not bound or bound['status']!='verified' or not bound['encrypted_credentials']
             or report.get('binding_revision')!=bound['revision'] or report.get('partner_id')!=bound['partner_id']
             or report.get('resources_digest')!=resource_digest(db,bound)):

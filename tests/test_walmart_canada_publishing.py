@@ -123,6 +123,42 @@ def ready_ca(env):
     return doc
 
 
+def test_ca_system_problem_is_unpublished_and_keeps_quality_reason(ca_publishing):
+    from test_walmart_publication import REASON
+    c,_,_,base,remote=ca_publishing
+    doc=ready_ca(ca_publishing)
+    response=c.post(base+'/submit',json=submission(doc))
+    assert response.status_code==200,response.text
+    a=response.json()
+    target=doc['rows'][0]['platform_sku']
+    original=remote.handler
+    def handler(request):
+        if request.url.path=='/v3/items/'+target:
+            return httpx.Response(200,json={'ItemResponse':[{'sku':target,
+                'publishedStatus':'SYSTEM_PROBLEM',
+                'unpublishedReasons':{'reason':{'code':'CONTENT_QUALITY','description':REASON}}}]})
+        return original(request)
+    c.app.state.walmart_publisher=WalmartPublishingClient(httpx.MockTransport(handler))
+    result=c.post(f"/api/walmart-review/attempts/{a['id']}/refresh")
+    assert result.status_code==200,result.text
+    row=result.json()['results'][target]
+    assert row['status']=='unpublished' and row['published_status']=='SYSTEM_PROBLEM'
+    assert row['errors'][0]['original']==REASON
+    assert row['errors'][0]['code']=='CONTENT_QUALITY'
+    assert len(remote.posts)==1 and not any(r.method=='PUT' for r in remote.calls)
+    assert c.get('/api/prelisting/batches?status=review_failed').json()['total']==1
+    # A temporary read error must not turn a known rejection back into waiting.
+    def unavailable(request):
+        if request.url.path=='/v3/items/'+target:
+            return httpx.Response(503)
+        return original(request)
+    c.app.state.walmart_publisher=WalmartPublishingClient(httpx.MockTransport(unavailable))
+    result=c.post(f"/api/walmart-review/attempts/{a['id']}/refresh")
+    assert result.status_code==200,result.text
+    assert result.json()['results'][target]['status']=='unpublished'
+    assert result.json()['results'][target]['errors']==row['errors']
+
+
 def test_ca_prelisting_cad_validation_submit_review_and_retry(ca_publishing):
     c,catalog,b,base,remote=ca_publishing
     assert b['preview']['store']['marketplace']=='CA' and b['preview']['store']['currency']=='CAD'

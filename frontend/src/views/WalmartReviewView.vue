@@ -285,6 +285,7 @@ onBeforeUnmount(() => {
             <td class="review-outcome">
               <span class="review-status" :class="tone(row.status)">{{ row.status_label }}</span>
               <p>{{ row.message }}</p>
+              <small v-if="row.published_status">平台原始状态：{{ row.published_status }}</small>
               <div
                 v-if="row.stock_message"
                 class="review-stock-note"
@@ -375,6 +376,8 @@ onBeforeUnmount(() => {
       <span class="review-status" :class="tone(selected.status)">{{ selected.status_label }}</span>
       <p>{{ selected.message }}</p>
       <dl class="review-facts">
+        <dt>平台原始发布状态</dt>
+        <dd>{{ selected.published_status || '未返回' }}</dd>
         <dt>目标店铺</dt>
         <dd>
           {{ selected.store_name }} · {{ selected.brand }} ·

@@ -109,6 +109,8 @@ def annotate_preview(db, data, preview, existing_bid=None):
 def replace_brand(value, brands, target):
     if isinstance(value,list):
         return [replace_brand(v,brands,target) for v in value]
+    if isinstance(value,dict):
+        return {k:replace_brand(v,brands,target) for k,v in value.items()}
     if not isinstance(value,str):
         return value
     patterns=[]
@@ -117,7 +119,13 @@ def replace_brand(value, brands, target):
         pattern=(r'(?<!\w)' if brand[0].isascii() and brand[0].isalnum() else '')+pattern
         pattern+=r'(?!\w)' if brand[-1].isascii() and brand[-1].isalnum() else ''
         patterns.append(pattern)
-    return re.sub('|'.join(patterns),lambda _:target,value,flags=re.I) if patterns else value
+    if not patterns:
+        return value
+    from .listing_titles import brand_pattern
+    # Protect the full target when it contains a source brand token.
+    target_pattern=brand_pattern(target) if target else r'(?!)'
+    return re.sub('('+target_pattern+')|(?:'+'|'.join(patterns)+')',
+                  lambda match:match[0] if match[1] else target,value,flags=re.I)
 
 
 def create_document(catalog, db, bid, data, actor_id):

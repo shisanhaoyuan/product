@@ -333,6 +333,8 @@ def upstream_reason(errors):
             message = '沃尔玛未取得可用主图，请检查主图链接的公网访问及图片要求后重新提交'
         elif any(s in text for s in ('image', 'picture')):
             message = '商品图片未通过，请检查公网访问、格式及图片要求'
+        elif 'content quality' in text or 'content_quality' in text:
+            message = '商品因内容质量问题未发布，请核对商品类型与实物是否匹配，并检查标题、品牌、描述及属性的一致性'
         elif any(s in text for s in ('required', 'missing', 'mandatory')):
             fields = [label for key,label in LABELS.items() if re.search(r'(?<![a-z0-9_])'+re.escape(key.lower())+r'(?![a-z0-9_])', original.lower())]
             message = '缺少必填资料：'+'、'.join(dict.fromkeys(fields)) if fields else '缺少沃尔玛必填资料，请按原始提示补齐属性'

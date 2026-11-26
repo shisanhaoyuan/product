@@ -123,6 +123,21 @@ def test_readonly_poll_and_failed_poll_preserve_original_results(publishing):
     assert c.post('/api/walmart-review/attempts/missing/refresh').status_code==404
 
 
+def test_saved_system_problem_returns_to_prelisting_without_remote_write(publishing):
+    c,catalog,_,_,b,base,remote=publishing
+    a=send(publishing,ready(publishing))
+    outcome(catalog,a['id'],'ingested',published_status='SYSTEM_PROBLEM')
+    before=len(remote.calls)
+    result=queue(c,status='unpublished')
+    assert result['total']==2 and queue(c,status='ingested')['total']==0
+    assert all('发布异常' in r['message'] for r in result['items'])
+    assert c.get('/api/prelisting/batches?status=review_failed').json()['total']==1
+    doc=c.get(base).json()
+    assert all(r['status']=='unpublished' for r in doc['results'].values())
+    assert all(r['status']=='unpublished' for r in doc['attempts'][0]['results'].values())
+    assert len(remote.calls)==before and len(remote.posts)==1
+
+
 def test_viewer_read_and_admin_only_polling(publishing,monkeypatch):
     c,catalog,_,_,b,base,remote=publishing
     a=send(publishing,ready(publishing))
@@ -194,7 +209,8 @@ def test_stale_stock_does_not_hide_platform_status(publishing, published):
         assert response.status_code==200,response.text
         for result in response.json()['results'].values():
             assert result['published_status']==published
-            assert result['status']=={'PUBLISHED':'published','UNPUBLISHED':'unpublished','STAGE':'ingested'}[published]
+            # A staging response containing rejection reasons is not a clean pending result.
+            assert result['status']=={'PUBLISHED':'published','UNPUBLISHED':'unpublished','STAGE':'unknown'}[published]
             assert not result['stock_verified']
             assert '24 小时' in result['stock_message']
             assert '过期' not in result['message']

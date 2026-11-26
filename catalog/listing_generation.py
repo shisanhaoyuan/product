@@ -8,7 +8,7 @@ from pathlib import Path
 from jsonschema import Draft7Validator
 
 from .listing_ai_client import ListingAIError
-from .listing_titles import branded_title, source_brands
+from .listing_titles import branded_title, source_brands, normalize_copy_brand, brand_errors
 from .walmart_listing_schema import plain, sections, feed_item, schema_errors, identifier_errors, precise_validator
 from .listing_skill_defaults import has_default, skill_default, length_fallback, fixed_origin, enforce_origin
 
@@ -625,6 +625,15 @@ def fill_row(row, schema, facts, ai, provenance):
     preserve_manual(row,reviewed_original)
     for key in reviewed_original.get('variant_reviewed_fields',[]):
         provenance['visible.'+key]=dict(kind='manual',value=row['visible'].get(key),refs=[],reason='保留人工复验的变体参数')
+    # Run after every AI/source-copy step so later prose generation cannot reintroduce a brand.
+    brands=list(dict.fromkeys(facts.get('source_brands',[]) + [facts.get('source_brand','')] + source_brands(facts)))
+    before_brand=copy.deepcopy(row['visible'])
+    normalize_copy_brand(row['visible'],row['visible'].get('brand',''),brands)
+    for field in ('productName','shortDescription','longDescription','keyFeatures'):
+        if row['visible'].get(field)!=before_brand.get(field):
+            provenance['visible.'+field]=dict(kind='user_rule',value=row['visible'].get(field),
+                previous_value=before_brand.get(field),refs=[],reason='强制品牌一致性：移除来源品牌残留，统一目标店铺品牌')
+    problems.extend(brand_errors(row['visible'],row['visible'].get('brand',''),brands))
     return row, problems + copy_problems
 
 

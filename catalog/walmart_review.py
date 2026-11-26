@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from .database import read_snapshot
 from .walmart_publishing import admin, refresh_attempt
+from .walmart_publication import normalize_saved_result
 
 Status = Literal['', 'processing', 'published', 'failed', 'ingested', 'unpublished',
                  'stock_pending', 'unknown', 'rejected']
@@ -31,6 +32,7 @@ def queue_sql(postgres):
         brand = "CAST(b.preview_json AS jsonb)->>'brand'"
         result = "CAST(a.results_json AS jsonb)->(entry.value->>'platform_sku')"
         state = "result_json->>'status'"
+        published = "result_json->>'published_status'"
         market = "CASE WHEN CAST(a.payload_json AS jsonb)->'MPItemFeedHeader'->>'mart'='WALMART_CA' THEN 'CA' ELSE 'US' END"
     else:
         expanded = 'JOIN json_each(a.rows_json) AS entry'
@@ -40,6 +42,7 @@ def queue_sql(postgres):
         brand = "json_extract(b.preview_json,'$.brand')"
         result = f"(SELECT value FROM json_each(a.results_json) WHERE key={field('platform_sku')})"
         state = "json_extract(result_json,'$.status')"
+        published = "json_extract(result_json,'$.published_status')"
         market = "CASE WHEN json_extract(a.payload_json,'$.MPItemFeedHeader.mart')='WALMART_CA' THEN 'CA' ELSE 'US' END"
     return f'''WITH expanded AS (
         SELECT a.id AS attempt_id,a.batch_id,a.store_id,a.partner_id,a.state AS attempt_state,
@@ -59,7 +62,8 @@ def queue_sql(postgres):
     ), ranked AS (
         SELECT *,ROW_NUMBER() OVER (PARTITION BY store_id,partner_id,platform_sku
                                    ORDER BY created_at DESC,attempt_id DESC) AS position,
-               CASE WHEN {state} IN ('processing','published','failed','ingested','unpublished',
+               CASE WHEN {state}='ingested' AND upper({published})='SYSTEM_PROBLEM' THEN 'unpublished'
+                    WHEN {state} IN ('processing','published','failed','ingested','unpublished',
                                      'stock_pending','unknown','rejected') THEN {state}
                     WHEN attempt_state='rejected' THEN 'rejected' ELSE 'unknown' END AS status
         FROM expanded
@@ -71,6 +75,7 @@ def public_row(record):
     result = item.pop('result_json') or {}
     if isinstance(result, str):
         result = json.loads(result)
+    result = normalize_saved_result(result)
     item['message'] = result.get('message') or item.pop('attempt_message') or '尚未获得完整平台结果'
     item.pop('attempt_message', None)
     item['errors'] = result.get('errors') or []
