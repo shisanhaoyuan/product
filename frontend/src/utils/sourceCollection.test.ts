@@ -450,3 +450,33 @@ it('uses the persisted Canadian source context for browser capture', async () =>
   mock.browser.mockResolvedValue({ asin, status: 'captured', delivery_location: 'New York 10001' });
   await expect(collectSourceInBrowser('canada', 'child', asin, signal)).rejects.toThrow('M5V 3L9');
 });
+
+it.each([null, undefined])('accepts a verified Canadian ZIP during filling when price currency is %s', async (currency) => {
+  const { collectListingSources } = await import('./sourceCollection');
+  mock.context.mockResolvedValue({ marketplace: 'CA', postal_code: 'M5V 3L9' });
+  mock.page.mockResolvedValue({ asin: 'B000000001', source_url: 'https://www.amazon.ca/dp/B000000001', html: 'CA' });
+  mock.browser.mockResolvedValue({
+    asin: 'B000000001', capture_id: 'ca-capture', status: 'partial',
+    price: null, original_price: null, currency, delivery_location: 'Deliver to M5V 3L9',
+    issues: ['卖家报价列表尚未加载完整，价格暂缺'],
+  });
+  const receipts = await collectListingSources(
+    [{ platform_sku: 'MY12ABC', listing_id: 'canada', sku: 'child', asin: 'B000000001' }],
+    new AbortController().signal, vi.fn(), true,
+  );
+  expect(receipts).toEqual({ MY12ABC: 'ca-capture' });
+  expect(mock.capture).not.toHaveBeenCalled();
+  const { hasCapturedPrice } = await import('./sourceCollection');
+  expect(hasCapturedPrice(await mock.browser(), 'B000000001')).toBe(false);
+});
+
+it('does not use quote currency to override the Canadian storefront ZIP check', async () => {
+  const { collectListingSources } = await import('./sourceCollection');
+  mock.context.mockResolvedValue({ marketplace: 'CA', postal_code: 'M5V 3L9' });
+  mock.capture.mockResolvedValue({ asin: 'B000000001', capture_id: 'wrong-location',
+    status: 'partial', currency: 'USD', delivery_location: '10001' });
+  await expect(collectListingSources(
+    [{ platform_sku: 'MY12ABC', listing_id: 'canada', sku: 'child', asin: 'B000000001' }],
+    new AbortController().signal, vi.fn(),
+  )).rejects.toThrow('M5V 3L9');
+});

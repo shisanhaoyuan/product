@@ -228,6 +228,10 @@ export async function collectListingSources(
   const receipts: Record<string, string> = {};
   for (const [index, target] of targets.entries()) {
     signal.throwIfAborted();
+    // Storefront identity is persisted independently of whether a price was found.
+    // A valid Canadian page may have currency=null when its offer is unavailable.
+    const context = await catalogApi.sourceContext(target.listing_id, signal);
+    signal.throwIfAborted();
     progress(`使用商品库采集会话：${target.sku || target.asin} · ${index + 1}/${targets.length}`);
     const record =
       foregroundFirst && index === 0
@@ -251,11 +255,11 @@ export async function collectListingSources(
     if (record.asin !== target.asin || !record.capture_id)
       throw new Error('未取得本轮商品采集记录，请刷新后重试');
     if (
-      !(record.currency === 'CAD' ? /\bM5V\s*3L9\b/i : /\b10001\b/).test(
+      !(context.marketplace === 'CA' ? /\bM5V\s*3L9\b/i : /\b10001\b/).test(
         record.delivery_location || '',
       )
     )
-      throw new Error('配送地区尚未核验，请打开网页设置当前站点配送邮编后继续');
+      throw new Error(`配送地区尚未核验为 ${context.postal_code}，请打开网页设置当前站点配送邮编后继续`);
     receipts[target.platform_sku] = record.capture_id;
   }
   return receipts;
