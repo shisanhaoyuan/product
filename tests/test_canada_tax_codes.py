@@ -143,3 +143,63 @@ def test_us_does_not_use_canadian_tax_codes():
     row = listing(); row['orderable']['productTaxCode'] = 9999999
     assert fill_tax_code(row, spec(), {}, TaxAI(), {}) == []
     assert errors(row, spec()) == []
+
+
+def test_tax_code_reference_wrapper_and_numeric_group_id_are_normalized():
+    class Wrapped(TaxAI):
+        def query(self, purpose, payload):
+            result = super().query(purpose, payload)
+            if purpose == 'canada_tax_group': result['group_id'] = int(result['group_id'])
+            if purpose == 'canada_tax_code': result['refs'] = ['facts.content.copy.title']
+            return result
+    row=ca_row(); audit={}
+    assert not fill_tax_code(row, official_bundle()['specs']['Furniture'],
+                            {'content.copy':{'title':'Wood chair'}}, Wrapped(), audit)
+    assert audit['orderable.productTaxCode']['refs'] == ['content.copy.title']
+
+
+def test_tax_code_invalid_response_retries_with_specific_feedback():
+    class Retry(TaxAI):
+        attempts = 0
+        def query(self, purpose, payload):
+            result = super().query(purpose, payload)
+            if purpose == 'canada_tax_code':
+                self.attempts += 1
+                assert payload['valid_fact_refs'] == ['content.copy']
+                if self.attempts == 1:
+                    result['refs'] = ['invented.title']
+                else:
+                    assert '来源引用' in payload['retry_feedback']
+            return result
+    row=ca_row(); ai=Retry()
+    assert not fill_tax_code(row, official_bundle()['specs']['Furniture'],
+                            {'content.copy':{'title':'Wood chair'}}, ai, {})
+    assert ai.attempts == 2 and row['orderable']['productTaxCode'] == 2040175
+
+
+def test_tax_code_repeated_failure_keeps_specific_diagnostic():
+    class Bad(TaxAI):
+        def query(self,purpose,payload):
+            result=super().query(purpose,payload)
+            if purpose=='canada_tax_code': result['refs']=['missing.path']
+            return result
+    row=ca_row(); ai=Bad()
+    issues=fill_tax_code(row,official_bundle()['specs']['Furniture'],
+                         {'content.copy':{'title':'Wood chair'}},ai,{})
+    assert '来源引用' in issues[0]['message']
+    assert len([p for p,_ in ai.calls if p=='canada_tax_code']) == 2
+    assert 'productTaxCode' not in row['orderable']
+    assert unavailable(dict(description='(Reserved for China) Taxable items'))
+
+
+def test_specific_pet_code_is_visible_before_selecting_generic_group():
+    class Inspect(TaxAI):
+        def query(self, purpose, payload):
+            if purpose == 'canada_tax_group':
+                hint = next(h for h in payload['matching_description_hints'] if h['code'] == 2052096)
+                group = next(g for g in payload['groups'] if g['id'] == hint['group_id'])
+                assert group['path'] == library()['entries'][2052096]['path']
+            return super().query(purpose,payload)
+    row=ca_row()
+    assert not fill_tax_code(row, official_bundle()['specs']['Furniture'],
+        {'content.copy':{'title':'Detachable Metal Wire Kennel, Cat Crate & Pet Playpen'}}, Inspect(), {})

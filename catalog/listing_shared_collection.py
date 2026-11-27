@@ -107,6 +107,10 @@ def apply_sources(catalog, job, report, progress, checked_context):
                          message='已使用本轮商品库采集结果，配送地区已核验；未启动其他浏览器',
                          capture_id=quote['capture_id'],facts=quote.get('listing_facts',{}),
                          image_collection=quote.get('image_collection',{}))
+            if not quote.get('original_price') and not quote.get('price'):
+                reasons = [reason for reason in quote.get('issues', [])
+                           if any(word in reason for word in ('价格', '售价', '报价', '币种', '原价'))]
+                outcome['message'] += '；本轮未取得可用价格：' + '；'.join(reasons or ['主报价和划线价均未读取到'])
             entry=report['rows'].setdefault(sku,dict(state='running',preparation_state='collecting',issues=[],fields={},rounds=[]))
             entry['source_collection']=outcome
             if quote.get('image_collection'):

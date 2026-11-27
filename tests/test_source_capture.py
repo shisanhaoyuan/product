@@ -74,7 +74,7 @@ def test_shipping_is_never_guessed(delivery, expected):
 
 
 def test_offer_panel_never_uses_pinned_or_arbitrary_offer():
-    base = page() + '<a id="aod-ingress-link">Other sellers on Amazon</a>'
+    base = page(content='') + '<a id="aod-ingress-link">Other sellers on Amazon</a>'
     assert amazon_source(base, 'B000000000')['status'] == 'browser_required'
     row = '<div id="aod-offer"><div id="aod-offer-heading">New</div>' + offer('Actual Seller', '$7.99 delivery November 9', '54.00', '60.00') + '</div>'
     pinned = '<div id="aod-pinned-offer">' + offer('Pinned', price='1.00') + '</div>'
@@ -90,7 +90,7 @@ def test_offer_panel_never_uses_pinned_or_arbitrary_offer():
     with pytest.raises(ValueError, match='ASIN'):
         amazon_source(base + '<div id="aod-offer-list">' + wrong + '</div>', 'B000000000')
     excluded = row.replace('New</div>', 'Used</div>')
-    assert amazon_source(base + '<div id="aod-offer-list">' + excluded + '</div>', 'B000000000')['price'] == '37.99'
+    assert not amazon_source(base + '<div id="aod-offer-list">' + excluded + '</div>', 'B000000000').get('price')
 
 
 def test_seller_without_link_and_nested_delivery():
@@ -114,7 +114,7 @@ def test_price_requires_complete_parts_and_ignores_pinned_inside_list():
     assert amazon_source(page(content=missing), 'B000000000')['price'] is None
     row = '<div id="aod-offer"><div id="aod-offer-heading">New</div>' + offer(price='18.00') + '</div>'
     panel = '<div id="aod-offer-list"><div id="aod-pinned-offer">' + row + '</div>' + row + '</div>'
-    assert amazon_source(page() + panel, 'B000000000')['price'] == '18.00'
+    assert amazon_source(page(content='') + panel, 'B000000000')['price'] == '18.00'
 
 
 def test_identity_currency_and_recommendation_exclusion():
@@ -267,6 +267,27 @@ def test_legacy_prices_inactive_accordion_and_unloaded_offers():
     assert amazon_source(page(content=body),'B000000000')['price']=='35.00'
     incomplete=page(content=body).replace('id="desktop_buybox"','id="desktop_buybox" data-offers-incomplete="true"')
     result=amazon_source(incomplete,'B000000000')
+    assert result['price'] == '35.00'
+    result=amazon_source(incomplete.replace('$35.00',''), 'B000000000')
     assert result['price'] is None and '完整' in result['issues'][0]
     with pytest.raises(ValueError,match='ASIN'):
         amazon_source(page(content=body+'<input name="items[0.base][asin]" value="B999999999">'),'B000000000')
+
+
+@pytest.mark.parametrize('market', ['US', 'CA'])
+@pytest.mark.parametrize('drawer', ['entrance', 'multiple', 'incomplete'])
+def test_main_quote_survives_other_seller_drawer(market, drawer):
+    html = page(content=offer(price='85.49', original='95.99'))
+    if drawer == 'entrance':
+        html += '<a id="aod-ingress-link">Other sellers on Amazon</a>'
+    else:
+        row = '<div id="aod-offer"><div id="aod-offer-heading">New</div>' + offer(price='22.00') + '</div>'
+        html += '<div id="aod-offer-list">' + row * 2 + '</div>'
+    if drawer == 'incomplete':
+        html = html.replace('id="desktop_buybox"', 'id="desktop_buybox" data-offers-incomplete="true"')
+    if market == 'CA':
+        html = html.replace('10001', 'M5V 3L9')
+    result = amazon_source(html, 'B000000000', market)
+    assert result['price'] == '85.49' and result['original_price'] == '95.99'
+    assert result['offer_scope'] == 'main_offer'
+    assert result['status'] == 'captured'

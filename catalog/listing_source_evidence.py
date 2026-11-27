@@ -8,6 +8,15 @@ from .listing_ai_client import ListingAIError
 from .prelisting import fingerprint
 
 
+def volatile_attribute(path):
+    if not path.startswith('.content.attributes.'):
+        return False
+    key = re.sub(r'[^a-z0-9]', '', path.removeprefix('.content.attributes.').casefold())
+    return key in {'bestsellersrank', 'bestsellerrank', 'amazonsbestsellersrank',
+                   'customerreviews', 'customerrating', 'customerratings',
+                   'ratings', 'numberofratings', 'numberofreviews', 'reviewcount', 'ratingcount'}
+
+
 def amazon_details(html,asin):
     from .images import needs_verification, HumanVerificationRequired, ProductHTML
     from .source_capture import Document
@@ -91,6 +100,7 @@ def supplement_facts(catalog,source,item,variant,ai,amazon_details_data=None):
             return facts,dict(state='unavailable',message='该来源暂未配置定向补采适配器')
         conflicts=[]
         copy_differences=[]
+        dynamic_changes=[]
         def merge(old,new,path):
             if isinstance(old,dict) and isinstance(new,dict):
                 result=copy.deepcopy(old)
@@ -100,7 +110,10 @@ def supplement_facts(catalog,source,item,variant,ai,amazon_details_data=None):
             if empty(old):
                 return new
             if not empty(new) and old!=new:
-                if source['source'].casefold() in ('amazon','amazon_ca') and path.startswith('.content.copy.'):
+                if source['source'].casefold() in ('amazon','amazon_ca') and volatile_attribute(path):
+                    dynamic_changes.append(dict(path=path, before=old, after=new))
+                    return copy.deepcopy(new)
+                elif source['source'].casefold() in ('amazon','amazon_ca') and path.startswith('.content.copy.'):
                     # ERP copy is deliberately rewritten for the target brand/store.
                     # Keep it and expose live copy separately; it is not an identity conflict.
                     copy_differences.append(path)
@@ -114,6 +127,7 @@ def supplement_facts(catalog,source,item,variant,ai,amazon_details_data=None):
         # source timestamps or the existing prelisting business snapshot.
         return result,dict(state='conflict' if conflicts else 'complete',conflicts=conflicts[:40],
             copy_differences=copy_differences[:40],
+            dynamic_changes=dynamic_changes[:40],
             digest=fingerprint(collected),facts=collected,
             message=('补采规格与已有来源不同：' + '、'.join(p.removeprefix('.content.attributes.') for p in conflicts[:10]) + '；请核对这些字段后刷新来源'
                      if conflicts else '同 ASIN 文案存在改写差异，已保留商品库文案并附上来源原文；不影响图片核验和生成'

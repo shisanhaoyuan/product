@@ -238,17 +238,43 @@ def amazon_source(html, asin, marketplace="US"):
     if identity.asins != {asin}:
         raise ValueError('网页 ASIN 与当前商品不一致，未保存采集结果')
     doc = Document(html).root
-    if any(n.attrs.get('data-offers-incomplete') == 'true' for n in doc.nodes()):
-        return dict(status='partial', asin=asin, price=None, original_price=None, basis_price=None,
-                    delivery_location=' '.join(n.text() for n in doc.ids('glow-ingress-line2', 'contextualIngressPtLabel_deliveryShortLine')),
-                    issues=['卖家报价列表尚未加载完整，价格暂缺，未根据部分列表猜测'])
+    incomplete = any(n.attrs.get('data-offers-incomplete') == 'true' for n in doc.nodes())
     panels = doc.ids('aod-offer-list')
     entrances = doc.ids('aod-ingress-link', 'buybox-see-all-buying-choices', 'buybox-see-all-buying-choices-announce')
     entrances += [n for n in doc.nodes() if n.tag in {'a', 'button'} and (
         'aod' in n.attrs.get('href', '') or n.attrs.get('data-action') == 'show-all-offers-display'
         or re.search('Other sellers on Amazon|See All Buying Options', n.text(), re.I))]
-    result, issues = None, []
-    if panels:
+    issues = []
+    def main_offer():
+        roots = Document(html).root.ids('catalog-main-offer', 'ppd', 'desktop_buybox', 'buybox')
+        # The complete buybox keeps seller, price, delivery in one offer container.
+        if roots:
+            root = roots[0]
+            # Ignore panels/recommendations when locating buybox facts in #ppd.
+            for node in list(root.nodes()):
+                ident = node.attrs.get('id', '')
+                if re.search(r'recommend|sponsored|aod-|all-offers|primeSavings', ident, re.I):
+                    node.attrs['hidden'] = ''
+        if roots:
+            ids = {n.attrs.get('value', '') for n in roots[0].nodes()
+                   if n.attrs.get('name', '').lower() in ('asin', 'items[0.base][asin]')}
+            if ids and ids != {asin}:
+                raise ValueError('主报价 ASIN 不匹配，未保存采集结果')
+        result = parse_offer(roots[0], 'main_offer', marketplace) if roots else {}
+        if roots and re.search(r'(?:prime|members?)[ -]*(?:exclusive|only|price)|join prime to buy|prime members', roots[0].text(), re.I):
+            result = {}
+            issues.append('尚未切换到可核验的普通报价')
+        return result
+    primary = main_offer()
+    # The visible main offer is the selected product's quote. Other sellers
+    # must not erase it just because their drawer has multiple/incomplete rows.
+    main_usable = bool(primary.get('original_price') or primary.get('price'))
+    if incomplete and not main_usable:
+        return dict(status='partial', asin=asin, price=None, original_price=None, basis_price=None,
+                    delivery_location=' '.join(n.text() for n in doc.ids('glow-ingress-line2', 'contextualIngressPtLabel_deliveryShortLine')),
+                    issues=['卖家报价列表尚未加载完整，主报价也未取得价格'])
+    result = primary if main_usable else None
+    if panels and not main_usable:
         offers = []
         for panel in panels:
             for i, node in enumerate(panel.ids('aod-offer')):
@@ -272,27 +298,10 @@ def amazon_source(html, asin, marketplace="US"):
             result = {}
         elif offers:
             result = offers[0]
-    elif entrances:
+    elif entrances and not main_usable:
         return {'status': 'browser_required', 'reason': '需展开 Sellers on Amazon 报价列表核对'}
     if result is None:
-        roots = doc.ids('catalog-main-offer', 'ppd', 'desktop_buybox', 'buybox')
-        # The complete buybox keeps seller, price, delivery in one offer container.
-        if roots:
-            root = roots[0]
-            # Ignore panels/recommendations when locating buybox facts in #ppd.
-            for node in list(root.nodes()):
-                ident = node.attrs.get('id', '')
-                if re.search(r'recommend|sponsored|aod-|all-offers|primeSavings', ident, re.I):
-                    node.attrs['hidden'] = ''
-        if roots:
-            ids = {n.attrs.get('value', '') for n in roots[0].nodes()
-                   if n.attrs.get('name', '').lower() in ('asin', 'items[0.base][asin]')}
-            if ids and ids != {asin}:
-                raise ValueError('主报价 ASIN 不匹配，未保存采集结果')
-        result = parse_offer(roots[0], 'main_offer', marketplace) if roots else {}
-        if roots and re.search(r'(?:prime|members?)[ -]*(?:exclusive|only|price)|join prime to buy|prime members', roots[0].text(), re.I):
-            result = {}
-            issues.append('尚未切换到可核验的普通报价')
+        result = primary
     for key, label in [('seller', '卖家'), ('price', '商品价格'), ('delivery', '配送时间'), ('shipping', '运费')]:
         if not result.get(key):
             issues.append(('当前售价读取到多个金额：' + result['price_text'] + '；需区分普通价与会员价')

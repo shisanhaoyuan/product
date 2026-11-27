@@ -12,7 +12,7 @@ from .listing_titles import branded_title, source_brands, normalize_copy_brand, 
 from .walmart_listing_schema import plain, sections, feed_item, schema_errors, identifier_errors, precise_validator
 from .listing_skill_defaults import has_default, skill_default, length_fallback, fixed_origin, enforce_origin
 
-RULES_VERSION = 'listing-generation-v25-canada-tax-matrix'
+RULES_VERSION = 'listing-generation-v26-source-tax-recovery'
 RULES = Path(__file__).with_name('listing_generation_rules.md').read_text()
 BLOCKED = re.compile(r'prop.?65|warranty|certif|nrtl|chemical|origin|warning|exempt|gtin|upc|ean|model|partnumber|taxcode', re.I)
 PROTECTED = {'variantGroupId','variantAttributeNames','isPrimaryVariant','swatchImages','sku','productIdentifiers','inventory','price','msrp','SkuUpdate','ProductIdUpdate','fulfillmentCenterID'}

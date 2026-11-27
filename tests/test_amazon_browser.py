@@ -90,7 +90,7 @@ def test_browser_fallback_reuses_strict_quote_parser(monkeypatch):
         calls.append(asin)
         return page(asin,offer(original='72.89'))
     monkeypatch.setattr(amazon_browser,'fetch_page',fallback)
-    def dynamic(asin): return page(asin)+'<a id="aod-ingress-link">Other sellers on Amazon</a>'
+    def dynamic(asin): return page(asin,content='')+'<a id="aod-ingress-link">Other sellers on Amazon</a>'
     assert collect_quote_page(ASIN,blocked)[2]=='wraith_background'
     assert calls==[ASIN]
     calls.clear()
@@ -106,7 +106,7 @@ def test_browser_fallback_reuses_strict_quote_parser(monkeypatch):
 def test_dynamic_offer_page_gets_one_browser_attempt(monkeypatch):
     monkeypatch.setenv('CATALOG_AMAZON_BROWSER_PYTHON','configured')
     calls=[]
-    html=page(ASIN)+'<a id="aod-ingress-link">Other sellers on Amazon</a>'
+    html=page(ASIN,content='')+'<a id="aod-ingress-link">Other sellers on Amazon</a>'
     def fallback(asin):
         calls.append(asin)
         return html

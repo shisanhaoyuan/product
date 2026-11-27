@@ -627,3 +627,23 @@ def test_rewritten_amazon_copy_is_not_identity_conflict_but_specs_are(color,conf
     if conflict:
         assert report['conflicts']==['.content.attributes.Color']
         assert 'Color' in report['message']
+
+
+@pytest.mark.parametrize('market', ['Amazon', 'Amazon_CA'])
+def test_market_rank_and_reviews_are_dynamic_not_identity_conflicts(market):
+    source={'source':market,'sku':'W1'}; item={'listing_id':'one','category':'Animal Accessories'}
+    variant={'sku':'W1','asin':'B0HCZT64VP','content':{'attributes':{
+        'Best Sellers Rank':'#123 in Pet Supplies', 'Customer Reviews':'4.0 out of 5', 'Color':'Black'}}}
+    collected={'content.attributes':{'Best Sellers Rank':'#98 in Pet Supplies',
+        'Customer Reviews':'4.2 out of 5', 'Color':'Black'}}
+    facts, report = supplement_facts(None,source,item,variant,
+        SimpleNamespace(settings=SimpleNamespace(supplement=True)),collected)
+    assert report['state'] == 'complete' and report['conflicts'] == []
+    assert len(report['dynamic_changes']) == 2
+    assert facts['content.attributes']['Best Sellers Rank'] == '#98 in Pet Supplies'
+    assert variant['content']['attributes']['Best Sellers Rank'] == '#123 in Pet Supplies'
+    collected['content.attributes']['Color']='White'
+    _, report = supplement_facts(None,source,item,variant,
+        SimpleNamespace(settings=SimpleNamespace(supplement=True)),collected)
+    assert report['state'] == 'conflict'
+    assert report['conflicts'] == ['.content.attributes.Color']

@@ -22,11 +22,14 @@ def begin(env):
     return job
 
 
-def capture_all(env,job,location='10001'):
+def capture_all(env,job,location='10001',other_sellers=False):
     c,*_=env
     receipts={}
     for target in job['report']['source_targets']:
         html=page(target['asin'],offer(price='85.49',original='89.99')).replace('10001',location)
+        if other_sellers:
+            row='<div id="aod-offer"><div id="aod-offer-heading">New</div>'+offer(price='20.00')+'</div>'
+            html += '<div id="aod-offer-list">'+row*2+'</div>'
         response=c.post(f"/api/products/{target['listing_id']}/source-capture/browser",json={
             'variant_sku':target['sku'],'source_url':f"https://www.amazon.com/dp/{target['asin']}",'html':html})
         assert response.status_code==200,response.text
@@ -34,10 +37,11 @@ def capture_all(env,job,location='10001'):
     return receipts
 
 
-def test_catalog_browser_quotes_are_used_without_a_second_collection(amazon,monkeypatch):
+@pytest.mark.parametrize('other_sellers', [False, True])
+def test_catalog_browser_quotes_are_used_without_a_second_collection(amazon,monkeypatch,other_sellers):
     c,catalog,_,_,b,base,_=amazon
     job=begin(amazon)
-    captures=capture_all(amazon,job)
+    captures=capture_all(amazon,job,other_sellers=other_sellers)
     def fail(*args,**kwargs):raise AssertionError('Filling must not start a separate Amazon browser')
     monkeypatch.setattr('catalog.images.fetch_amazon_page',fail)
     monkeypatch.setattr('catalog.amazon_browser.fetch_page',fail)
@@ -119,3 +123,19 @@ def test_changed_catalog_between_captures_is_not_silently_accepted(amazon):
         db.execute('UPDATE source_captures SET data_json=? WHERE id=?',(json.dumps(record),row['id']))
     with pytest.raises(HTTPException,match='其他操作修改'):
         resume_sources(catalog,c.app.state.walmart_publisher,b['id'],job['id'],receipts,ai=AI(),schedule=False)
+
+
+def test_missing_price_report_does_not_claim_postal_verification_means_price_success(amazon):
+    c,catalog,_,_,b,base,_=amazon
+    job=begin(amazon);receipts={}
+    for target in job['report']['source_targets']:
+        response=c.post(f"/api/products/{target['listing_id']}/source-capture/browser",json={
+            'variant_sku':target['sku'],'source_url':f"https://www.amazon.com/dp/{target['asin']}",
+            'html':page(target['asin'],offer(price='unavailable',original='unavailable'))})
+        assert response.status_code == 200
+        receipts[target['platform_sku']]=response.json()['capture_id']
+    ai=AI()
+    resume_sources(catalog,c.app.state.walmart_publisher,b['id'],job['id'],receipts,ai=ai,schedule=False)
+    run_job(catalog,c.app.state.walmart_publisher,job['id'],ai)
+    report=c.get(base+'/generation').json()['job']['report']
+    assert all('本轮未取得可用价格' in row['source_collection']['message'] for row in report['rows'].values())

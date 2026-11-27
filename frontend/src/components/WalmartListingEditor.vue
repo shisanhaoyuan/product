@@ -464,7 +464,13 @@ const locked = computed(
     !canEdit.value ||
     (!!result.value && !['failed', 'rejected', 'unpublished'].includes(result.value.status)),
 );
-const issues = computed(() => doc.value?.validation.rows?.[activeSku.value]?.errors || []);
+const issues = computed(() => (doc.value?.validation.rows?.[activeSku.value]?.errors || []).map(issue => {
+  if (generationStale.value || !issue.path.toLowerCase().includes('producttaxcode')) return issue;
+  const reasons = generationRow.value?.issues.filter(detail =>
+    detail.path.toLowerCase().includes('producttaxcode') && detail.message !== issue.message &&
+    !detail.message.includes('缺少必填项')).map(detail => detail.message) || [];
+  return reasons.length ? { ...issue, message: [issue.message, ...new Set(reasons)].join('；') } : issue;
+}));
 const priceReview = computed(() => doc.value?.source_price_reviews?.[activeSku.value]);
 const priceRecovery = ref<InstanceType<typeof ListingPriceRecovery>>();
 const hasSellingPrice = computed(() => Number.isFinite(Number(current.value?.orderable.price)) && Number(current.value?.orderable.price) > 0);
@@ -708,7 +714,7 @@ function fieldIssues(key: string, section = 'Visible') {
     .filter(
       (i) =>
         i.path.toLowerCase().includes(`.${key}`.toLowerCase()) &&
-        (section !== 'Orderable' || i.path.includes('Orderable')),
+        (section !== 'Orderable' || i.path.toLowerCase().includes('orderable')),
     )
     .map((i) => i.message);
 }

@@ -402,6 +402,8 @@ def run_job(catalog, publisher, jid, ai):
                             elif detail_collection.get('copy_differences'):
                                 collection = collection | {'copy_differences': detail_collection['copy_differences'],
                                                            'message': detail_collection['message']}
+                            if detail_collection.get('dynamic_changes'):
+                                collection = collection | {'dynamic_changes': detail_collection['dynamic_changes']}
                         else:
                             facts=source_facts(sources[item['listing_id']],item,variant)
                     else:
