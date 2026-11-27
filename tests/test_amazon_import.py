@@ -391,3 +391,65 @@ def test_canada_capture_and_fallback_use_ca_market(local_import,monkeypatch):
     assert run_fallback(catalog)
     assert calls==[(A,'CA'),(A,'CA')]
     assert action(client,job['id'],'finish')['result']['listing_ids']==[lid]
+
+
+def test_two_devices_cannot_pause_or_finish_the_active_runner(local_import):
+    client,catalog=local_import; jid=new(client,A+'\n'+B)
+    one={'X-Collector-Runner':str(uuid.uuid4())}; two={'X-Collector-Runner':str(uuid.uuid4())}
+    first=client.post(f'{BASE}/jobs/{jid}/claim',headers=one).json()
+    assert first['task'] and first['job']['execution']['active']
+    revision=first['job']['revision']
+    for name in ('claim','pause','finish','heartbeat'):
+        assert client.post(f'{BASE}/jobs/{jid}/{name}',headers=two).status_code==409
+    # Legacy tabs had a catch-and-pause bug; they cannot interrupt a new runner.
+    assert client.post(f'{BASE}/jobs/{jid}/pause').status_code==409
+    viewed=client.get(f'{BASE}/jobs/{jid}').json()
+    assert viewed['revision']==revision and viewed['items'][0]['state']=='running'
+    heartbeat=client.post(f'{BASE}/jobs/{jid}/heartbeat',headers=one).json()
+    assert heartbeat['revision']>revision
+    assert client.post(f'{BASE}/jobs/{jid}/progress',json=first['task']|{'stage':'location'}).status_code==200
+    assert '邮编' in client.get(f'{BASE}/jobs/{jid}').json()['items'][0]['message']
+    save(client,jid,first['task'])
+    # The gap between SKUs is still owned by the original device.
+    assert client.post(f'{BASE}/jobs/{jid}/claim',headers=two).status_code==409
+    assert client.post(f'{BASE}/jobs/{jid}/claim',headers=one).json()['task']['asin']==B
+    assert client.post(f'{BASE}/jobs/{jid}/pause',headers=one).status_code==200
+    assert client.post(f'{BASE}/jobs/{jid}/claim',headers=two).json()['task']['asin']==B
+
+
+def test_runner_disconnect_reclaims_only_unfinished_items_and_rejects_late_results(local_import):
+    client,catalog=local_import; jid=new(client,A+'\n'+B)
+    one={'X-Collector-Runner':str(uuid.uuid4())}; two={'X-Collector-Runner':str(uuid.uuid4())}
+    task=client.post(f'{BASE}/jobs/{jid}/claim',headers=one).json()['task'];save(client,jid,task)
+    old=client.post(f'{BASE}/jobs/{jid}/claim',headers=one).json()['task']
+    with catalog.connect() as db:db.execute('UPDATE amazon_import_execution SET lease_until=0 WHERE job_id=?',(jid,))
+    assert not client.get(f'{BASE}/jobs/{jid}').json()['execution']['active']
+    current=client.post(f'{BASE}/jobs/{jid}/claim',headers=two).json()
+    assert current['task']['asin']==B and current['task']['token']!=old['token']
+    assert current['job']['progress']['done']==1
+    assert client.post(f'{BASE}/jobs/{jid}/page',json=old|{'html':html(B),'source_url':'https://www.amazon.com/dp/'+B}).status_code==409
+    save(client,jid,current['task'])
+    result=client.post(f'{BASE}/jobs/{jid}/finish',headers=two)
+    assert result.status_code==200 and result.json()['state']=='complete'
+
+
+def test_claim_is_atomic_across_devices(local_import):
+    from concurrent.futures import ThreadPoolExecutor
+    client,_=local_import;jid=new(client)
+    def claim(_):
+        return client.post(f'{BASE}/jobs/{jid}/claim',headers={'X-Collector-Runner':str(uuid.uuid4())}).status_code
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sorted(pool.map(claim,range(2)))==[200,409]
+
+
+def test_partial_quotes_still_import_and_keep_specific_warnings(local_import):
+    client,catalog=local_import;jid=new(client);task=action(client,jid,'claim')['task']
+    markup=html().replace('$37.99','').replace('$43.99','').replace('Garden Store','')
+    job=action(client,jid,'page',task|{'html':markup,'source_url':'https://www.amazon.com/dp/'+A})
+    assert job['progress']['done']==1 and job['progress']['needs_review']==1
+    assert 'price' in job['items'][0]['missing_fields']
+    finished=action(client,jid,'finish')
+    stored=catalog.get(finished['result']['listing_ids'][0])
+    assert stored['price'] is None
+    assert any('商品价格' in i['message'] for i in stored['issues'])
+    assert finished['state']=='complete'

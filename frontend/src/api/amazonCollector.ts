@@ -4,9 +4,21 @@ export interface CollectorItem {
   asin: string;
   state: string;
   message: string;
+  needs_review?: boolean;
+  missing_fields?: string[];
 }
 export interface CollectorJob {
   marketplace?: 'US' | 'CA';
+  revision?: number;
+  execution?: { active: boolean; lease_until: number };
+  progress?: {
+    total: number;
+    processed: number;
+    done: number;
+    failed: number;
+    pending: number;
+    needs_review: number;
+  };
   id: string;
   created_at: string;
   state: string;
@@ -35,6 +47,8 @@ export interface SheetPreview {
   errors: { sheet: string; row: number; message: string }[];
 }
 const base = '/api/integrations/amazon-collector';
+// A fresh identity per page, never shared through localStorage across devices/tabs.
+const runnerId = crypto.randomUUID();
 export const collectorApi = {
   status: () => request<{ jobs: CollectorJob[]; wraith_configured: boolean }>(base),
   get: (id: string) => request<CollectorJob>(`${base}/jobs/${id}`),
@@ -52,7 +66,7 @@ export const collectorApi = {
   action: <T = CollectorJob>(id: string, action: string, data?: unknown) =>
     request<T>(`${base}/jobs/${id}/${action}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Collector-Runner': runnerId },
       body: data ? JSON.stringify(data) : undefined,
     }),
   sheet: (file: File, marketplace: 'US' | 'CA' = 'US') =>

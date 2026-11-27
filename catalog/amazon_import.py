@@ -18,7 +18,7 @@ from .amazon_markets import market_config, product_url, location_matches
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from .database import write_lock
+from .database import write_lock, read_snapshot
 from .models import ImportBundle, Listing, Variant
 from .source_capture import Document, amazon_source, save_capture
 from .listing_source_evidence import amazon_details
@@ -26,6 +26,8 @@ from .images import amazon_images
 
 NAMESPACE = 'amazon-browser-us'
 MAX_ROWS = 500
+RUNNER_TTL = 90
+ACTIVE_ITEMS = ('running', 'fallback_queued', 'fallback_running')
 
 
 def initialize(db):
@@ -38,7 +40,11 @@ def initialize(db):
         data_json TEXT NOT NULL, message TEXT NOT NULL,
         PRIMARY KEY(job_id,root_asin,asin))''')
     db.execute('CREATE INDEX IF NOT EXISTS amazon_import_queue ON amazon_import_items(state,lease_until)')
+    db.execute('''CREATE TABLE IF NOT EXISTS amazon_import_execution(
+        job_id TEXT PRIMARY KEY REFERENCES amazon_import_jobs(id),
+        runner_id TEXT NOT NULL, lease_until BIGINT NOT NULL, revision BIGINT NOT NULL)''')
     db.execute('INSERT INTO migrations VALUES(26) ON CONFLICT DO NOTHING')
+    db.execute('INSERT INTO migrations VALUES(27) ON CONFLICT DO NOTHING')
 
 
 def parse_inputs(text, marketplace="US"):
@@ -73,11 +79,58 @@ def owned(db,jid,uid):
     return dict(job)
 
 
+def touch(db,jid):
+    db.execute("INSERT INTO amazon_import_execution VALUES(?,'',0,1) ON CONFLICT(job_id) DO UPDATE SET revision=amazon_import_execution.revision+1",(jid,))
+
+
+def runner(request):
+    value=request.headers.get('X-Collector-Runner','')
+    if value and not re.fullmatch(r'[a-f0-9-]{32,36}',value):
+        raise HTTPException(422,'采集执行标识无效，请刷新页面')
+    return value
+
+
+def execution_check(db,jid,identity):
+    record=db.execute('SELECT * FROM amazon_import_execution WHERE job_id=?',(jid,)).fetchone()
+    if record and record['runner_id']:
+        if record['runner_id']!=identity or record['lease_until']<=time.time():
+            raise HTTPException(409,'任务由另一设备执行或连接已过期，请刷新进度；未暂停其他设备')
+    return record
+
+
+def recover_execution(db,jid):
+    record=db.execute('SELECT * FROM amazon_import_execution WHERE job_id=?',(jid,)).fetchone()
+    if record and record['runner_id'] and record['lease_until']<=time.time():
+        # A lost browser must not leave a 15-minute invisible ownership lock.
+        db.execute("UPDATE amazon_import_jobs SET state='paused' WHERE id=? AND state='collecting'",(jid,))
+        db.execute("UPDATE amazon_import_items SET state='pending',token='',lease_until=0,message='执行设备连接中断，可继续未完成商品' WHERE job_id=? AND state IN ('running','fallback_queued','fallback_running')",(jid,))
+        db.execute("UPDATE amazon_import_execution SET runner_id='',lease_until=0 WHERE job_id=?",(jid,))
+        touch(db,jid)
+
+
 def public_job(db,jid,uid):
     job=owned(db,jid,uid)
-    rows=[{k:r[k] for k in ('root_asin','asin','state','message')} for r in db.execute(
-        'SELECT * FROM amazon_import_items WHERE job_id=? ORDER BY root_asin,asin',(jid,))]
-    return {**{k:job[k] for k in ('id','created_at','state')},'marketplace':json.loads(job['result_json']).get('_marketplace','US'),'items':rows,'result':{k:v for k,v in json.loads(job['result_json']).items() if not k.startswith('_')}}
+    rows=[]
+    for r in db.execute('SELECT * FROM amazon_import_items WHERE job_id=? ORDER BY root_asin,asin',(jid,)):
+        data=json.loads(r['data_json']); quote=data.get('quote',{})
+        missing=[key for key in ('price','seller','delivery','shipping') if quote.get(key) in (None,'')]
+        # A captured reference price is sufficient for multiplier pricing.
+        if quote.get('original_price') and 'price' in missing: missing.remove('price')
+        rows.append({k:r[k] for k in ('root_asin','asin','state','message')} | {
+            'needs_review':r['state']=='done' and bool(missing),
+            'missing_fields':missing if r['state']=='done' else []})
+    counts={state:sum(r['state']==state for r in rows) for state in ('pending','running','fallback_queued','fallback_running','done','failed','cancelled')}
+    record=db.execute('SELECT * FROM amazon_import_execution WHERE job_id=?',(jid,)).fetchone()
+    running=any(counts[k] for k in ACTIVE_ITEMS)
+    expired=bool(record and record['runner_id'] and record['lease_until']<=time.time())
+    active=job['state']=='collecting' and not expired and (running or bool(record and record['runner_id']))
+    return {**{k:job[k] for k in ('id','created_at','state')},
+        'revision':record['revision'] if record else 0,
+        'execution':{'active':active,'lease_until':record['lease_until'] if record else 0,'interrupted':expired},
+        'progress':dict(counts,total=len(rows),processed=counts['done']+counts['failed'],
+                        needs_review=sum(r['needs_review'] for r in rows)),
+        'marketplace':json.loads(job['result_json']).get('_marketplace','US'),'items':rows,
+        'result':{k:v for k,v in json.loads(job['result_json']).items() if not k.startswith('_')}}
 
 
 def active_actor(db,uid):
@@ -94,6 +147,9 @@ def target(db,jid,uid,root,asin,token):
                    (jid,root,asin)).fetchone()
     if not row or row['token']!=token or not token or job['state']!='collecting':
         raise HTTPException(409,'任务归属或执行凭据已变化，请刷新采集进度')
+    record=db.execute('SELECT * FROM amazon_import_execution WHERE job_id=?',(jid,)).fetchone()
+    if record and record['runner_id'] and record['lease_until']<=time.time():
+        raise HTTPException(409,'执行设备连接已过期，请继续任务后重试')
     if row['state']!='done' and row['lease_until']<time.time():
         raise HTTPException(409,'任务已过期，请继续采集后重试')
     return job,dict(row)
@@ -187,6 +243,7 @@ def save_page(catalog,jid,uid,root,asin,token,data):
                 count+=inserted
         db.execute('UPDATE amazon_import_items SET state=?,data_json=?,message=? WHERE job_id=? AND root_asin=? AND asin=?',
             ('done',json.dumps(data,ensure_ascii=False),'；'.join(data['warnings'])[:1000] or '采集完成，等待入库',jid,root,asin))
+        touch(db,jid)
         return public_job(db,jid,uid)
 
 
@@ -196,6 +253,8 @@ def run_fallback(catalog):
     if not configured():return False
     with catalog.connect() as db:
         write_lock(db)
+        for expired in db.execute("SELECT job_id FROM amazon_import_execution WHERE runner_id<>'' AND lease_until<=?",(int(time.time()),)).fetchall():
+            recover_execution(db,expired[0])
         if db.execute("SELECT 1 FROM amazon_import_items WHERE state='fallback_running' AND lease_until>? LIMIT 1",(int(time.time()),)).fetchone():return False
         row=db.execute('''SELECT i.*,j.actor_id,j.result_json FROM amazon_import_items i JOIN amazon_import_jobs j ON j.id=i.job_id
             WHERE i.state='fallback_queued' AND j.state='collecting' AND i.lease_until>? ORDER BY j.created_at,i.asin LIMIT 1''',(int(time.time()),)).fetchone()
@@ -207,6 +266,7 @@ def run_fallback(catalog):
                 db.execute("UPDATE amazon_import_jobs SET state='paused' WHERE id=?",(row['job_id'],));return True
         db.execute("UPDATE amazon_import_items SET state='fallback_running',lease_until=?,message=? WHERE job_id=? AND root_asin=? AND asin=?",
             (int(time.time())+900,'服务器 Wraith 处理中（最多 3 次验证尝试）',row['job_id'],row['root_asin'],row['asin']))
+        touch(db,row['job_id'])
     try:
         marketplace=json.loads(row['result_json']).get('_marketplace','US')
         html=fetch_page(row['asin']) if marketplace=='US' else fetch_page(row['asin'],marketplace)
@@ -220,6 +280,7 @@ def run_fallback(catalog):
             write_lock(db)
             db.execute("UPDATE amazon_import_items SET state='running',message=? WHERE job_id=? AND root_asin=? AND asin=? AND token=? AND state='fallback_running'",
                 ('Wraith 未完成：'+message[:700]+'；请在员工浏览器人工处理',row['job_id'],row['root_asin'],row['asin'],row['token']))
+            touch(db,row['job_id'])
     return True
 
 
@@ -252,6 +313,10 @@ class Page(Task):
     source_url: str=Field(max_length=2000)
 
 
+class Progress(Task):
+    stage: Literal['browser','location','verification','processing']
+
+
 class Failed(Task):
     message: str=Field(max_length=1000)
 
@@ -263,6 +328,7 @@ def routes(catalog):
     def status(request:Request):
         from .amazon_browser import configured
         with catalog.connect() as db:
+            read_snapshot(db)
             jobs=[public_job(db,r[0],actor(request)) for r in db.execute(
                 'SELECT id FROM amazon_import_jobs WHERE actor_id=? ORDER BY created_at DESC LIMIT 20',(actor(request),))]
         return dict(jobs=jobs,wraith_configured=configured())
@@ -314,7 +380,9 @@ def routes(catalog):
 
     @router.get('/jobs/{jid}')
     def get(jid:str,request:Request):
-        with catalog.connect() as db:return public_job(db,jid,actor(request))
+        with catalog.connect() as db:
+            read_snapshot(db)
+            return public_job(db,jid,actor(request))
 
     @router.post('/jobs/{jid}/claim')
     def claim(jid:str,request:Request):
@@ -322,9 +390,19 @@ def routes(catalog):
         with catalog.connect() as db:
             write_lock(db);job=owned(db,jid,uid)
             if job['state'] in ('complete','cancelled'):return dict(task=None,job=public_job(db,jid,uid))
+            for expired in db.execute("SELECT e.job_id FROM amazon_import_execution e JOIN amazon_import_jobs j ON j.id=e.job_id WHERE j.actor_id=? AND e.runner_id<>'' AND e.lease_until<=?",(uid,now)).fetchall():
+                recover_execution(db,expired[0])
+            identity=runner(request)
+            execution_check(db,jid,identity)
+            if identity:
+                other=db.execute("SELECT 1 FROM amazon_import_execution e JOIN amazon_import_jobs j ON j.id=e.job_id WHERE j.actor_id=? AND j.id<>? AND j.state='collecting' AND e.runner_id<>'' AND e.lease_until>?",(uid,jid,now)).fetchone()
+                if other:raise HTTPException(409,'本账号已有其他采集任务运行，请先等待完成或暂停')
             db.execute("UPDATE amazon_import_items SET state='pending',token='',message='上次采集中断，等待继续' WHERE job_id=? AND state IN ('running','fallback_queued','fallback_running') AND lease_until<?",(jid,now))
             active=db.execute("SELECT 1 FROM amazon_import_items i JOIN amazon_import_jobs j ON j.id=i.job_id WHERE j.actor_id=? AND i.state IN ('running','fallback_queued','fallback_running') AND i.lease_until>?",(uid,now)).fetchone()
             if active:raise HTTPException(409,'本账号已有浏览器正在采集，请等待完成或先暂停该任务')
+            touch(db,jid)
+            if identity:
+                db.execute('UPDATE amazon_import_execution SET runner_id=?,lease_until=? WHERE job_id=?',(identity,now+RUNNER_TTL,jid))
             db.execute("UPDATE amazon_import_jobs SET state='collecting' WHERE id=?",(jid,))
             row=db.execute("SELECT * FROM amazon_import_items WHERE job_id=? AND state='pending' ORDER BY root_asin,CASE WHEN root_asin=asin THEN 0 ELSE 1 END,asin LIMIT 1",(jid,)).fetchone()
             task=None
@@ -333,6 +411,32 @@ def routes(catalog):
                 db.execute("UPDATE amazon_import_items SET state='running',token=?,lease_until=?,message='员工浏览器采集中' WHERE job_id=? AND root_asin=? AND asin=?",(token,now+900,jid,row['root_asin'],row['asin']))
                 task=dict(root_asin=row['root_asin'],asin=row['asin'],token=token,marketplace=json.loads(job['result_json']).get('_marketplace','US'))
             return dict(task=task,job=public_job(db,jid,uid))
+
+    @router.post('/jobs/{jid}/heartbeat')
+    def heartbeat(jid:str,request:Request):
+        with catalog.connect() as db:
+            write_lock(db);job=owned(db,jid,actor(request));active_actor(db,actor(request))
+            if job['state']!='collecting':return public_job(db,jid,actor(request))
+            identity=runner(request)
+            record=execution_check(db,jid,identity)
+            if not identity or not record or record['runner_id']!=identity:
+                raise HTTPException(409,'当前设备未取得任务执行权')
+            db.execute('UPDATE amazon_import_execution SET lease_until=? WHERE job_id=?',(int(time.time())+RUNNER_TTL,jid))
+            db.execute("UPDATE amazon_import_items SET lease_until=? WHERE job_id=? AND state IN ('running','fallback_queued','fallback_running')",(int(time.time())+900,jid))
+            touch(db,jid)
+            return public_job(db,jid,actor(request))
+
+    @router.post('/jobs/{jid}/progress')
+    def progress(jid:str,data:Progress,request:Request):
+        with catalog.connect() as db:
+            write_lock(db);_,row=target(db,jid,actor(request),data.root_asin,data.asin,data.token)
+            if row['state']=='running':
+                messages={'browser':'员工浏览器后台采集中','location':'等待执行设备设置配送邮编',
+                          'verification':'等待网页验证处理','processing':'页面已取得，正在解析商品与缓存图片'}
+                db.execute('UPDATE amazon_import_items SET message=? WHERE job_id=? AND root_asin=? AND asin=?',
+                           (messages[data.stage],jid,data.root_asin,data.asin))
+                touch(db,jid)
+            return public_job(db,jid,actor(request))
 
     @router.post('/jobs/{jid}/page')
     def page(jid:str,data:Page,request:Request):
@@ -353,6 +457,7 @@ def routes(catalog):
                 queued=db.execute("SELECT COUNT(*) FROM amazon_import_items WHERE state IN ('fallback_queued','fallback_running')").fetchone()[0]
                 if queued>=20:raise HTTPException(429,'Wraith 等待队列已满，请在员工浏览器处理')
                 db.execute("UPDATE amazon_import_items SET state='fallback_queued',message='等待服务器 Wraith（单通道）' WHERE job_id=? AND root_asin=? AND asin=?",(jid,data.root_asin,data.asin))
+            touch(db,jid)
             return public_job(db,jid,actor(request))
 
     @router.post('/jobs/{jid}/fail')
@@ -360,6 +465,7 @@ def routes(catalog):
         with catalog.connect() as db:
             write_lock(db);_,row=target(db,jid,actor(request),data.root_asin,data.asin,data.token)
             if row['state']!='done':db.execute("UPDATE amazon_import_items SET state='failed',message=? WHERE job_id=? AND root_asin=? AND asin=?",(data.message,jid,data.root_asin,data.asin))
+            touch(db,jid)
             return public_job(db,jid,actor(request))
 
     @router.post('/jobs/{jid}/pause')
@@ -367,8 +473,12 @@ def routes(catalog):
         with catalog.connect() as db:
             write_lock(db);job=owned(db,jid,actor(request))
             if job['state']=='collecting':
+                recover_execution(db,jid)
+                execution_check(db,jid,runner(request))
                 db.execute("UPDATE amazon_import_jobs SET state='paused' WHERE id=?",(jid,))
                 db.execute("UPDATE amazon_import_items SET state='pending',token='',lease_until=0,message='已暂停，等待继续' WHERE job_id=? AND state IN ('running','fallback_queued','fallback_running')",(jid,))
+                db.execute("UPDATE amazon_import_execution SET runner_id='',lease_until=0 WHERE job_id=?",(jid,))
+                touch(db,jid)
             return public_job(db,jid,actor(request))
 
     @router.post('/jobs/{jid}/cancel')
@@ -381,22 +491,26 @@ def routes(catalog):
             if job['state']!='cancelled':
                 db.execute("UPDATE amazon_import_jobs SET state='cancelled' WHERE id=?",(jid,))
                 db.execute("UPDATE amazon_import_items SET state='cancelled',token='',lease_until=0,data_json='{}',message='已取消采集，本批结果未入库' WHERE job_id=?",(jid,))
+                db.execute("UPDATE amazon_import_execution SET runner_id='',lease_until=0 WHERE job_id=?",(jid,))
+                touch(db,jid)
             return public_job(db,jid,uid)
 
     @router.post('/jobs/{jid}/finish')
     def finish(jid:str,request:Request):
-        return finalize(catalog,jid,actor(request))
+        return finalize(catalog,jid,actor(request),runner(request))
 
     return router
 
 
-def finalize(catalog,jid,uid):
+def finalize(catalog,jid,uid,identity=''):
     with catalog.connect() as db:
         write_lock(db);active_actor(db,uid);job=owned(db,jid,uid)
         marketplace=json.loads(job['result_json']).get('_marketplace','US')
         config=market_config(marketplace)
         if job['state']=='complete':return public_job(db,jid,uid)
         if job['state']=='cancelled':raise HTTPException(409,'该任务已取消，不能将本批结果入库')
+        recover_execution(db,jid)
+        execution_check(db,jid,identity)
         rows=[dict(r) for r in db.execute('SELECT * FROM amazon_import_items WHERE job_id=?',(jid,))]
         if any(r['state'] in ('running','fallback_queued','fallback_running') for r in rows):
             raise HTTPException(409,'请先暂停正在采集的任务，再保存已采集商品')
@@ -433,7 +547,9 @@ def finalize(catalog,jid,uid):
                 evidence_kind='source_only',copy=main_data['copy'],fields=main_data['attributes'],images=main_data['images'],
                 price=main_data['price'],stock=main_data['stock'],seller=main_data['seller'],
                 variants=list(variants.values()),source_facts={**{k:main_data['quote'].get(k) for k in ('price','original_price','basis_price','shipping','currency')},'collector':{'job_id':jid,'root_asin':root,'incomplete_asins':incomplete,'variant_evidence':main_data.get('variant_evidence',{})}},
-                issues=[{'message':'部分子变体尚未采集：'+', '.join(incomplete)}] if incomplete else [])
+                issues=([{'message':'部分子变体尚未采集：'+', '.join(incomplete)}] if incomplete else []) +
+                    [{'sku':value['asin'],'section':'source_collection','message':warning}
+                     for value in completed for warning in value.get('warnings',[])])
             listings.append(listing)
         result={'created':0,'updated':0,'unchanged':0}
         if listings:
@@ -446,4 +562,6 @@ def finalize(catalog,jid,uid):
         result.update(listing_ids=[hashlib.sha256(f'{config["namespace"]}:{l.external_id}'.encode()).hexdigest()[:24] for l in listings],failed_roots=failures,stale_roots=stale,
                       incomplete=sum(r['state']!='done' for r in rows))
         db.execute("UPDATE amazon_import_jobs SET state='complete',result_json=? WHERE id=?",(json.dumps(result),jid))
+        db.execute("UPDATE amazon_import_execution SET runner_id='',lease_until=0 WHERE job_id=?",(jid,))
+        touch(db,jid)
         return public_job(db,jid,uid)

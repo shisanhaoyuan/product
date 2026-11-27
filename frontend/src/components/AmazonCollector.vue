@@ -12,6 +12,7 @@ import {
 import { collectTask } from '../utils/amazonCollector';
 import { useAuth } from '../composables/useAuth';
 import { useCatalog } from '../composables/useCatalog';
+import { ApiError } from '../api/client';
 import { errorMessage } from '../utils/display';
 const { auth } = useAuth();
 const writable = computed(() => !auth.enabled || auth.user?.role !== 'viewer');
@@ -31,6 +32,73 @@ const openPage = ref<() => void>();
 const cancelling = ref(false);
 let cancelRequested = false;
 let controller: AbortController | undefined;
+let disposed = false,
+  loading = false,
+  ownsExecution = false;
+let pollTimer: ReturnType<typeof setTimeout> | undefined;
+let heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
+const syncedAt = ref('');
+const syncError = ref('');
+const showDetails = ref(false);
+const onlyIssues = ref(true);
+const currentItem = computed(() =>
+  selected.value?.execution?.active
+    ? selected.value?.items.find((i) =>
+        ['running', 'fallback_queued', 'fallback_running'].includes(i.state),
+      )
+    : undefined,
+);
+const processed = computed(
+  () => selected.value?.items.filter((i) => ['done', 'failed'].includes(i.state)).length || 0,
+);
+const percent = computed(() =>
+  selected.value?.items.length
+    ? Math.floor((processed.value * 100) / selected.value.items.length)
+    : 0,
+);
+const reviewCount = computed(() => selected.value?.items.filter((i) => i.needs_review).length || 0);
+const failedCount = computed(
+  () => selected.value?.items.filter((i) => i.state === 'failed').length || 0,
+);
+const visibleItems = computed(
+  () =>
+    selected.value?.items.filter(
+      (i) => !onlyIssues.value || i.needs_review || i.state === 'failed',
+    ) || [],
+);
+function jobLabel(job: CollectorJob) {
+  if (job.state === 'collecting') return job.execution?.active ? '正在采集' : '等待继续';
+  return labels[job.state] || job.state;
+}
+function stopLocalIfRemoteStopped(job: CollectorJob) {
+  if (
+    busy.value &&
+    selected.value?.id === job.id &&
+    ['paused', 'cancelled', 'complete'].includes(job.state)
+  ) {
+    ownsExecution = false;
+    controller?.abort();
+  }
+}
+function accept(job: CollectorJob) {
+  const prior = jobs.value.find((j) => j.id === job.id);
+  return !prior || (job.revision || 0) >= (prior.revision || 0);
+}
+async function heartbeat(id: string) {
+  if (!ownsExecution || disposed) return;
+  try {
+    const job = await collectorApi.action(id, 'heartbeat');
+    update(job);
+    stopLocalIfRemoteStopped(job);
+  } catch (e) {
+    if (e instanceof ApiError && [403, 404, 409].includes(e.status)) {
+      ownsExecution = false;
+      controller?.abort();
+      error.value = errorMessage(e);
+    } else syncError.value = '连接中断，正在重连；超过 90 秒会释放执行权。';
+  }
+  if (ownsExecution && !disposed) heartbeatTimer = setTimeout(() => void heartbeat(id), 15000);
+}
 let createId = crypto.randomUUID();
 function resetCreateId() {
   createId = crypto.randomUUID();
@@ -56,25 +124,52 @@ const labels: Record<string, string> = {
   fallback_running: 'Wraith 处理中',
   done: '已采集',
   failed: '采集失败',
-  collecting: '待继续／采集中',
+  collecting: '采集中',
   paused: '已暂停',
   complete: '已结束',
   cancelled: '已取消',
 };
 function update(job: CollectorJob) {
-  if (
-    jobs.value.some((existing) => existing.id === job.id && existing.state === 'cancelled') &&
-    job.state !== 'cancelled'
-  )
-    return;
+  if (disposed || !accept(job)) return;
+  stopLocalIfRemoteStopped(job);
   selected.value = job;
   jobs.value = [job, ...jobs.value.filter((j) => j.id !== job.id)].slice(0, 20);
 }
 async function load() {
+  if (loading || disposed) return;
+  loading = true;
   try {
     const data = await collectorApi.status();
-    jobs.value = data.jobs;
+    if (disposed) return;
+    jobs.value = data.jobs.map((job) =>
+      accept(job) ? job : jobs.value.find((j) => j.id === job.id)!,
+    );
     wraith.value = data.wraith_configured;
+    const latest =
+      jobs.value.find((j) => j.id === selected.value?.id) ||
+      (!selected.value
+        ? jobs.value.find((j) => !['complete', 'cancelled'].includes(j.state)) || jobs.value[0]
+        : undefined);
+    if (latest) {
+      stopLocalIfRemoteStopped(latest);
+      selected.value = latest;
+    }
+    syncedAt.value = new Date().toLocaleTimeString('zh-CN');
+    syncError.value = '';
+  } catch (e) {
+    if (!disposed) syncError.value = '进度同步失败：' + errorMessage(e);
+  } finally {
+    loading = false;
+  }
+}
+async function poll() {
+  await load();
+  if (!disposed) pollTimer = setTimeout(() => void poll(), 2000);
+}
+async function view(job: CollectorJob) {
+  update(job);
+  try {
+    update(await collectorApi.get(job.id));
   } catch (e) {
     error.value = errorMessage(e);
   }
@@ -130,8 +225,11 @@ async function run(job?: CollectorJob) {
         id,
         'claim',
       );
+      if (!['cancelled', 'complete'].includes(next.job.state)) ownsExecution = true;
       if (controller.signal.aborted) break;
       update(next.job);
+      if (ownsExecution && !heartbeatTimer)
+        heartbeatTimer = setTimeout(() => void heartbeat(id), 15000);
       if (['cancelled', 'complete'].includes(next.job.state)) break;
       if (!next.task) {
         update(await collectorApi.action(id, 'finish'));
@@ -154,22 +252,14 @@ async function run(job?: CollectorJob) {
       );
     }
   } catch (e) {
-    error.value = controller.signal.aborted ? '' : errorMessage(e);
-    if (
-      !controller.signal.aborted &&
-      !cancelRequested &&
-      selected.value &&
-      !['complete', 'cancelled'].includes(selected.value.state)
-    ) {
-      try {
-        update(await collectorApi.action(selected.value.id, 'pause'));
-      } catch {
-        notice.value = '请刷新任务查看实际状态；已采集结果保留。';
-      }
-    }
+    if (!controller.signal.aborted) error.value = errorMessage(e);
+    // Never let a losing claimant pause the device that actually owns the task.
+    if (e instanceof ApiError && e.status === 409) ownsExecution = false;
   } finally {
+    clearTimeout(heartbeatTimer);
+    heartbeatTimer = undefined;
     if (
-      controller.signal.aborted &&
+      ownsExecution &&
       !cancelRequested &&
       selected.value &&
       !['complete', 'cancelled'].includes(selected.value.state)
@@ -177,13 +267,16 @@ async function run(job?: CollectorJob) {
       try {
         update(await collectorApi.action(selected.value.id, 'pause'));
       } catch {
-        notice.value = '请刷新任务查看实际状态；已采集结果保留。';
+        if (!disposed) syncError.value = '请刷新进度核对状态；已采集结果保留。';
       }
     }
+    ownsExecution = false;
     busy.value = false;
     openPage.value = undefined;
+    void load();
   }
 }
+
 async function pause() {
   controller?.abort();
 }
@@ -222,9 +315,12 @@ async function finish(job: CollectorJob) {
 }
 onMounted(() => {
   if (typeof route.query.amazon === 'string') text.value = route.query.amazon;
-  void load();
+  void poll();
 });
 onBeforeUnmount(() => {
+  disposed = true;
+  clearTimeout(pollTimer);
+  clearTimeout(heartbeatTimer);
   controller?.abort();
 });
 </script>
@@ -246,6 +342,119 @@ onBeforeUnmount(() => {
         <CollectorPluginLinks /><span>{{
           wraith ? '服务器 Wraith 已配置' : '服务器 Wraith 未配置，可人工处理验证'
         }}</span>
+      </div>
+      <div v-if="selected" class="collector-progress" aria-label="采集任务进度">
+        <div class="task-heading">
+          <div>
+            <strong>{{ selected.marketplace === 'CA' ? '加拿大站 · CAD' : '美国站 · USD' }}</strong>
+            <p>
+              {{ jobLabel(selected) }} ·
+              {{
+                busy
+                  ? '本设备执行'
+                  : selected.execution?.active
+                    ? '其他页面或设备执行中'
+                    : ['complete', 'cancelled'].includes(selected.state)
+                      ? '历史任务'
+                      : '可从已保存进度继续'
+              }}
+            </p>
+          </div>
+          <strong class="task-percent">{{ percent }}%</strong>
+        </div>
+        <progress
+          :value="processed"
+          :max="selected.items.length || 1"
+          aria-label="商品处理进度"
+        ></progress>
+        <div class="task-counts">
+          <span>已处理 {{ processed }} / {{ selected.items.length }}</span
+          ><span>已采集 {{ completed }}</span
+          ><span>待补齐 {{ reviewCount }}</span
+          ><span>失败 {{ failedCount }}</span>
+        </div>
+        <p class="task-stage" role="status">
+          {{
+            currentItem
+              ? currentItem.asin + ' · ' + currentItem.message
+              : selected.state === 'complete'
+                ? '任务已结束，采集到的商品已入库'
+                : selected.state === 'cancelled'
+                  ? '任务已取消，本批结果未入库'
+                  : selected.state === 'paused'
+                    ? '已暂停，已采集结果保留'
+                    : '等待继续采集'
+          }}
+        </p>
+        <small
+          >进度按已处理 ASIN
+          统计，发现子变体时总数会增加。缺价格等资料仍可入库，并标记待补齐。</small
+        >
+        <div
+          v-if="writable && !['complete', 'cancelled'].includes(selected.state)"
+          class="actions task-actions"
+        >
+          <button
+            v-if="!busy"
+            class="btn primary"
+            :disabled="cancelling || selected.execution?.active"
+            @click="run(selected)"
+          >
+            {{ selected.execution?.active ? '其他设备采集中' : '继续采集' }}
+          </button>
+          <button v-if="busy" class="btn" :disabled="cancelling" @click="pause">
+            暂停并保留进度
+          </button>
+          <button v-if="openPage" class="btn primary" @click="openPage()">打开网页处理</button>
+          <button
+            v-if="!busy && !selected.execution?.active"
+            class="btn"
+            :disabled="cancelling || !completed"
+            @click="finish(selected)"
+          >
+            结束并入库已采集商品
+          </button>
+          <details class="task-more">
+            <summary>更多操作</summary>
+            <p>取消会丢弃本批尚未入库的结果；稍后继续请使用暂停。</p>
+            <button class="btn collector-cancel" :disabled="cancelling" @click="cancel(selected)">
+              取消并丢弃本批结果
+            </button>
+          </details>
+        </div>
+        <p v-if="selected.state === 'complete'">
+          新建 {{ selected.result.created || 0 }} 件 · 更新 {{ selected.result.updated || 0 }} 件 ·
+          未完成 {{ selected.result.incomplete || 0 }} 个 ASIN
+        </p>
+        <div class="task-footer">
+          <button class="btn small" @click="showDetails = !showDetails">
+            {{ showDetails ? '收起商品明细' : '查看商品明细与缺项' }}</button
+          ><span>{{ syncError || '自动同步 · ' + syncedAt }}</span
+          ><button class="btn small" @click="load">刷新</button>
+        </div>
+        <div v-if="showDetails">
+          <label><input v-model="onlyIssues" type="checkbox" />只看缺项和失败</label>
+          <div class="collector-results">
+            <p v-for="item in visibleItems" :key="item.root_asin + item.asin">
+              <strong>{{ item.asin }}</strong
+              ><span>{{ item.needs_review ? '已采集 · 待补齐' : labels[item.state] }}</span
+              ><small>{{ item.message }}</small>
+            </p>
+            <p v-if="!visibleItems.length">暂无匹配记录</p>
+          </div>
+        </div>
+        <details v-if="selected.result.listing_ids?.length">
+          <summary>查看已入库商品</summary>
+          <div class="actions">
+            <RouterLink
+              v-for="id in selected.result.listing_ids"
+              :key="id"
+              class="btn small"
+              :to="(selected.marketplace === 'CA' ? '/amazon-canada-product/' : '/product/') + id"
+              >查看商品</RouterLink
+            >
+          </div>
+        </details>
       </div>
       <details class="details">
         <summary>首次安装及使用说明</summary>
@@ -313,79 +522,104 @@ onBeforeUnmount(() => {
             :disabled="busy || cancelling || uploading || !text.trim()"
             @click="run()"
           >
-            开始采集并入库</button
-          ><button v-if="busy" class="btn" :disabled="cancelling" @click="pause">暂停采集</button
-          ><button
-            v-if="busy && selected && !['complete', 'cancelled'].includes(selected.state)"
-            class="btn collector-cancel"
-            :disabled="cancelling"
-            @click="cancel(selected)"
-          >
-            {{ cancelling ? '取消中…' : '取消采集' }}</button
-          ><button v-if="openPage" class="btn" @click="openPage()">打开网页处理</button>
+            开始采集并入库
+          </button>
         </div>
       </template>
       <p v-else class="notice">当前账号为只读成员，请使用运营或管理员账号采集。</p>
       <p v-if="error" class="error-box" role="alert">{{ error }}</p>
       <p v-if="notice" class="notice" role="status">{{ notice }}</p>
-      <div v-if="selected" class="collector-progress">
-        <strong
-          >{{ selected.marketplace === 'CA' ? '加拿大站 · CAD' : '美国站 · USD' }} · 已采集
-          {{ completed }} / {{ selected.items.length }} ·
-          {{ labels[selected.state] || selected.state }}</strong
-        >
-        <p v-if="selected.state === 'complete'">
-          新建 {{ selected.result.created || 0 }} 件，更新
-          {{ selected.result.updated || 0 }} 件，未完成 {{ selected.result.incomplete || 0 }} 个
-          ASIN。<span v-if="selected.result.stale_roots?.length"
-            >较旧结果未覆盖最新资料：{{ selected.result.stale_roots.join('、') }}</span
-          >
-        </p>
-        <div class="collector-results">
-          <p v-for="item in selected.items" :key="item.root_asin + item.asin">
-            <strong>{{ item.asin }}</strong
-            ><span>{{ labels[item.state] || item.state }}</span
-            ><small>{{ item.message }}</small>
-          </p>
-        </div>
-        <div class="actions">
-          <RouterLink
-            v-for="id in selected.result.listing_ids"
-            :key="id"
-            class="btn small"
-            :to="(selected.marketplace === 'CA' ? '/amazon-canada-product/' : '/product/') + id"
-            >查看入库商品</RouterLink
-          >
-        </div>
-      </div>
       <details v-if="jobs.length" class="details">
-        <summary>我的采集任务（最近 20 批）</summary>
+        <summary>历史采集任务 · 最近 {{ jobs.length }} 批</summary>
         <div v-for="job in jobs" :key="job.id" class="collector-history">
           <span
             >{{ job.marketplace || 'US' }} ·
-            {{ new Date(job.created_at).toLocaleString('zh-CN') }} · {{ job.items.length }} 个 ASIN
-            · {{ labels[job.state] }}</span
-          ><button class="btn small" :disabled="busy || cancelling" @click="update(job)">
-            查看</button
-          ><template v-if="writable && !['complete', 'cancelled'].includes(job.state)"
-            ><button class="btn small" :disabled="busy || cancelling" @click="run(job)">
-              继续采集</button
-            ><button class="btn small" :disabled="busy || cancelling" @click="finish(job)">
-              结束并保存已采集商品</button
-            ><button
-              class="btn small collector-cancel"
-              :disabled="cancelling || (busy && selected?.id !== job.id)"
-              @click="cancel(job)"
-            >
-              取消采集
-            </button></template
+            {{ new Date(job.created_at).toLocaleString('zh-CN') }} ·
+            {{ job.items.filter((i) => i.state === 'done').length }} / {{ job.items.length }} 已采集
+            · {{ jobLabel(job) }}</span
           >
+          <button class="btn small" :disabled="busy || cancelling" @click="view(job)">
+            查看任务
+          </button>
         </div>
       </details>
     </div>
   </section>
 </template>
 <style scoped>
+.task-heading,
+.task-counts,
+.task-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.task-heading p {
+  margin: 8px 0;
+  color: #526980;
+}
+.task-percent {
+  font-size: 28px;
+  color: #218553;
+}
+.collector-progress progress {
+  appearance: none;
+  width: 100%;
+  height: 16px;
+  margin: 16px 0;
+  border: 0;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #e2eee7;
+  accent-color: #2da568;
+}
+.collector-progress progress::-webkit-progress-bar {
+  background: #e2eee7;
+  border-radius: 999px;
+}
+.collector-progress progress::-webkit-progress-value {
+  background: #2da568;
+  border-radius: 999px;
+}
+.collector-progress progress::-moz-progress-bar {
+  background: #2da568;
+  border-radius: 999px;
+}
+.task-counts {
+  justify-content: flex-start;
+  gap: 12px 28px;
+  color: #365f80;
+}
+.task-stage {
+  padding: 14px;
+  background: #e5eef8;
+  border-radius: 10px;
+  overflow-wrap: anywhere;
+}
+.task-footer {
+  margin-top: 18px;
+  border-top: 1px solid #dce4ee;
+  padding-top: 14px;
+}
+.task-footer span {
+  font-size: 12px;
+  color: #526980;
+  flex: 1;
+}
+.task-actions {
+  margin-top: 16px;
+}
+.task-more {
+  margin-left: auto;
+  max-width: 320px;
+}
+.task-more summary {
+  cursor: pointer;
+  color: #526980;
+}
+
 .amazon-collector {
   grid-column: 1 / -1;
 }

@@ -30,6 +30,17 @@ export async function collectTask(
   const cancel = () => browser.abort();
   signal.addEventListener('abort', cancel, { once: true });
   if (signal.aborted) browser.abort();
+  let lastStage = '';
+  function progress(stage: string) {
+    if (signal.aborted || stage === lastStage) return;
+    lastStage = stage;
+    void collectorApi
+      .action<CollectorJob>(id, 'progress', { ...task, stage })
+      .then((job) => {
+        if (!signal.aborted) update(job);
+      })
+      .catch(() => {});
+  }
   let fallbackStarted = false;
   let resolveFallback: (job: CollectorJob) => void = () => {};
   const fallbackDone = new Promise<CollectorJob>((resolve) => {
@@ -67,6 +78,7 @@ export async function collectTask(
       'import',
       false,
       (reason, reveal) => {
+        progress(reason === 'location' ? 'location' : 'verification');
         if (reason === 'location') {
           notice(
             `请在已打开的网页设置邮编 ${task.marketplace === 'CA' ? 'M5V 3L9' : '10001'}，完成后自动继续`,
@@ -88,9 +100,11 @@ export async function collectTask(
       task.marketplace || 'US',
     );
     // A returned browser page is saved once. Ambiguous network failures are not replayed.
-    const browserDone = page.then((result) =>
-      collectorApi.action<CollectorJob>(id, 'page', { ...task, ...result }),
-    );
+    const browserDone = page.then((result) => {
+      if (signal.aborted || browser.signal.aborted) throw new Error('采集已暂停');
+      progress('processing');
+      return collectorApi.action<CollectorJob>(id, 'page', { ...task, ...result });
+    });
     const result = await Promise.race([browserDone, fallbackDone]);
     update(result);
   } catch (e) {

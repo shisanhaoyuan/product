@@ -141,13 +141,16 @@ def parse_offer(root, scope, marketplace="US"):
         if 'a-accordion-row' in classes and 'a-accordion-active' not in classes:
             node.attrs['hidden'] = ''
     price_roots = root.ids('corePriceDisplay_desktop_feature_div', 'corePrice_feature_div',
-                           'apex_desktop', 'aod-offer-price') or [root]
+                           'apex_desktop', 'apex_mobile', 'corePrice_desktop', 'corePrice_mobile_feature_div', 'aod-offer-price') or [root]
     for price_root in price_roots:
         for n in price_root.nodes():
-            if 'a-offscreen' not in n.attrs.get('class', '').split():
+            if not ({'a-offscreen','apex-pricetopay-accessibility-label','apex-basisprice-offscreen-label'} & set(n.attrs.get('class', '').split()) or n.attrs.get('id')=='apex-pricetopay-accessibility-label'):
                 continue
             values = amounts(n.text(), marketplace)
-            record(n, values)
+            if 'apex-basisprice-offscreen-label' in n.attrs.get('class','').split():
+                originals.extend(values)
+            else:
+                record(n, values)
         # Some Amazon offers omit the accessible text; use complete, same-node
         # symbol/whole/fraction parts only, never guess a missing decimal part.
         for n in price_root.nodes():
@@ -199,7 +202,7 @@ def parse_offer(root, scope, marketplace="US"):
                               'mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_MEDIUM',
                               'mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_SMALL',
                               'mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE',
-                              'deliveryBlockMessage', 'aod-offer-delivery', 'delivery-message')
+                              'deliveryBlockMessage', 'deliveryMessageMirId', 'aod-offer-delivery', 'delivery-message')
     delivery_nodes = [n for n in delivery_nodes if not any(
         n is not other and n in list(other.nodes()) for other in delivery_nodes)]
     delivery = ' '.join(unique(n.text() for n in delivery_nodes))
@@ -246,7 +249,7 @@ def amazon_source(html, asin, marketplace="US"):
         or re.search('Other sellers on Amazon|See All Buying Options', n.text(), re.I))]
     issues = []
     def main_offer():
-        roots = Document(html).root.ids('catalog-main-offer', 'ppd', 'desktop_buybox', 'buybox')
+        roots = Document(html).root.ids('catalog-main-offer', 'ppd', 'desktop_buybox', 'buybox', 'buybox_feature_div', 'mobile_buybox')
         # The complete buybox keeps seller, price, delivery in one offer container.
         if roots:
             root = roots[0]
@@ -310,8 +313,12 @@ def amazon_source(html, asin, marketplace="US"):
     location = ' '.join(unique(n.text() for n in doc.ids('glow-ingress-line2', 'contextualIngressPtLabel_deliveryShortLine')))
     if not location_matches(location, marketplace):
         issues.append(f'配送地区未核验为 {market_config(marketplace)["postal_code"]}；价格及配送信息仅作为当前网页记录')
+    diagnostics = [dict(state=n.attrs.get('data-collector-offer-state'), nodes=n.attrs.get('data-collector-offer-nodes'))
+                   for n in doc.ids('catalog-main-offer') if n.attrs.get('data-collector-offer-state')]
+    if diagnostics and diagnostics[0]['state']=='price_missing_after_wait' and not result.get('price') and not result.get('original_price'):
+        issues.append('报价区域等待加载后仍未取得价格；商品资料保留入库，可稍后补采')
     return dict(status='partial' if issues else 'captured', asin=asin, **result,
-                delivery_location=location or None, issues=issues)
+                delivery_location=location or None, issues=issues, offer_diagnostics=diagnostics)
 
 
 

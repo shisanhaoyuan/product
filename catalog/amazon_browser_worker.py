@@ -193,7 +193,7 @@ def collect_in_profile(asin, engine, report, profile):
         page.evaluate('() => {' + (helper / 'offers.js').read_text() +
                       '; globalThis.jiwuReadOffer = globalThis.jiwuOfferReader(); }')
         if location_verified:
-            for _ in range(27):
+            for _ in range(60):
                 ready = page.evaluate('() => { globalThis.jiwuOfferHTML = globalThis.jiwuReadOffer(); return !!globalThis.jiwuOfferHTML; }')
                 if ready:
                     break

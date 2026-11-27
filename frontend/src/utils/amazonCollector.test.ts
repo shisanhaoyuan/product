@@ -26,7 +26,7 @@ it('saves an ASIN-bound browser result once', async () => {
   vi.mocked(collectorApi.action).mockResolvedValue(job);
   const update = vi.fn();
   await collectTask('job', task, new AbortController().signal, true, update, vi.fn());
-  expect(collectorApi.action).toHaveBeenCalledExactlyOnceWith(
+  expect(collectorApi.action).toHaveBeenCalledWith(
     'job',
     'page',
     expect.objectContaining({ ...task, html: 'own page' }),
@@ -51,7 +51,10 @@ it('queues Wraith once, polls until saved and cancels browser wait', async () =>
   const promise = collectTask('job', task, new AbortController().signal, true, vi.fn(), vi.fn());
   await vi.advanceTimersByTimeAsync(2100);
   await promise;
-  expect(collectorApi.action).toHaveBeenCalledExactlyOnceWith('job', 'fallback', task);
+  expect(collectorApi.action).toHaveBeenCalledWith('job', 'fallback', task);
+  expect(
+    vi.mocked(collectorApi.action).mock.calls.filter((call) => call[1] === 'fallback'),
+  ).toHaveLength(1);
   expect(cancelled).toBe(true);
 });
 it('does not replay a possibly saved HTTP failure', async () => {
@@ -64,7 +67,12 @@ it('does not replay a possibly saved HTTP failure', async () => {
   await expect(
     collectTask('job', task, new AbortController().signal, true, vi.fn(), vi.fn()),
   ).rejects.toThrow();
-  expect(collectorApi.action).toHaveBeenCalledTimes(1);
+  expect(
+    vi.mocked(collectorApi.action).mock.calls.filter((call) => call[1] === 'page'),
+  ).toHaveLength(1);
+  expect(
+    vi.mocked(collectorApi.action).mock.calls.some((call) => ['fail', 'pause'].includes(call[1])),
+  ).toBe(false);
 });
 it('abort never marks a still-running browser task as failed', async () => {
   const controller = new AbortController();

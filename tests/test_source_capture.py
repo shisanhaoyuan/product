@@ -291,3 +291,19 @@ def test_main_quote_survives_other_seller_drawer(market, drawer):
     assert result['price'] == '85.49' and result['original_price'] == '95.99'
     assert result['offer_scope'] == 'main_offer'
     assert result['status'] == 'captured'
+
+
+def test_new_apex_accessibility_prices_and_seller_buttons_are_read():
+    content='''<div id="apex_desktop"><span id="apex-pricetopay-accessibility-label" class="aok-offscreen">$85.49 with savings</span><span class="apex-basisprice-offscreen-label">Was: $95.99</span></div>
+    <div tabular-attribute-name="Sold by"><button>Store A</button></div>
+    <div id="deliveryMessageMirId">FREE delivery tomorrow</div>'''
+    result=amazon_source(page(content=content),'B000000000')
+    assert result['price']=='85.49' and result['original_price']=='95.99'
+    assert result['seller']=='Store A' and result['shipping']=='0.00'
+
+
+def test_partial_quote_keeps_wait_diagnostic():
+    markup=page(content='<section id="catalog-main-offer" data-collector-offer-state="price_missing_after_wait" data-collector-offer-nodes="0"></section>')
+    result=amazon_source(markup,'B000000000')
+    assert result['offer_diagnostics']==[{'state':'price_missing_after_wait','nodes':'0'}]
+    assert any('商品资料保留入库' in issue for issue in result['issues'])
