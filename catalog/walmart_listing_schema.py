@@ -30,7 +30,7 @@ LABELS = {
     'productNetContentMeasure': '数值', 'productNetContentUnit': '单位', 'measure': '数值', 'unit': '单位',
     'country_of_origin_substantial_transformation': '原产国（实质性转变）',
     'countryOfOriginSubstantialTransformation': '原产国（实质性转变）',
-    'productTaxCode': '商品税码（按实际税务分类填写）', 'countryOfOriginAssembly': '原产国',
+    'productTaxCode': '商品税码', 'countryOfOriginAssembly': '原产国',
     'manufacturerPartNumber': '制造商零件编号', 'smallPartsWarningCode': '小零件警告',
     'color': '颜色', 'size': '尺寸', 'material': '材质', 'condition': '商品状况',
     'countPerPack': '每包数量', 'multipackQuantity': '组合包装数量', 'MustShipAlone': '是否必须单独运输',

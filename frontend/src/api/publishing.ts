@@ -45,6 +45,20 @@ export interface Issue {
   code?: string;
   details?: { path: string; message: string }[];
 }
+export interface CanadaTaxCode {
+  code: number;
+  description: string;
+  path: string[];
+  genre_name: string;
+  source_row: number;
+  available: boolean;
+}
+export interface CanadaTaxCodes {
+  source: { version: string; count: number; sheet: string; filename: string };
+  items: CanadaTaxCode[];
+  total: number;
+  offset: number;
+}
 export interface ListingResult {
   status: string;
   message: string;
@@ -201,6 +215,11 @@ const body = (method: string, data: unknown = {}) => ({
 });
 const path = (bid: string) => `/api/prelisting/batches/${encodeURIComponent(bid)}/walmart`;
 export const publishingApi = {
+  canadaTaxCodes: (bid: string, filters: { q?: string; offset?: number; code?: string }, signal?: AbortSignal) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) if (value !== undefined) params.set(key, String(value));
+    return request<CanadaTaxCodes>(path(bid) + '/canada/tax-codes?' + params, { signal });
+  },
   verifySourcePrice: (
     bid: string,
     revision: number,

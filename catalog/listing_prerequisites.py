@@ -76,6 +76,8 @@ def resource_digest(db, bound):
         bundle=cache_value(db,bound,'ca_bundle')
         from .walmart_canada import bundle_digest
         resources['canada_specs']=(bundle.get('digest') or bundle_digest(bundle)) if bundle else None
+        from .canada_tax_codes import library, POLICY
+        resources['canada_tax_codes'] = dict(digest=library()['digest'], policy=POLICY)
     return fingerprint(resources)
 
 

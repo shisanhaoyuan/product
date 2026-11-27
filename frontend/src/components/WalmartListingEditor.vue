@@ -29,6 +29,7 @@ import { applyListingDefaults, setFamilyProductType } from '../utils/listingDefa
 import ListingSchemaField from './ListingSchemaField.vue';
 import ListingVariantGroup from './ListingVariantGroup.vue';
 import ListingPriceRecovery from './ListingPriceRecovery.vue';
+import CanadaTaxCodeField from './CanadaTaxCodeField.vue';
 import ListingStatusNotices from './ListingStatusNotices.vue';
 import ProductImage from './ProductImage.vue';
 import ListingProductDetails from './ListingProductDetails.vue';
@@ -981,7 +982,7 @@ onBeforeUnmount(() => {
       <strong>加拿大站刊登 · CAD</strong>
       <p>
         系统自动加载加拿大 MP_ITEM_INTL 官方规格，按加拿大类目自动填充并校验。目前支持英文资料与默认库存。
-        原产国沿用默认规则；商品税码须按实际税务分类填写，系统不会猜测。
+        原产国沿用默认规则；商品税码按已导入的加拿大税码表自动匹配，生成后可查看依据并人工修改。
       </p>
       <p v-if="doc.canada_specification">
         {{ doc.canada_specification.source.kind === 'bundled_official' ? '已自动加载官方内置规格' : '使用店铺导入规格' }}：
@@ -1651,10 +1652,20 @@ onBeforeUnmount(() => {
               :disabled="locked || busy || saving"
               @confirm="verifySourcePrice"
             />
-            <template v-if="currentSpec"
-              ><ListingSchemaField
-                v-for="key in orderableKeys"
-                :key="key"
+            <template v-if="currentSpec">
+              <template v-for="key in orderableKeys" :key="key">
+                <CanadaTaxCodeField
+                  v-if="doc.marketplace === 'CA' && key === 'productTaxCode'"
+                  :key="current.platform_sku"
+                  :bid="bid"
+                  :model-value="current.orderable[key]"
+                  :disabled="locked || busy"
+                  :required="requiredOrderable.includes(key)"
+                  :issues="dirty ? [] : fieldIssues(key, 'Orderable')"
+                  :reason="generationRow?.fields?.['orderable.productTaxCode']?.value === current.orderable[key] ? generationRow?.fields?.['orderable.productTaxCode']?.reason : undefined"
+                  @update:model-value="update('orderable', key, $event)"
+                />
+                <ListingSchemaField v-else
                 :name="key"
                 :schema="currentSpec.sections.orderable.properties![key]"
                 :labels="doc.labels"
@@ -1666,7 +1677,9 @@ onBeforeUnmount(() => {
                 :path="'orderable.' + key"
                 :issues="dirty ? [] : fieldIssues(key, 'Orderable')"
                 @update:model-value="update('orderable', key, $event)"
-            /></template>
+                />
+              </template>
+            </template>
             <p v-else class="notice">先选择商品类型，加载该类目的价格、运输重量和原产国等要求。</p>
             <details class="listing-raw">
               <summary>来源价格及库存依据</summary>

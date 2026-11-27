@@ -340,15 +340,16 @@ def test_official_canadian_snapshot_and_source_mapping():
     assert any(i['path']=='MPItem.0.Visible.Furniture.productName' for i in schema_errors(canonical,entry,'3.16'))
     assert schema==before  # Shared cached schema must remain immutable.
     row['orderable'].pop('productTaxCode')
-    filled,issues=fill_row(row,schema,{'content.copy':{'title':'Wood chair','description':'Wood chair'}},AI(),{})
-    assert 'productTaxCode' not in filled['orderable']
-    assert any(i['path']=='orderable.productTaxCode' for i in issues)
+    from test_canada_tax_codes import TaxAI
+    filled,issues=fill_row(row,schema,{'content.copy':{'title':'Wood chair','description':'Wood chair'}},TaxAI(),{})
+    assert filled['orderable']['productTaxCode'] == 2040175
+    assert not any(i['path']=='orderable.productTaxCode' for i in issues)
 
 
 def test_builtin_canadian_schema_end_to_end_submission(ca_publishing):
     from catalog.listing_generation import fill_row
     from catalog.walmart_canada import official_bundle
-    from test_listing_generation import AI
+    from test_canada_tax_codes import TaxAI
     c,_,_,base,remote=ca_publishing
     doc=c.get(base).json()
     assert doc['version']=='3.16'
@@ -356,10 +357,9 @@ def test_builtin_canadian_schema_end_to_end_submission(ca_publishing):
     for i,row in enumerate(doc['rows']):
         row['product_type']='Furniture'
         row['orderable']['ShippingWeight']={'measure':12.345,'unit':'lb'}
-        row['orderable']['productTaxCode']=2038710  # Verified fixture value supplied manually.
         row['visible']['color']=['Brown' if i==0 else 'White']
         schema=official_bundle()['specs']['Furniture']
-        filled,_=fill_row(row,schema,{'content.copy':{'title':'Wood chair','description':'Wood chair'}},AI(),{})
+        filled,_=fill_row(row,schema,{'content.copy':{'title':'Wood chair','description':'Wood chair'}},TaxAI(),{})
         doc['rows'][i]=filled
         assert c.post(base+'/spec',json=filled).status_code==200
     saved=c.patch(base,json={k:doc[k] for k in ('revision','version','rows')})
@@ -373,6 +373,7 @@ def test_builtin_canadian_schema_end_to_end_submission(ca_publishing):
     assert payload['MPItemFeedHeader']['version']=='3.16'
     assert payload['MPItemFeedHeader']['mart']=='WALMART_CA'
     assert payload['MPItem'][0]['Orderable']['ShippingWeight']=={'measure':12.345,'unit':'lb'}
+    assert payload['MPItem'][0]['Orderable']['productTaxCode'] == 2040175
     assert 'en' in payload['MPItem'][0]['Orderable']['productName']
     refreshed=c.post(base+f"/attempts/{attempt['id']}/refresh")
     assert refreshed.status_code==200,refreshed.text
@@ -420,7 +421,7 @@ def test_amazon_canada_import_prelisting_uses_cad_and_canadian_schema(ca_publish
     plan=preview.json()
     assert plan['store']['marketplace']=='CA' and plan['store']['currency']=='CAD'
     assert len(plan['items'])==1 and plan['items'][0]['listing_id']==lid
-    assert plan['items'][0]['variants'][0]['price']=='100.79'  # captured CAD 83.99 reference x 1.2
+    assert plan['items'][0]['variants'][0]['price']=='100.99'  # captured CAD 83.99 reference x 1.2, .99 ending
     batch,_=create(c,settings)
     base=f'/api/prelisting/batches/{batch["id"]}/walmart'
     result=c.post(base+'/prepare')

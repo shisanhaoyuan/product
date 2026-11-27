@@ -1,0 +1,12 @@
+{
+  "file": "canada-tax-codes-2026-05.json.gz",
+  "sha256": "73ce440275318dd1e15525a20cfdd466c5d165c348ce939c980ec48ec4b2b92f",
+  "source": {
+    "filename": "加拿大税务编码Taxability_Matrix_Canada_May2026.xls",
+    "sha256": "ca498e50919ba1a530d31b19f786f6cbee20626e961185f8aea69913ec6c42ed",
+    "sheet": "GS List",
+    "version": "2026-05",
+    "publisher": "SOVOS, LLC",
+    "count": 8227
+  }
+}

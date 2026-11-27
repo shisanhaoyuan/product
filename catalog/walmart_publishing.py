@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -512,6 +512,8 @@ def check_rows(db, doc, session, binding_row, skus=None):
         if schema is None:
             errors.append(dict(path='product_type',message='请加载该类目的最新官方规格'))
         else:
+            from .canada_tax_codes import errors as tax_errors
+            errors.extend(tax_errors(row, schema))
             errors.extend(feedback_errors(db,doc,row,schema))
             schema_digests[pt] = fingerprint(schema)
             exempt = False
@@ -651,6 +653,18 @@ def assert_not_sending(db, store_id):
 
 def publishing_routes(catalog):
     router = APIRouter(prefix='/api/prelisting/batches/{bid}/walmart')
+
+    @router.get('/canada/tax-codes')
+    def tax_codes(bid: str, q: str = Query('', max_length=200),
+                  offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100),
+                  code: str | None = Query(None, max_length=10)):
+        with catalog.connect() as db:
+            current = batch(db, bid)
+            _, bound = binding(db, json.loads(current['preview_json'])['store']['id'])
+            if market_of(bound) != 'CA':
+                raise HTTPException(409, '加拿大税码库仅适用于加拿大店铺')
+        from .canada_tax_codes import search
+        return search(q, offset, limit, code)
 
     @router.get('')
     def read(bid: str):

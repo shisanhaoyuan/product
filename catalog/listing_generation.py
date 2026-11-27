@@ -12,7 +12,7 @@ from .listing_titles import branded_title, source_brands, normalize_copy_brand, 
 from .walmart_listing_schema import plain, sections, feed_item, schema_errors, identifier_errors, precise_validator
 from .listing_skill_defaults import has_default, skill_default, length_fallback, fixed_origin, enforce_origin
 
-RULES_VERSION = 'listing-generation-v24-skill-feature-splitting'
+RULES_VERSION = 'listing-generation-v25-canada-tax-matrix'
 RULES = Path(__file__).with_name('listing_generation_rules.md').read_text()
 BLOCKED = re.compile(r'prop.?65|warranty|certif|nrtl|chemical|origin|warning|exempt|gtin|upc|ean|model|partnumber|taxcode', re.I)
 PROTECTED = {'variantGroupId','variantAttributeNames','isPrimaryVariant','swatchImages','sku','productIdentifiers','inventory','price','msrp','SkuUpdate','ProductIdUpdate','fulfillmentCenterID'}
@@ -459,6 +459,8 @@ def fill_row(row, schema, facts, ai, provenance):
                 del row[section][key]
     prepare_copy(row,facts,provenance)
     problems = enforce_origin(row,spec,provenance)
+    from .canada_tax_codes import fill_tax_code
+    problems.extend(fill_tax_code(row, schema, facts, ai, provenance))
     from .listing_part_number import part_number_field, fill_part_number
     for section in ('visible', 'orderable'):
         for key, shape in spec[section].get('properties', {}).items():
@@ -484,6 +486,8 @@ def fill_row(row, schema, facts, ai, provenance):
                 if isinstance(axes, list):
                     needed |= {k for k in axes if isinstance(k, str)}
             for key in sorted(needed):
+                if '_ca' in schema and key == 'productTaxCode':
+                    continue  # Dedicated matrix classifier, never free-form tax-code estimation.
                 if key in PROTECTED or key not in props or fixed_origin(key,props[key]):
                     continue
                 if part_number_field(key, props[key]):
@@ -639,6 +643,8 @@ def fill_row(row, schema, facts, ai, provenance):
 
 def validate_generated(row, schema, version, origin):
     errors = [dict(path='identification', message=m) for m in identifier_errors(row['identification'])]
+    from .canada_tax_codes import errors as tax_errors
+    errors.extend(tax_errors(row, schema))
     if row['identification']['mode'] == 'exemption':
         errors.append(dict(path='identification',message='豁免仍需在正式校验时核对该店铺的批准记录'))
     if not row['fulfillment_center_id']:
