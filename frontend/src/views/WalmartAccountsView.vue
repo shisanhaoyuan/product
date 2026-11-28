@@ -284,7 +284,7 @@ onBeforeUnmount(() => {
           >
           <small v-if="s.account.marketplace === 'CA'"
             >OAuth 授权已验证；店铺归属由管理员核对。加拿大刊登使用独立的官方规格与 CAD
-            价格；店铺商品管理目前仅支持美国站。</small
+            价格；可在店铺商品管理查询商品、修改 CAD 售价及调整默认库存。</small
           >
         </div>
         <dl class="wm-info">

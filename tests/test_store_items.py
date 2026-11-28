@@ -300,3 +300,111 @@ def test_image_identity_and_local_asset_formats():
     assert image_url(local) == local
     assert image_url('//example.com/a.jpg') == ''
     assert image_url('/api/products/images/assets/../../secrets') == ''
+
+
+class CanadaItemsRemote(ItemsRemote):
+    def __init__(self):
+        super().__init__()
+        self.currency = 'CAD'
+        self.price_error = False
+
+    def item(self):
+        return super().item() | {'price': {'currency': self.currency, 'amount': self.price}}
+
+    @property
+    def writes(self):
+        return [r for r in self.calls if r.method in ('PUT', 'DELETE') or (r.method == 'POST' and r.url.path == '/v3/price')]
+
+    def handler(self, r):
+        assert r.headers['WM_MARKET'] == 'ca'
+        assert r.headers['WM_GLOBAL_VERSION'] == '3.1'
+        assert r.url.path not in ('/v3/settings/partnerprofile', '/v3/settings/shipping/shipnodes', '/v3/items/walmart/search')
+        if r.url.path == '/v3/price':
+            self.calls.append(r)
+            assert r.method == 'POST'
+            payload = json.loads(r.content)
+            assert payload['MPItemFeedHeader'] == {'mart': 'WALMART_CA', 'locale': ['en', 'fr'],
+                'version': '5.0.20250801-18_47_55-api', 'businessUnit': 'WALMART_CA', 'tenant': 'WALMART_CA'}
+            assert payload['MPItem'] == [{'Price': {'sku': 'REMOTE-ONLY', 'price': 30}}]
+            if self.timeout: raise httpx.ReadTimeout('PRIVATE', request=r)
+            if self.price_error:
+                return httpx.Response(200, json={'itemsFailed': 1, 'itemDetails': {'itemIngestionStatus': [
+                    {'sku': 'REMOTE-ONLY', 'ingestionStatus': 'DATA_ERROR', 'ingestionErrors': {'ingestionError': [{'description': 'Invalid selling price'}]}}]}})
+            if not self.delay: self.price = payload['MPItem'][0]['Price']['price']
+            return httpx.Response(200, json={'itemsSucceeded': 1})
+        if r.url.path == '/v3/inventory':
+            self.calls.append(r)
+            assert r.url.params['sku'] == 'REMOTE-ONLY' and 'shipNode' not in r.url.params
+            if r.method == 'PUT': self.quantity = json.loads(r.content)['quantity']['amount']
+            return httpx.Response(200, json={'sku': 'REMOTE-ONLY', 'quantity': {'unit': 'EACH', 'amount': self.quantity}})
+        return super().handler(r)
+
+
+@pytest.fixture
+def ca_offers(tmp_path, vault):
+    from test_walmart_accounts import INPUT
+    app = create_app(tmp_path / 'ca-offers.db')
+    c = TestClient(app)
+    r = CanadaItemsRemote().install(app)
+    sid = c.get('/api/listing-stores').json()[0]['id']
+    preview = c.post('/api/walmart/accounts/preview', json={'store_id': sid, 'marketplace': 'CA', **INPUT})
+    assert preview.status_code == 200, preview.text
+    bound = c.post(f'/api/walmart/accounts/{sid}/bind', json={'verification_id': preview.json()['verification_id']})
+    assert bound.status_code == 200, bound.text
+    app.state.walmart_publisher = WalmartPublishingClient(httpx.MockTransport(r.handler))
+    page = c.get(f'/api/store-items/{sid}')
+    assert page.status_code == 200, page.text
+    return c, r, sid, page.json()
+
+
+def ca_change(page, **kwargs):
+    return dict(request_id=str(uuid.uuid4()), partner=page['partner'], revision=page['revision'],
+                sku='REMOTE-ONLY', kind='price', expected='25', target='30') | kwargs
+
+
+def test_canada_store_visible_remote_items_currency_default_inventory_and_images(ca_offers):
+    from catalog.walmart_canada import DEFAULT_NODE
+    c, r, sid, page = ca_offers
+    assert c.get('/api/store-items').json()[0]['marketplace'] == 'CA'
+    assert page['marketplace'] == 'CA' and page['currency'] == 'CAD'
+    assert page['items'][0]['currency'] == 'CAD'
+    assert c.get('/api/products').json()['total'] == 0
+    assert c.get(f'/api/store-items/{sid}/history').json() == []
+    assert c.get(f'/api/store-items/{sid}/nodes').json()[0]['id'] == DEFAULT_NODE
+    assert c.get(f'/api/store-items/{sid}/stock', params={'sku': 'REMOTE-ONLY', 'node': DEFAULT_NODE}).json()['quantity'] == '7'
+    image = c.get(f'/api/store-items/{sid}/image', params={'sku': 'REMOTE-ONLY', 'partner': page['partner'], 'revision': page['revision']})
+    assert image.status_code == 200 and image.json()['image_status'] == 'missing'
+    assert not r.writes
+
+
+@pytest.mark.parametrize('kind', ['price', 'stock', 'retire'])
+def test_canada_manual_write_and_readback_are_market_scoped(ca_offers, kind):
+    from catalog.walmart_canada import DEFAULT_NODE
+    c, r, sid, page = ca_offers
+    changes = {'price': {}, 'stock': {'kind': 'stock', 'expected': '7', 'target': '0', 'node': DEFAULT_NODE},
+               'retire': {'kind': 'retire', 'expected': 'ACTIVE', 'target': 'RETIRED', 'confirm_sku': 'REMOTE-ONLY'}}
+    data = ca_change(page, **changes[kind])
+    url = f'/api/store-items/{sid}/changes'
+    response = c.post(url, json=data)
+    assert response.status_code == 200, response.text
+    assert response.json()['status'] == 'verified'
+    assert c.post(url, json=data).json()['status'] == 'verified' and len(r.writes) == 1
+    assert c.get(f'/api/store-items/{sid}/history').json()[0]['kind'] == kind
+
+
+@pytest.mark.parametrize('fault', ['currency', 'scope', 'timeout', 'price_error'])
+def test_canada_write_guards_and_unknown_results(ca_offers, fault):
+    c, r, sid, page = ca_offers
+    if fault == 'currency': r.currency = 'USD'
+    elif fault == 'scope': r.scopes['price'] = 'view_only'
+    else: setattr(r, fault, True)
+    data = ca_change(page)
+    url = f'/api/store-items/{sid}/changes'
+    result = c.post(url, json=data)
+    if fault in ('currency', 'scope'):
+        assert result.status_code == 502 and not r.writes
+    else:
+        assert result.json()['status'] == 'pending'
+        if fault == 'price_error': assert 'Invalid selling price' in result.json()['message']
+        assert c.post(url, json=data).json()['status'] == 'pending'
+        assert len(r.writes) == 1

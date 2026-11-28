@@ -1,4 +1,4 @@
-"""Manual management of offers returned by the bound US Marketplace account."""
+"""Manual management of offers returned by the bound US or Canadian Marketplace account."""
 import json
 import re
 from collections import OrderedDict
@@ -45,7 +45,7 @@ class Change(BaseModel):
         if self.kind == 'price':
             val = number(self.target)
             if val is None or not 0 < val <= 99999999 or val.as_tuple().exponent < -2:
-                raise ValueError('售价须为有效 USD 金额，最多两位小数')
+                raise ValueError('售价须为有效金额，最多两位小数')
         if self.kind == 'retire' and (self.confirm_sku != self.sku or self.target != 'RETIRED'):
             raise ValueError('请确认永久下架的完整 SKU')
         return self
@@ -169,8 +169,9 @@ def observed(remote, item, kind, node):
         return stock_value(remote, item['sku'], node)
     if kind == 'retire':
         return item['lifecycle']
-    if item['currency'] != 'USD' or item['price'] is None:
-        raise WalmartError('沃尔玛未返回可核对的美元售价')
+    currency = 'CAD' if remote.marketplace == 'CA' else 'USD'
+    if item['currency'] != currency or item['price'] is None:
+        raise WalmartError(f'沃尔玛未返回可核对的 {currency} 售价')
     return item['price']
 
 
@@ -199,11 +200,10 @@ def store_item_routes(catalog):
     def session(request, sid):
         with catalog.connect() as db:
             _, bound = binding(db, sid)
-            if bound['marketplace'] != 'US':
-                raise HTTPException(409, '店铺商品管理目前仅支持美国站；加拿大刊登请使用预上架与审核进度')
         try:
             with request.app.state.walmart_publisher.session(
-                    decrypt(sid, bound['encrypted_credentials']), bound['partner_id']) as remote:
+                    decrypt(sid, bound['encrypted_credentials'], bound['marketplace']), bound['partner_id'],
+                    marketplace=bound['marketplace']) as remote:
                 yield remote, bound
         except (WalmartError, VaultError) as exc:
             raise HTTPException(502, str(exc)) from None
@@ -212,8 +212,8 @@ def store_item_routes(catalog):
     def stores():
         with catalog.connect() as db:
             return [dict(r) for r in db.execute(
-                "SELECT s.id,s.name,a.partner_id FROM listing_stores s JOIN walmart_accounts a ON a.store_id=s.id "
-                "WHERE s.active=1 AND a.status='verified' AND a.marketplace='US' AND a.encrypted_credentials<>'' ORDER BY s.name")]
+                "SELECT s.id,s.name,a.partner_id,a.marketplace FROM listing_stores s JOIN walmart_accounts a ON a.store_id=s.id "
+                "WHERE s.active=1 AND a.status='verified' AND a.marketplace IN ('US','CA') AND a.encrypted_credentials<>'' ORDER BY s.name")]
 
     @router.get('/{sid}')
     def fetch(sid: int, request: Request, cursor: str = Query('*', min_length=1, max_length=8192),
@@ -231,7 +231,8 @@ def store_item_routes(catalog):
             with catalog.connect() as db:
                 attach_images(db, items, sid, bound['partner_id'])
             return dict(items=items, cursor=raw.get('nextCursor') or '', total=raw.get('totalItems'),
-                        partner=bound['partner_id'], revision=bound['revision'])
+                        partner=bound['partner_id'], revision=bound['revision'],
+                        marketplace=bound['marketplace'], currency='CAD' if bound['marketplace']=='CA' else 'USD')
 
     @router.get('/{sid}/nodes')
     def nodes(sid: int, request: Request):
@@ -263,7 +264,7 @@ def store_item_routes(catalog):
                 with catalog.connect() as db:
                     attach_images(db, [item], sid, partner)
                 gtin = normalized_gtin(item['gtin'])
-                if not item['image'] and gtin:
+                if not item['image'] and gtin and current['marketplace'] == 'US':
                     item['image'] = catalog_image(remote.catalog_search(gtin), item)
                     item['image_source'] = 'walmart' if item['image'] else ''
                 result.update(image=item['image'], image_source=item['image_source'],
@@ -294,8 +295,6 @@ def store_item_routes(catalog):
     def history(sid: int):
         with catalog.connect() as db:
             _, bound = binding(db, sid)
-            if bound['marketplace'] != 'US':
-                raise HTTPException(409, '店铺商品管理目前仅支持美国站；加拿大刊登请使用预上架与审核进度')
             return [dict(row) for row in db.execute("""SELECT id,sku,kind,node,at,status,target,message
                 FROM walmart_offer_changes WHERE store_id=? AND partner=? ORDER BY at DESC LIMIT 50""",
                 (sid, bound['partner_id']))]

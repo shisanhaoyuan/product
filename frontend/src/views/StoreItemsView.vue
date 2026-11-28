@@ -11,6 +11,7 @@ interface Store {
   id: number;
   name: string;
   partner_id: string;
+  marketplace: 'US' | 'CA';
 }
 interface Item extends StoreItemImage {
   name: string;
@@ -26,6 +27,8 @@ interface Page {
   total: number | null;
   partner: string;
   revision: number;
+  marketplace: 'US' | 'CA';
+  currency: 'USD' | 'CAD';
 }
 interface Node {
   id: string;
@@ -49,6 +52,9 @@ const stores = ref<Store[]>([]),
   sid = ref(''),
   search = ref(''),
   data = ref<Page>();
+const currency = computed(() =>
+  stores.value.find((s) => String(s.id) === sid.value)?.marketplace === 'CA' ? 'CAD' : 'USD',
+);
 const histories = ref<History[]>([]),
   nodes = ref<Node[]>([]);
 const busy = ref(false),
@@ -150,6 +156,10 @@ async function edit(item: Item, action: typeof kind.value) {
     busy.value = true;
     try {
       nodes.value = await request<Node[]>(base() + '/nodes');
+      if (currency.value === 'CAD' && nodes.value.length === 1) {
+        node.value = nodes.value[0]!.id;
+        await readStock();
+      }
     } catch (e) {
       error.value = errorMessage(e);
     } finally {
@@ -244,7 +254,9 @@ onMounted(async () => {
     <label
       >选择店铺<select v-model="sid" :disabled="busy" @change="changeStore">
         <option value="" disabled>请选择已绑定店铺</option>
-        <option v-for="s in stores" :key="s.id" :value="String(s.id)">{{ s.name }}</option>
+        <option v-for="s in stores" :key="s.id" :value="String(s.id)">
+          {{ s.name }} · {{ s.marketplace === 'CA' ? '加拿大 CA · CAD' : '美国 US · USD' }}
+        </option>
       </select></label
     >
     <label class="sku-search"
@@ -324,7 +336,7 @@ onMounted(async () => {
                     busy ||
                     !editable ||
                     item.lifecycle === 'RETIRED' ||
-                    item.currency !== 'USD' ||
+                    item.currency !== currency ||
                     item.price === null
                   "
                   @click="edit(item, 'price')"
@@ -386,14 +398,16 @@ onMounted(async () => {
         <label v-if="kind === 'stock'"
           >发货仓<select v-model="node" :disabled="busy" @change="readStock">
             <option value="">请选择仓库</option>
-            <option v-for="n in nodes" :key="n.id" :value="n.id">{{ n.name }} · {{ n.id }}</option>
+            <option v-for="n in nodes" :key="n.id" :value="n.id">
+              {{ n.name }}{{ currency === 'CAD' ? '' : ' · ' + n.id }}
+            </option>
           </select></label
         >
         <p>
           沃尔玛当前值：<strong>{{ labels[expected] || expected || '请先读取' }}</strong>
         </p>
         <label v-if="kind !== 'retire'"
-          >{{ kind === 'price' ? '新售价（USD）' : '新库存数量'
+          >{{ kind === 'price' ? `新售价（${currency}）` : '新库存数量'
           }}<input
             :value="target"
             type="number"

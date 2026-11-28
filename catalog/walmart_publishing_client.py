@@ -162,6 +162,24 @@ class WalmartSession:
             raise WalmartError(f'店铺缺少{label}（{scope}）完整写入权限，请更新授权')
 
     def set_price(self, sku, value):
+        if self.marketplace == 'CA':
+            # Global single-item price API differs from the US PUT contract.
+            # https://developer.walmart.com/global-marketplace/reference/updateprice
+            result = self.call('POST', '/v3/price', json={
+                'MPItemFeedHeader': {'mart': 'WALMART_CA', 'locale': ['en', 'fr'],
+                    'version': '5.0.20250801-18_47_55-api',
+                    'businessUnit': 'WALMART_CA', 'tenant': 'WALMART_CA'},
+                'MPItem': [{'Price': {'sku': sku, 'price': float(value)}}]})
+            details = result.get('itemDetails') or {}
+            rows = details.get('itemIngestionStatus', []) if isinstance(details, dict) else []
+            failures = [row for row in rows if isinstance(row, dict) and row.get('sku') == sku
+                        and row.get('ingestionStatus') in ('DATA_ERROR', 'SYSTEM_ERROR', 'ERROR')]
+            if failures:
+                errors = failures[0].get('ingestionErrors') or {}
+                messages = [str(e.get('description') or e.get('code') or '')
+                            for e in errors.get('ingestionError', []) if isinstance(e, dict)]
+                raise WalmartError('加拿大价格更新被拒绝：' + ('；'.join(messages)[:1000] or '请核对商品及价格'))
+            return result
         # Official single-item price API; no promotions, new feed or SKU changes.
         return self.call('PUT', '/v3/price', json={'sku': sku, 'pricing': [{
             'currentPriceType': 'BASE', 'currentPrice': {'currency': 'CAD' if self.marketplace == 'CA' else 'USD', 'amount': float(value)}}]})
