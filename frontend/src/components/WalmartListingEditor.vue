@@ -84,6 +84,7 @@ const taxonomy = ref<ProductType[]>([]),
   nodes = ref<ShipNode[]>([]),
   typeQuery = ref('');
 const specs = ref<Record<string, ListingSpec>>({});
+const reviewSelection = ref<string[]>([]);
 const selected = ref<string[]>([]),
   confirmDialog = ref<HTMLDialogElement>(),
   confirmation = ref('');
@@ -500,7 +501,7 @@ async function verifySourcePrice(originalPrice?: string) {
     await save();
     if (!doc.value) return;
     install(await publishingApi.verifySourcePrice(props.bid, doc.value.revision, sku, originalPrice));
-    install(await publishingApi.validate(props.bid, doc.value.revision));
+    install(await publishingApi.validate(props.bid, doc.value.revision, [sku]));
     message.value = '当前售价已人工验证，已解除来源原价缺失限制；其他要求仍按校验结果显示';
   });
 }
@@ -561,6 +562,14 @@ const eligible = computed(
       return !s || ['failed', 'rejected', 'unpublished'].includes(s);
     }) || [],
 );
+const reviewSkus = computed(() => reviewSelection.value.filter(sku => eligible.value.some(r => r.platform_sku === sku)));
+const visibleReviewSkus = computed(() => rowsToShow.value.filter(r => eligible.value.some(e => e.platform_sku === r.platform_sku)).map(r => r.platform_sku));
+function selectReview(skus: string[], event: Event) {
+  const allowed = skus.filter(sku => eligible.value.some(r => r.platform_sku === sku));
+  reviewSelection.value = (event.target as HTMLInputElement).checked
+    ? [...new Set([...reviewSkus.value, ...allowed])]
+    : reviewSkus.value.filter(sku => !allowed.includes(sku));
+}
 const validSkus = computed(() => completeGroupCandidates(
   (validationCurrent.value ? eligible.value : [])
     .filter((r) => doc.value?.validation.rows?.[r.platform_sku]?.valid)
@@ -763,26 +772,26 @@ watch(activeSku, async () => {
     await run(getSpec);
 });
 async function validate() {
+  if (!reviewSkus.value.length) { message.value = '请先勾选需要校验的商品'; return; }
+  const targets = [...reviewSkus.value];
   await run(async () => {
     await save();
     if (!doc.value) return;
     await loadMetadata();
-    const types = [...new Set(doc.value.rows.map((r) => r.product_type).filter(Boolean))];
+    const types = [...new Set(doc.value.rows.filter(r => targets.includes(r.platform_sku)).map((r) => r.product_type).filter(Boolean))];
     // Server caches specs across SKUs. Do not burst a 3/minute API with duplicate PT requests.
     for (const type of types) {
       const row = doc.value.rows.find((r) => r.product_type === type)!;
       specs.value[type] = await publishingApi.spec(props.bid, JSON.parse(JSON.stringify(row)));
     }
-    install(await publishingApi.validate(props.bid, doc.value.revision));
-    selected.value = validSkus.value;
-    if (doc.value.validation.valid_count === doc.value.rows.length) {
-      if (statusFilter.value === 'issues') statusFilter.value = 'all';
-      message.value = '上架资料校验通过，请确认店铺及选中商品后提交';
+    install(await publishingApi.validate(props.bid, doc.value.revision, targets));
+    selected.value = validSkus.value.filter(sku => targets.includes(sku));
+    const failed = targets.filter(sku => !doc.value?.validation.rows?.[sku]?.valid);
+    if (!failed.length) {
+      message.value = `已校验选中的 ${targets.length} 个 SKU，全部通过；未选商品不执行校验`;
     } else {
-      statusFilter.value = 'issues';
-      const first = rowsToShow.value[0];
-      if (first) activeSku.value = first.platform_sku;
-      message.value = `已校验，${doc.value.rows.length - (doc.value.validation.valid_count || 0)} 个 SKU 需要补齐资料`;
+      activeSku.value = failed[0]!;
+      message.value = `已校验选中的 ${targets.length} 个 SKU，${failed.length} 个需要补齐资料`;
     }
   });
 }
@@ -1257,8 +1266,19 @@ onBeforeUnmount(() => {
             <option value="issues">资料待补齐</option>
             <option value="failed">处理异常</option>
           </select>
+          <label class="listing-review-selection"><input type="checkbox" aria-label="全选当前筛选商品进行校验"
+            :checked="visibleReviewSkus.length > 0 && visibleReviewSkus.every(s => reviewSkus.includes(s))"
+            :indeterminate="visibleReviewSkus.some(s => reviewSkus.includes(s)) && !visibleReviewSkus.every(s => reviewSkus.includes(s))"
+            :disabled="busy || generating || !canEdit || !visibleReviewSkus.length" @change="selectReview(visibleReviewSkus, $event)" />
+            全选当前筛选 · 待校验已选 {{ reviewSkus.length }} 个
+          </label>
           <p class="listing-group-hint">同一框内为同一商品的子变体；不同商品独立分组提交。</p>
           <section v-for="group in productGroups" :key="group.listingId" class="listing-product-group">
+            <label class="listing-review-selection"><input type="checkbox" :aria-label="'选择商品 ' + group.index + ' 进行校验'"
+              :checked="group.rows.some(r => reviewSkus.includes(r.platform_sku)) && group.rows.filter(r => eligible.some(e => e.platform_sku === r.platform_sku)).every(r => reviewSkus.includes(r.platform_sku))"
+              :indeterminate="group.rows.some(r => reviewSkus.includes(r.platform_sku)) && group.rows.some(r => eligible.some(e => e.platform_sku === r.platform_sku) && !reviewSkus.includes(r.platform_sku))"
+              :disabled="busy || generating || !canEdit || !group.rows.some(r => eligible.some(e => e.platform_sku === r.platform_sku))"
+              @change="selectReview(group.rows.map(r => r.platform_sku), $event)" />选择本组校验</label>
             <button
               type="button"
               class="listing-product-group-heading"
@@ -1277,6 +1297,13 @@ onBeforeUnmount(() => {
             :class="{ active: row.platform_sku === activeSku }"
             @click="!busy && (activeSku = row.platform_sku)"
           >
+            <label class="listing-review-selection" @click.stop><input type="checkbox"
+              :aria-label="'选择校验 ' + identityLabel(row)"
+              :checked="reviewSkus.includes(row.platform_sku)"
+              :disabled="busy || generating || !canEdit || !eligible.some(r => r.platform_sku === row.platform_sku)"
+              @change="selectReview([row.platform_sku], $event)" />
+              {{ eligible.some(r => r.platform_sku === row.platform_sku) ? '选择校验' : '处理中或已提交' }}
+            </label>
             <button
               type="button"
               class="listing-sku-select"
@@ -1306,9 +1333,9 @@ onBeforeUnmount(() => {
                     doc.results[row.platform_sku]
                       ? statusLabels[doc.results[row.platform_sku].status] || '待确认'
                       : doc.validation.rows?.[row.platform_sku]?.valid === false
-                        ? '资料待补齐'
+                        ? (doc.validation.rows[row.platform_sku].errors.length ? '资料待补齐' : '待校验')
                         : doc.validation.rows?.[row.platform_sku]?.valid
-                          ? '校验通过'
+                          ? (validationCurrent ? '校验通过' : '缺项已补齐 · 待最终校验')
                           : '未校验'
                   }}</small
                 ></span
@@ -1345,16 +1372,18 @@ onBeforeUnmount(() => {
             <div class="listing-price-overview">
               <strong>{{ money(String(current.orderable.price ?? '')) }}</strong
               >
-              <label class="listing-stock-input">目标库存
+              <label class="listing-stock-input" data-listing-path="target_stock">目标库存
                 <input type="number" min="0" max="999999999" step="1" aria-label="目标库存"
                   :value="current.target_stock ?? sourceVariant?.stock ?? ''"
                   :disabled="locked || busy" @input="setTargetStock" />
               </label>
             </div>
           </div>
-          <div v-if="issues.length && !dirty" class="listing-issue-list">
-            <strong>此 SKU 有 {{ issues.length }} 项需要处理</strong
-            ><div v-for="(issue, index) in issues.slice(0, 3)" :key="index" class="listing-issue-row">
+          <p v-if="doc.validation.refresh_error" class="error-box" role="alert">缺项检查暂未更新，已保留原提示：{{ doc.validation.refresh_error }}</p>
+          <div v-if="issues.length" class="listing-issue-list">
+            <strong>此 SKU 有 {{ issues.length }} 项需要处理</strong>
+            <p class="muted" role="status">{{ dirty || saving ? '正在保存并更新缺项，其他提示继续保留…' : '缺项随填写自动更新；提交前仍需最终校验。' }}</p>
+            <div v-for="(issue, index) in issues.slice(0, 3)" :key="index" class="listing-issue-row">
               <button @click="jump(issue)">{{ issue.message }} <span>定位 →</span></button>
               <button v-if="canVerifySourceIssue(issue) && !locked" class="source-price-verify" :disabled="busy || saving" @click="verifySourcePrice()">{{ hasSellingPrice ? '已验证' : '填写价格' }}</button>
             </div>
@@ -1366,6 +1395,7 @@ onBeforeUnmount(() => {
               </div>
             </details>
           </div>
+          <p v-else-if="doc.validation.advisory && !doc.validation.refresh_error && !dirty && !saving" class="notice" role="status">当前 SKU 的缺项已补齐，请在提交前进行最终校验。</p>
           <ListingStatusNotices :review="priceReview" :result="locked ? result : undefined" />
           <div v-if="unsupported.length" class="notice notice-space">
             <p>有 {{ unsupported.length }} 项旧类目属性不在当前规格中，请核对后移除。</p>
@@ -1594,7 +1624,7 @@ onBeforeUnmount(() => {
               :disabled="locked || key === 'brand'"
               :required="required.includes(key) || key === 'productName' || key === 'brand'"
               :path="'visible.' + key"
-              :issues="dirty ? [] : fieldIssues(key)"
+              :issues="fieldIssues(key)"
               @update:model-value="update('visible', key, $event)"
             />
             <div class="listing-subheading">
@@ -1667,7 +1697,7 @@ onBeforeUnmount(() => {
                   :model-value="current.orderable[key]"
                   :disabled="locked || busy"
                   :required="requiredOrderable.includes(key)"
-                  :issues="dirty ? [] : fieldIssues(key, 'Orderable')"
+                  :issues="fieldIssues(key, 'Orderable')"
                   :reason="generationRow?.fields?.['orderable.productTaxCode']?.value === current.orderable[key] ? generationRow?.fields?.['orderable.productTaxCode']?.reason : undefined"
                   @update:model-value="update('orderable', key, $event)"
                 />
@@ -1681,7 +1711,7 @@ onBeforeUnmount(() => {
                 "
                 :required="requiredOrderable.includes(key)"
                 :path="'orderable.' + key"
-                :issues="dirty ? [] : fieldIssues(key, 'Orderable')"
+                :issues="fieldIssues(key, 'Orderable')"
                 @update:model-value="update('orderable', key, $event)"
                 />
               </template>
@@ -1799,7 +1829,7 @@ onBeforeUnmount(() => {
               :disabled="locked"
               :required="required.includes(key)"
               :path="'visible.' + key"
-              :issues="dirty ? [] : fieldIssues(key)"
+              :issues="fieldIssues(key)"
               @update:model-value="update('visible', key, $event)"
             />
           </section>
@@ -1908,7 +1938,7 @@ onBeforeUnmount(() => {
                 :disabled="busy || locked || fixedOrigin(key, visibleProperties[key])"
                 :required="required.includes(key)"
                 :path="'visible.' + key"
-                :issues="dirty ? [] : fieldIssues(key)"
+                :issues="fieldIssues(key)"
                 @update:model-value="update('visible', key, $event)" />
               <template v-if="tab === 'optional'"
                 ><div class="listing-subheading"><h4>选填履约信息</h4></div>
@@ -1923,7 +1953,7 @@ onBeforeUnmount(() => {
                     locked || fixedOrigin(key, currentSpec.sections.orderable.properties![key])
                   "
                   :path="'orderable.' + key"
-                  :issues="dirty ? [] : fieldIssues(key, 'Orderable')"
+                  :issues="fieldIssues(key, 'Orderable')"
                   @update:model-value="update('orderable', key, $event)"
               /></template>
               <template v-for="(schema, key) in currentSpec.sections" :key="key"
@@ -2093,10 +2123,10 @@ onBeforeUnmount(() => {
           ><button
             v-if="canEdit"
             class="btn"
-            :disabled="busy || saving || generating"
+            :disabled="busy || saving || generating || !reviewSkus.length"
             @click="validate"
           >
-            1. 校验上架资料</button
+            1. 校验选中（{{ reviewSkus.length }}）</button
           ><button
             v-if="canSubmit"
             class="btn primary"

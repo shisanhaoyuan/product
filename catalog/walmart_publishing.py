@@ -139,6 +139,10 @@ class Revision(Input):
     revision: int = Field(ge=1)
 
 
+class ValidationSelection(Revision):
+    skus: list[str] | None = Field(default=None, min_length=1, max_length=1000)
+
+
 class PriceReview(Revision):
     platform_sku: str = Field(min_length=1, max_length=50)
     original_price: Decimal | None = Field(default=None, gt=0, le=10000000, decimal_places=2)
@@ -399,8 +403,8 @@ def source_issues(item, variant, price_verified=False, target_stock=None):
     errors = [e for e in item['errors'] if e != '商品填写尚未核验完整' and not e.startswith(ignored)]
     from .listing_price_review import eligible, MISSING
     # Each row owns its source-price warning; another SKU's acknowledgement cannot clear it.
-    other_prices = {f"{v['sku']}：{MISSING}" for v in item.get('variants', []) if v.get('sku') != variant.get('sku') and eligible(item,v)}
-    errors = [e for e in errors if e not in other_prices]
+    other_skus = tuple(f"{v['sku']}：" for v in item.get('variants', []) if v.get('sku') != variant.get('sku'))
+    errors = [e for e in errors if not other_skus or not e.startswith(other_skus)]
     if target_stock is not None:
         errors = [e for e in errors if not (
             e.startswith(('Seller 可售库存缺失或异常', 'Seller 可售库存为 ', '赛盈可用库存为 ', '赛盈库存缺失'))
@@ -461,7 +465,7 @@ def feedback_errors(db,doc,row,spec):
     return []
 
 
-def check_rows(db, doc, session, binding_row, skus=None):
+def check_rows(db, doc, session, binding_row, skus=None, *, preview=False):
     basis = unchanged_sources(db, doc)
     require_sources(basis['items'], market_of(binding_row))
     by_sku = {v['platform_sku']: (i,v) for i in basis['items'] for v in i['variants']}
@@ -486,6 +490,8 @@ def check_rows(db, doc, session, binding_row, skus=None):
             issue=dict(path='',message=message)
             if eligible(item,variant) and message in (f"{variant['sku']}：{variant['error']}", '缺少已核验的来源售价，不能提交'):
                 issue.update(path='orderable.price',code='source_price_review')
+            elif '库存' in message:
+                issue.update(path='target_stock')
             errors.append(issue)
         errors.extend(dict(path='identification',message=e) for e in identifier_errors(row['identification']))
         errors.extend(identifier_ownership_errors(db,doc,row,item))
@@ -518,9 +524,13 @@ def check_rows(db, doc, session, binding_row, skus=None):
             schema_digests[pt] = fingerprint(schema)
             exempt = False
             if row['identification']['mode'] == 'exemption' and pt in types:
-                exempt = approved_exemption(session,row,types[pt]['category'],row['identification']['submission_id'])
-                if not exempt:
-                    errors.append(dict(path='identification',message='未查到该店铺、品牌及类目的已批准豁免，不能用申请中或其他店铺的豁免'))
+                if preview:
+                    exempt = True  # Schema shape only; never claim upstream approval.
+                    errors.append(dict(path='identification',message='豁免授权需在最终校验时向沃尔玛核实'))
+                else:
+                    exempt = approved_exemption(session,row,types[pt]['category'],row['identification']['submission_id'])
+                    if not exempt:
+                        errors.append(dict(path='identification',message='未查到该店铺、品牌及类目的已批准豁免，不能用申请中或其他店铺的豁免'))
             try:
                 from .listing_vision import stable_feed_row
                 entry, validation_schema = feed_item(stable_feed_row(db,row),schema,doc['version'],os.environ.get('CATALOG_PUBLIC_ORIGIN',''),exemption=exempt,
@@ -538,6 +548,10 @@ def check_rows(db, doc, session, binding_row, skus=None):
             except (ValueError,VaultError) as exc:
                 errors.append(dict(path='visible.mainImageUrl',message=str(exc)))
         results[sku] = dict(valid=not errors,errors=errors)
+    if preview:
+        # Editing feedback has no validation ID, payloads or authorization to submit.
+        return dict(advisory=True,revision=doc['revision'],rows=results,
+                    valid_count=sum(r['valid'] for r in results.values()))
     from .listing_prerequisites import resource_digest
     return dict(variant_policy=POLICY,feedback_policy='publication_feedback_v1',content_policy='default8_manual_images_copy_origin_v3',title_policy=BRAND_POLICY,feedback_digest=fingerprint(latest_results(db,doc['batch_id'])),resources_digest=resource_digest(db,binding_row),id=uuid.uuid4().hex,revision=doc['revision'],at=int(time.time()),binding_revision=binding_row['revision'],
                 partner_id=binding_row['partner_id'],rows=results,schema_digests=schema_digests,payloads=payloads,
@@ -578,14 +592,16 @@ def normalize_titles(db, rows, basis, latest, version=None):
     return changes
 
 
-def normalize_document_titles(db, doc, *, clean_schema=True):
+def normalize_document_titles(db, doc, *, clean_schema=True, skus=None):
     """Caller holds write lock. Explicit user rule also applies to existing drafts."""
     basis=unchanged_sources(db,doc)
     rows=json.loads(doc['rows_json'])
-    changes=normalize_titles(db,rows,basis,latest_results(db,doc['batch_id']),doc['version'])
+    changes=normalize_titles(db,[r for r in rows if skus is None or r['platform_sku'] in skus],basis,latest_results(db,doc['batch_id']),doc['version'])
     from .listing_variants import synchronize
     before_groups=copy.deepcopy(rows)
     variant_groups=synchronize(db,rows,basis,doc['version'],latest_results(db,doc['batch_id']),apply=True)
+    if skus is not None:
+        rows=[after if after['platform_sku'] in skus else before for before,after in zip(before_groups,rows)]
     group_changes=[dict(platform_sku=after['platform_sku'],before=before['visible'],after=after['visible'],
                         before_type=before['product_type'],after_type=after['product_type'])
                    for before,after in zip(before_groups,rows)
@@ -596,6 +612,8 @@ def normalize_document_titles(db, doc, *, clean_schema=True):
         bound=db.execute('SELECT * FROM walmart_accounts WHERE store_id=?',(basis['store']['id'],)).fetchone()
         latest=latest_results(db,doc['batch_id'])
         for row in rows:
+            if skus is not None and row['platform_sku'] not in skus:
+                continue
             if latest.get(row['platform_sku'],{}).get('status','unsubmitted') not in EDITABLE:
                 continue
             schema=cache_value(db,bound,'spec',doc['version'],row['product_type']) if bound else None
@@ -612,16 +630,36 @@ def normalize_document_titles(db, doc, *, clean_schema=True):
     return document(db,doc['batch_id'])
 
 
-def validate_document(catalog, bid, revision, remote, bound, *, allow_generation=True):
+def validate_document(catalog, bid, revision, remote, bound, *, allow_generation=True, skus=None):
     """Shared, read-only upstream validation with guarded persistence afterward."""
     with catalog.connect() as db:
         write_lock(db);batch(db,bid);doc=document(db,bid);revision_check(doc,revision)
         if not allow_generation and db.execute("SELECT 1 FROM listing_generation_jobs WHERE batch_id=? AND state IN ('awaiting_sources','queued','running')",(bid,)).fetchone():
             raise HTTPException(409,'该批次正在采集或生成，请完成后再审核资料')
-        doc=normalize_document_titles(db,doc)
+        if skus is not None:
+            available={r['platform_sku'] for r in json.loads(doc['rows_json'])}
+            if not skus or len(set(skus))!=len(skus) or not set(skus)<=available:
+                raise HTTPException(422,'请选择本批次内的商品，不能重复选择或传入其他批次 SKU')
+            latest=latest_results(db,bid)
+            if any(latest.get(s,{}).get('status','unsubmitted') not in EDITABLE for s in skus):
+                raise HTTPException(409,'所选商品正在处理或已发布，请取消选择后重试')
+        doc=normalize_document_titles(db,doc,skus=skus)
         revision=doc['revision']
     with catalog.connect() as db:
-        report=check_rows(db,doc,remote,bound)
+        report=check_rows(db,doc,remote,bound,skus=skus)
+        if skus is not None:
+            from .listing_prerequisites import validation_current
+            previous=json.loads(doc['validation_json'])
+            if validation_current(db,doc,bound,previous):
+                for key in ('rows','payloads','schema_digests','feed_headers'):
+                    report[key]={**previous.get(key,{}),**report[key]}
+                report['valid_count']=sum(r['valid'] for r in report['rows'].values())
+            else:
+                # Keep other products' editing hints, without granting them a pass.
+                hints={sku:{**row,'valid':False,'diagnostic_only':True}
+                       for sku,row in previous.get('rows',{}).items() if sku not in skus}
+                report['rows']={**hints,**report['rows']}
+            report['checked_skus']=list(skus)
     with catalog.connect() as db:
         write_lock(db);batch(db,bid);current=document(db,bid);revision_check(current,revision)
         if not allow_generation and db.execute("SELECT 1 FROM listing_generation_jobs WHERE batch_id=? AND state IN ('awaiting_sources','queued','running')",(bid,)).fetchone():
@@ -754,6 +792,18 @@ def publishing_routes(catalog):
             if raw!=doc['rows_json'] or data.version!=doc['version']:
                 db.execute('UPDATE walmart_listing_documents SET revision=revision+1,version=?,rows_json=?,validation_json=?,updated_at=? WHERE batch_id=?',
                     (data.version,raw,'{}',now(),bid))
+                # Refresh diagnostics from saved canonical values. No token, network
+                # call or external exemption lookup is needed for field feedback.
+                edited=document(db,bid)
+                try:
+                    _, bound=binding(db,basis_store['id'])
+                    feedback=check_rows(db,edited,None,bound,preview=True)
+                except (HTTPException,WalmartError,VaultError) as exc:
+                    feedback=dict(advisory=True,revision=edited['revision'],
+                        rows=json.loads(doc['validation_json']).get('rows',{}),
+                        refresh_error=str(exc.detail) if isinstance(exc,HTTPException) else str(exc))
+                db.execute('UPDATE walmart_listing_documents SET validation_json=? WHERE batch_id=?',
+                           (encoded(feedback),bid))
                 event(db,bid,request,'edit',{'revision':doc['revision']+1,'before':old,'after':rows,'rule_changes':rule_changes,'variant_rules':{g['listing_id']:g['rule_mappings'] for g in variant_groups}})
             return public_document(db,bid)
 
@@ -943,13 +993,13 @@ def publishing_routes(catalog):
             raise HTTPException(400,str(exc)) from None
 
     @router.post('/validate')
-    def validate(bid: str,data: Revision,request: Request):
+    def validate(bid: str,data: ValidationSelection,request: Request):
         try:
             bound,session=context(request,bid)
             with session as remote:
-                report=validate_document(catalog,bid,data.revision,remote,bound,allow_generation=False)
+                report=validate_document(catalog,bid,data.revision,remote,bound,allow_generation=False,skus=data.skus)
             with catalog.connect() as db:
-                event(db,bid,request,'validate',{'valid_count':report['valid_count'],'revision':data.revision})
+                event(db,bid,request,'validate',{'valid_count':report['valid_count'],'revision':data.revision,'skus':data.skus})
                 return public_document(db,bid)
         except (WalmartError,VaultError) as exc:
             raise HTTPException(400,str(exc)) from None

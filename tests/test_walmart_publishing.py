@@ -652,3 +652,142 @@ def test_refresh_source_preserves_manual_stock_and_clearing_restores_default(pub
     saved=c.patch(base,json={k:doc[k] for k in ('revision','version','rows')})
     assert saved.status_code==200,saved.text
     assert all('target_stock' not in row for row in saved.json()['rows'])
+
+
+def test_editing_updates_missing_fields_without_remote_calls_or_submission_authority(publishing):
+    c,_,_,_,_,base,remote=publishing
+    doc=ready(publishing)
+    official=copy.deepcopy(doc)
+    sku,other=[r['platform_sku'] for r in doc['rows']]
+    def save(doc):
+        count=len(remote.calls)
+        response=c.patch(base,json={k:doc[k] for k in ('revision','version','rows')})
+        assert response.status_code==200,response.text
+        assert len(remote.calls)==count
+        return response.json()
+    doc['rows'][0]['orderable'].pop('ShippingWeight',None)
+    doc['rows'][0]['visible'].pop('assembledProductHeight',None)
+    doc=save(doc)
+    errors=doc['validation']['rows'][sku]['errors']
+    assert any('ShippingWeight' in e['path'] for e in errors)
+    assert any('assembledProductHeight' in e['path'] for e in errors)
+    assert doc['validation']['advisory'] and not doc['validation']['current']
+    assert not doc['validation'].get('id')
+    assert not doc['validation']['rows'][other]['errors']
+    doc['rows'][0]['orderable']['ShippingWeight']=5
+    doc=save(doc)
+    errors=doc['validation']['rows'][sku]['errors']
+    assert not any('ShippingWeight' in e['path'] for e in errors)
+    assert any('assembledProductHeight' in e['path'] for e in errors)
+    assert c.get(base).json()['validation']['rows']==doc['validation']['rows']
+    # A nonempty but invalid nested value must retain its error.
+    doc['rows'][0]['visible']['assembledProductHeight']={'measure':-1,'unit':'in'}
+    doc=save(doc)
+    assert any('assembledProductHeight' in e['path'] for e in doc['validation']['rows'][sku]['errors'])
+    doc['rows'][0]['visible']['assembledProductHeight']={'measure':20,'unit':'in'}
+    doc=save(doc)
+    assert doc['validation']['rows'][sku]['errors']==[]
+    assert not doc['validation']['current']
+    assert c.post(base+'/submit',json=submission(official,revision=doc['revision'])).status_code==409
+    # Clearing a field adds its warning again, without manual Validate.
+    doc['rows'][0]['orderable'].pop('ShippingWeight')
+    doc=save(doc)
+    assert any('ShippingWeight' in e['path'] for e in doc['validation']['rows'][sku]['errors'])
+
+
+def test_edit_feedback_preserves_prior_issues_when_source_changed(publishing):
+    c,catalog,fake,settings,_,base,remote=publishing
+    doc=ready(publishing)
+    fake.prices[0]['price']='71'
+    sync_page(catalog,settings,1,client=fake)
+    doc['rows'][0]['orderable']['ShippingWeight']=5
+    response=c.patch(base,json={k:doc[k] for k in ('revision','version','rows')})
+    assert response.status_code==200,response.text
+    value=response.json()['validation']
+    assert value['rows']==doc['validation']['rows']
+    assert '来源' in value['refresh_error'] and not value['current']
+
+
+def test_source_stock_errors_belong_to_own_variant():
+    from catalog.walmart_publishing import source_issues
+    item={'source':'Amazon_CA','observed_at':datetime.now(timezone.utc).isoformat(),
+          'errors':['A：库存缺失或不符合 0 / 10 规则，执行前需核验','B：库存缺失或不符合 0 / 10 规则，执行前需核验'],
+          'variants':[{'sku':'A'},{'sku':'B'}]}
+    errors=source_issues(item,{'sku':'A','price':'10','stock':None})
+    assert any(e.startswith('A：') for e in errors)
+    assert not any(e.startswith('B：') for e in errors)
+    assert source_issues(item,{'sku':'A','price':'10','stock':None},target_stock=5)==[]
+
+
+def test_edit_feedback_checks_conditional_fields_and_defers_exemption_lookup(publishing):
+    c,_,_,_,_,base,remote=publishing
+    doc=ready(publishing)
+    sku=doc['rows'][0]['platform_sku']
+    doc['rows'][0]['visible']['isProp65WarningRequired']='Yes'
+    doc['rows'][0]['identification']={'mode':'exemption','type':'UPC','value':'','submission_id':'approved-1'}
+    calls=len(remote.calls)
+    response=c.patch(base,json={k:doc[k] for k in ('revision','version','rows')})
+    assert response.status_code==200,response.text
+    assert len(remote.calls)==calls
+    issues=response.json()['validation']['rows'][sku]['errors']
+    assert any('prop65WarningText' in i['path'] for i in issues)
+    assert any('豁免授权需在最终校验' in i['message'] for i in issues)
+    assert not response.json()['validation'].get('id')
+
+
+def test_selected_validation_does_not_check_unselected_sku_or_lose_its_hints(publishing):
+    c,_,_,_,_,base,remote=publishing
+    doc=ready(publishing)
+    selected,other=[r['platform_sku'] for r in doc['rows']]
+    doc['rows'][1]['orderable'].pop('ShippingWeight')
+    doc['rows'][1]['identification']={'mode':'exemption','type':'UPC','value':'','submission_id':'not-approved'}
+    response=c.patch(base,json={k:doc[k] for k in ('revision','version','rows')})
+    doc=response.json();unchosen=copy.deepcopy(doc['rows'][1])
+    before=len(remote.calls)
+    response=c.post(base+'/validate',json={'revision':doc['revision'],'skus':[selected]})
+    assert response.status_code==200,response.text
+    result=response.json();report=result['validation']
+    assert report['checked_skus']==[selected] and report['valid_count']==1
+    assert report['rows'][selected]['valid'] and report['current']
+    assert not report['rows'][other]['valid'] and report['rows'][other]['diagnostic_only']
+    assert report['rows'][other]['errors']
+    assert result['rows'][1]==unchosen
+    assert not any('/gtin-exemption' in r.url.path for r in remote.calls[before:])
+    # The unselected SKU cannot borrow the selected SKU's validation pass.
+    response=c.post(base+'/submit',json=submission(result,skus=[other]))
+    assert response.status_code==409 and not remote.posts
+
+
+def test_selected_validation_accumulates_only_current_revision_results(publishing):
+    c,_,_,_,_,base,_=publishing
+    doc=ready(publishing)
+    first,second=[r['platform_sku'] for r in doc['rows']]
+    doc['rows'][0]['orderable']['ShippingWeight']=12
+    doc=c.patch(base,json={k:doc[k] for k in ('revision','version','rows')}).json()
+    one=c.post(base+'/validate',json={'revision':doc['revision'],'skus':[first]}).json()
+    assert one['validation']['valid_count']==1
+    two=c.post(base+'/validate',json={'revision':one['revision'],'skus':[second]}).json()
+    assert two['validation']['valid_count']==2
+    assert all(r['valid'] for r in two['validation']['rows'].values())
+    two['rows'][1]['orderable']['ShippingWeight']=13
+    changed=c.patch(base,json={k:two[k] for k in ('revision','version','rows')}).json()
+    three=c.post(base+'/validate',json={'revision':changed['revision'],'skus':[second]}).json()
+    assert three['validation']['valid_count']==1 and not three['validation']['rows'][first]['valid']
+
+
+@pytest.mark.parametrize('selection',[[],['NOT-IN-BATCH'],'duplicate'])
+def test_selected_validation_rejects_empty_foreign_or_duplicate_skus(publishing,selection):
+    c,_,_,_,_,base,remote=publishing
+    doc=ready(publishing)
+    skus=[doc['rows'][0]['platform_sku']]*2 if selection=='duplicate' else selection
+    response=c.post(base+'/validate',json={'revision':doc['revision'],'skus':skus})
+    assert response.status_code==422,response.text
+    assert not remote.posts
+
+
+def test_selected_validation_rejects_processing_sku(publishing):
+    doc=ready(publishing)
+    send(publishing,doc)
+    c,_,_,_,_,base,_=publishing
+    response=c.post(base+'/validate',json={'revision':doc['revision'],'skus':[doc['rows'][0]['platform_sku']]})
+    assert response.status_code==409

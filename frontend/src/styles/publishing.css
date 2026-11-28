@@ -1212,3 +1212,15 @@
   font-weight: 600;
   text-align: center;
 }
+
+.listing-review-selection {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  color: #426488;
+  font-size: 12px;
+  background: #edf4fa;
+  border-radius: 8px;
+}
+.listing-review-selection input { width: 17px; height: 17px; margin: 0; accent-color: #2b9060; }

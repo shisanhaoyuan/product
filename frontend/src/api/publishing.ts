@@ -137,6 +137,8 @@ export interface ListingDocument {
   brand: string;
   basis: PrelistingPreview;
   validation: {
+    advisory?: boolean;
+    refresh_error?: string;
     id?: string;
     revision?: number;
     at?: number;
@@ -144,7 +146,7 @@ export interface ListingDocument {
     binding_revision?: number;
     valid_count?: number;
     current?: boolean;
-    rows?: Record<string, { valid: boolean; errors: Issue[] }>;
+    rows?: Record<string, { valid: boolean; errors: Issue[]; diagnostic_only?: boolean }>;
   };
   results: Record<string, ListingResult>;
   attempts: Attempt[];
@@ -262,8 +264,8 @@ export const publishingApi = {
   nodes: (bid: string) => request<{ items: ShipNode[] }>(path(bid) + '/nodes', body('POST')),
   spec: (bid: string, row: ListingRow) =>
     request<ListingSpec>(path(bid) + '/spec', body('POST', row)),
-  validate: (bid: string, revision: number) =>
-    request<ListingDocument>(path(bid) + '/validate', body('POST', { revision })),
+  validate: (bid: string, revision: number, skus?: string[]) =>
+    request<ListingDocument>(path(bid) + '/validate', body('POST', { revision, ...(skus ? { skus } : {}) })),
   submit: (bid: string, doc: ListingDocument, skus: string[], key: string) =>
     request<Attempt>(
       path(bid) + '/submit',
